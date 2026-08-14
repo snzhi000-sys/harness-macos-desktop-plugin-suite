@@ -22,7 +22,7 @@
 import type { ReactNode } from 'react'
 import type { Context } from '../context-types.ts'
 import {
-  activateTab, allLeaves, closeTab as closeTabReducer, openTabInActivePane, patchTab, togglePanel, treeOf,
+  activateTab, allLeaves, closeTab as closeTabReducer, openTabInActivePane, openTabInBottomPanel, patchTab, togglePanel, treeOf,
   type SidebarState, type SidebarStore, type SidebarTab,
 } from './state.ts'
 import { isNarrowWidth } from './breakpoints.ts'
@@ -421,6 +421,19 @@ function applyDedupe(state: SidebarState, tab: SidebarTab, descriptor: TabDescri
       const existing = leaf.tabs.find(t => t.type === tab.type && dedupeKey!(t) === key)
       if (existing !== undefined) return activateTab(state, leaf.id, existing.id)
     }
+  }
+  // File-content opens (the `editor` tab hosts every file viewer: code,
+  // markdown, csv, image, pdf, office) land in the bottom panel so the
+  // explorer keeps its own pane in the right sidebar and both stay visible
+  // at once. Desktop only: on narrow viewports the two workbenches merge
+  // into one drawer, so the bottom panel does not exist and the active pane
+  // (the merged right panel) is the only valid target.
+  if (
+    tab.type === 'editor'
+    && typeof window !== 'undefined'
+    && !isNarrowWidth(window.innerWidth)
+  ) {
+    return openTabInBottomPanel(state, tab)
   }
   return openTabInActivePane(state, tab)
 }

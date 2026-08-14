@@ -500,6 +500,38 @@ export function openTabInActivePane(state: SidebarState, tab: SidebarTab): Sideb
   }
 }
 
+/**
+ * Land a tab in the bottom panel (the second, independent workbench),
+ * opening it and marking the panel "opened" so the first-expansion
+ * auto-terminal does not fire for a programmatic content open. File-content
+ * tabs (the `editor` type) route here so the explorer keeps its own pane in
+ * the right sidebar while documents live below — the two stop sharing one
+ * pane.
+ */
+export function openTabInBottomPanel(state: SidebarState, tab: SidebarTab): SidebarState {
+  // Id safety net (mirrors openTabInActivePane): focus an existing tab with
+  // the same id wherever it already lives instead of opening a duplicate.
+  for (const leaf of allLeaves(state.splits).concat(allLeaves(state.bottomSplits))) {
+    const existing = leaf.tabs.find(candidate => candidate.id === tab.id)
+    if (existing !== undefined) return activateTab(state, leaf.id, existing.id)
+  }
+  // The bottom tree normally keeps at least one leaf; if it somehow lost all
+  // of them, fall back to the active-pane landing rather than dropping the tab.
+  const bottomLeaves = allLeaves(state.bottomSplits)
+  if (bottomLeaves.length === 0) return openTabInActivePane(state, tab)
+  const targetId = bottomLeaves[0]!.id
+  return {
+    ...state,
+    activePane: targetId,
+    bottomOpen: true,
+    bottomOpenedOnce: true,
+    bottomSplits: mapLeaf(state.bottomSplits, targetId, (leaf) => {
+      leaf.tabs = [...leaf.tabs, tab]
+      leaf.active = tab.id
+    }),
+  }
+}
+
 /** Move a tab from one pane to another (insert at index; -1 appends).
  *  The panes may live in DIFFERENT trees — dragging a tab between the two
  *  panels removes it from its own tree and lands it in the other one. */
