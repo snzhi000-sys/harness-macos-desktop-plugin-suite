@@ -303,10 +303,7 @@ describe('service.openTab dedupe', () => {
     store.setSession('s1')
     service.openTab({ type: 'editor', title: 'main.ts', path: '/p/main.ts' })
     const state = store.getSnapshot().state!
-    // Editor tabs route to the bottom panel (the explorer keeps the right
-    // sidebar), so the title check spans BOTH trees.
-    const tab = allLeaves(state.splits).concat(allLeaves(state.bottomSplits))
-      .flatMap(l => l.tabs).find(t => t.type === 'editor')
+    const tab = allLeaves(state.splits).flatMap(l => l.tabs).find(t => t.type === 'editor')
     expect(tab?.title).toBe('main.ts')
   })
 
@@ -431,18 +428,6 @@ describe('service.openTab across the two panels', () => {
     expect(allLeaves(state.splits).flatMap(l => l.tabs).some(t => t.type === 'git')).toBe(false)
   })
 
-  it('editor (file-content) opens land in the bottom panel, not the explorer pane', () => {
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: () => 'Editor', component: () => null })
-    store.setSession('s1')
-    service.openTab({ type: 'editor', title: 'a.md', path: '/p/a.md', id: 'editor:/p/a.md' })
-    const state = store.getSnapshot().state!
-    expect(allLeaves(state.bottomSplits).flatMap(l => l.tabs).some(t => t.type === 'editor')).toBe(true)
-    expect(allLeaves(state.splits).flatMap(l => l.tabs).some(t => t.type === 'editor')).toBe(false)
-    expect(state.bottomOpen).toBe(true)
-  })
-
   it('dedupeKey focuses an existing instance in the OTHER tree (single-instance across panels)', () => {
     const store = createSidebarStore()
     const service = createBetterSidebarService(store)
@@ -536,7 +521,7 @@ describe('service.openTab auto-expand for content opens', () => {
     }
   })
 
-  it('expands the collapsed bottom panel for a path (file) open on a wide viewport', () => {
+  it('expands the collapsed right panel for a path (file) open on a wide viewport', () => {
     const store = createSidebarStore()
     const service = createBetterSidebarService(store)
     service.registerTab({ id: 'editor', title: 'Editor', component: () => null })
@@ -544,11 +529,8 @@ describe('service.openTab auto-expand for content opens', () => {
     collapseRightPanel(store)
     service.openTab({ type: 'editor', title: 'main.ts', path: '/p/main.ts' })
     const state = store.getSnapshot().state!
-    // File-content opens now land in the bottom panel (the explorer keeps
-    // the right sidebar), so the bottom panel expands and the right stays.
-    expect(state.bottomOpen).toBe(true)
-    expect(state.panelOpen).toBe(false)
-    expect(allLeaves(state.bottomSplits).flatMap(l => l.tabs).some(t => t.type === 'editor')).toBe(true)
+    expect(state.panelOpen).toBe(true)
+    expect(allLeaves(state.splits).flatMap(l => l.tabs).some(t => t.type === 'editor')).toBe(true)
   })
 
   it('expands the collapsed right panel for a URL (browser) open on a wide viewport', () => {
@@ -611,9 +593,7 @@ describe('service.openTab auto-expand for content opens', () => {
     collapseRightPanel(store)
     service.openTab({ type: 'editor', title: 'main.ts', path: '/p/main.ts' })
     const state = store.getSnapshot().state!
-    // The dedupe focus keeps the existing editor tab in the bottom panel and
-    // surfaces that panel, not the right one.
-    expect(state.bottomOpen).toBe(true)
-    expect(allLeaves(state.bottomSplits).flatMap(l => l.tabs).filter(t => t.type === 'editor')).toHaveLength(1)
+    expect(state.panelOpen).toBe(true)
+    expect(allLeaves(state.splits).flatMap(l => l.tabs).filter(t => t.type === 'editor')).toHaveLength(1)
   })
 })
