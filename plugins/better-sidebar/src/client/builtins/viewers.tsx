@@ -1,9 +1,9 @@
 /**
- * The 9 built-in file viewer descriptors: every preview surface is a
- * registered viewer (image / pdf / docx / xlsx / pptx / markdown / html /
- * code / binary-download), exactly like external plugins register theirs.
+ * The 10 built-in file viewer descriptors: every preview surface is a
+ * registered viewer (image / video / pdf / docx / xlsx / pptx / markdown /
+ * html / code / binary-download), exactly like external plugins register theirs.
  * The `binary-download` viewer sniffs NUL bytes via `detect` for unknown
- * binaries and serves doc/xls/ppt by extension; `code` is the catch-all
+ * binaries and serves doc/xls/ppt/mkv/avi by extension; `code` is the catch-all
  * (`exts: []`, lowest priority) that claims any file no other viewer did.
  *
  * The heavy viewers (docx/xlsx/pptx and the CodeMirror-backed
@@ -21,6 +21,7 @@
 import { IconCodeOutline16, IconDownloadOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { lazyChunkComponent } from '../lazy-chunk.tsx'
 import { PdfView } from '../PdfView.tsx'
+import { VideoView } from '../VideoView.tsx'
 import { BinaryDownload } from '../binary-download.tsx'
 import {
   IconImageOutline16,
@@ -30,6 +31,7 @@ import {
   IconXlsxOutline16,
   IconPptxOutline16,
   IconHtmlOutline16,
+  IconVideoOutline16,
 } from '../icons.tsx'
 import type { ComponentType } from 'react'
 import type { FileViewerDescriptor, FileViewerProps } from '../service.ts'
@@ -47,7 +49,7 @@ const LazyXlsx = lazyChunkComponent<FileViewerProps>('xlsx', (mod) => mod.XlsxVi
 const LazyPptx = lazyChunkComponent<FileViewerProps>('pptx', (mod) => mod.PptxView as ComponentType<FileViewerProps> | undefined)
 const LazyTextEditor = lazyChunkComponent<FileViewerProps>('editor', (mod) => mod.TextEditor as ComponentType<FileViewerProps> | undefined)
 
-/** The 9 built-in file viewer descriptors. */
+/** The 10 built-in file viewer descriptors. */
 export function builtinViewers(): readonly FileViewerDescriptor[] {
   return [
     {
@@ -71,6 +73,14 @@ export function builtinViewers(): readonly FileViewerDescriptor[] {
       component: ({ scope, path, title }) => (
         <PdfView scope={scope} path={path} title={title} />
       ),
+    },
+    {
+      id: 'video',
+      title: () => t('viewerVideo'),
+      icon: (size: number) => <IconVideoOutline16 size={size} />,
+      exts: ['mp4', 'm4v', 'webm', 'mov', 'ogv'],
+      fetchStrategy: 'mediaUrl',
+      component: VideoView,
     },
     {
       id: 'docx',
@@ -139,7 +149,7 @@ export function builtinViewers(): readonly FileViewerDescriptor[] {
       id: 'binary-download',
       title: () => t('viewerBinary'),
       icon: (size: number) => <IconDownloadOutline16 size={size} />,
-      exts: ['doc', 'xls', 'ppt'],
+      exts: ['doc', 'xls', 'ppt', 'mkv', 'avi'],
       priority: -50,
       fetchStrategy: 'binary-download',
       // NUL probe: a file whose head bytes contain a NUL is binary — claimed

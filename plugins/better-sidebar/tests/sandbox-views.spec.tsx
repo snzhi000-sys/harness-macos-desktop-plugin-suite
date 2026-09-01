@@ -13,7 +13,7 @@ import { createElement } from 'react'
 import './browser-globals.ts'
 import type { Context } from '../src/context-types.ts'
 import { TextEditor, HTML_IFRAME_SANDBOX } from '../src/client/TextEditor.tsx'
-import { BrowserView, BrowserEmbedBlocked, BROWSER_IFRAME_SANDBOX } from '../src/client/BrowserView.tsx'
+import { BrowserView, BrowserEmbedBlocked } from '../src/client/BrowserView.tsx'
 import { createSidebarStore } from '../src/client/state.ts'
 import type { FileViewerProps } from '../src/client/service.ts'
 
@@ -33,6 +33,7 @@ function viewerProps(store: ReturnType<typeof createSidebarStore>, overrides: Pa
     path: '/p/a/index.html',
     title: 'index.html',
     viewerId: 'html',
+    visible: true,
     content: '<h1>hi</h1>',
     ...overrides,
   }
@@ -127,61 +128,44 @@ describe('browser tab iframe sandbox', () => {
     expect(html).toContain('输入网址开始浏览')
   })
 
-  it('sandboxes the iframe without same-origin / top-navigation', () => {
+  it('renders the browser iframe without a sandbox attribute', () => {
     const store = createSidebarStore()
     const html = renderToString(createElement(BrowserView, tabProps(store, 'https://example.com/')))
     const iframe = /<iframe[^>]*>/.exec(html)?.[0]
     expect(iframe).toBeDefined()
-    expect(iframe).toContain(`sandbox="${BROWSER_IFRAME_SANDBOX}"`)
-    expect(BROWSER_IFRAME_SANDBOX).not.toContain('allow-same-origin')
-    expect(BROWSER_IFRAME_SANDBOX).not.toContain('allow-top-navigation')
+    expect(iframe).not.toContain('sandbox=')
     expect(iframe).toContain('src="https://example.com/"')
     expect(iframe).toContain('referrerPolicy="no-referrer"')
     expect(iframe).toContain('allow=""')
   })
 
-  it('renders the live sandbox status row with the temporary unlock action', () => {
+  it('does not render sandbox status or unlock controls', () => {
     const store = createSidebarStore()
     const html = renderToString(createElement(BrowserView, tabProps(store, 'https://example.com/')))
-    expect(html).toContain('沙箱模式：已启用')
-    expect(html).toContain('临时解锁（不安全）')
-  })
-
-  it('offers the open-in-browser action once a URL is loaded (disabled before navigation)', () => {
-    const store = createSidebarStore()
-    // No URL yet: the external-open action is disabled.
-    const start = renderToString(createElement(BrowserView, tabProps(store)))
-    expect(start).toContain('aria-label="在浏览器中打开"')
-    expect(start).toContain('title="在浏览器中打开" disabled=""')
-    // With a URL: enabled.
-    const loaded = renderToString(createElement(BrowserView, tabProps(store, 'https://example.com/')))
-    expect(loaded).toContain('aria-label="在浏览器中打开"')
-    expect(loaded).not.toContain('title="在浏览器中打开" disabled=""')
-  })
-
-  it('drops the sandbox attribute with the red warning when the setting is on (no restore action — the global setting owns it)', () => {
-    const store = createSidebarStore()
-    store.setPrefs({ ...store.getPrefs(), browserNoSandbox: true })
-    const html = renderToString(createElement(BrowserView, tabProps(store, 'https://example.com/')))
-    const iframe = /<iframe[^>]*>/.exec(html)?.[0]
-    expect(iframe).toBeDefined()
-    expect(iframe).not.toContain('sandbox=')
-    expect(html).toContain('沙箱已关闭')
-    expect(html).not.toContain('临时解锁（不安全）')
+    expect(html).not.toContain('沙箱模式')
+    expect(html).not.toContain('临时解锁')
     expect(html).not.toContain('恢复沙箱')
   })
+
+  it('does not render an external-browser action', () => {
+    const store = createSidebarStore()
+    const start = renderToString(createElement(BrowserView, tabProps(store)))
+    const loaded = renderToString(createElement(BrowserView, tabProps(store, 'https://example.com/')))
+    expect(start).not.toContain('在浏览器中打开')
+    expect(loaded).not.toContain('在浏览器中打开')
+  })
+
 })
 
 describe('browser embed-refusal panel', () => {
   it('explains the refusal with the host, the reason, and both actions', () => {
     const html = renderToString(createElement(BrowserEmbedBlocked, {
       url: 'https://arxiv.org/abs/2401.10001',
-      onOpenInBrowser: () => {},
       onLoadAnyway: () => {},
     }))
     expect(html).toContain('arxiv.org 拒绝了嵌入请求')
     expect(html).toContain('X-Frame-Options / frame-ancestors')
-    expect(html).toContain('在浏览器中打开')
     expect(html).toContain('仍然加载')
+    expect(html).not.toContain('在浏览器中打开')
   })
 })

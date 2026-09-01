@@ -301,9 +301,9 @@ export interface SidebarConversation {
 
 /**
  * The client workspaces service face (mirror of the runtime IWorkspaces). Only
- * the chat's file-open funnel is touched: `openPath` hands an absolute path
- * to the Host OS's default application, and every chat-side file open
- * (tool rows, produced-files, prose mentions) funnels through it.
+ * the standard file-open funnel is touched: `openPath` hands an absolute path
+ * to the Host OS's default application, and chat-side plus cooperating plugin
+ * opens funnel through it.
  */
 export interface SidebarWorkspacesService {
   /** Open a filesystem path with the Host operating system's default application. */

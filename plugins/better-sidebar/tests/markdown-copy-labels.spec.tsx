@@ -43,6 +43,7 @@ function viewerProps(overrides: Partial<FileViewerProps> = {}): FileViewerProps 
     path: '/p/a/README.md',
     title: 'README.md',
     viewerId: 'markdown',
+    visible: true,
     content: MD_WITH_FENCE,
     ...overrides,
   }

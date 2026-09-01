@@ -12,9 +12,11 @@
  * session's authoritative cwd comes from the session store, and terminal
  * processes are keyed by session.
  */
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join } from 'node:path'
-import type { IncomingMessage } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Readable } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { Context } from './context-types.ts'
 import {
@@ -38,6 +40,11 @@ import { AgentPtyRegistry, clampDims, type AgentTerminalHandle } from './agent-p
 import { registerTools } from './tools.ts'
 import { buildJobsApi, type SidebarJobsRoutes } from './jobs-routes.ts'
 import { readJsonBody, requireString, SidebarError, writeError, writeJson, writeOk } from './wire.ts'
+import { ExplorerMarksStore } from './explorer-marks-store.ts'
+import { ExplorerVisibilityStore } from './explorer-visibility-store.ts'
+import { SidebarLayoutStore } from './sidebar-layout-store.ts'
+import { readPersistedSessionTitles } from './session-title-cache.ts'
+import { openPathWithSystemApp, revealPathInFileManager } from './reveal-path.ts'
 
 export { Config }
 export type { SidebarConfig, ResolvedSidebarConfig }
@@ -75,11 +82,157 @@ const MEDIA_TYPES: Record<string, string> = {
   '.pdf': 'application/pdf',
   '.html': 'text/html',
   '.htm': 'text/html',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.ogv': 'video/ogg',
+}
+
+/** Video extensions that use bounded streaming instead of whole-file reads. */
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.ogv'])
+
+/** Whether a path belongs to the explicitly supported streaming-video allowlist. */
+export function isVideoMediaPath(path: string): boolean {
+  return VIDEO_EXTENSIONS.has(extname(path).toLowerCase())
 }
 
 /** Content type served by /sidebar/file (binary-safe fallback for unknowns). */
 export function mediaTypeForPath(path: string): string {
   return MEDIA_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
+}
+
+/** Security headers shared by image/PDF/Office/video byte responses. */
+export function mediaSecurityHeaders(type: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'content-type': type,
+    'cache-control': 'no-cache',
+    'x-content-type-options': 'nosniff',
+    'cross-origin-resource-policy': 'same-origin',
+  }
+  if (type === 'image/svg+xml') {
+    headers['content-security-policy'] = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+  }
+  return headers
+}
+
+/** Result of parsing one optional RFC 7233 byte-range request. */
+export type MediaRange =
+  | { kind: 'full' }
+  | { kind: 'partial'; start: number; end: number }
+  | { kind: 'invalid' }
+
+/** Parse one closed, open-ended, or suffix byte range without unsafe integer coercion. */
+export function parseMediaRange(value: string | undefined, size: number): MediaRange {
+  if (value === undefined) return { kind: 'full' }
+  if (!Number.isSafeInteger(size) || size < 0) return { kind: 'invalid' }
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value)
+  if (match === null || size === 0) return { kind: 'invalid' }
+  const startText = match[1]!
+  const endText = match[2]!
+  if (startText === '' && endText === '') return { kind: 'invalid' }
+
+  const safeInteger = (text: string): number | undefined => {
+    if (!/^\d+$/.test(text)) return undefined
+    const number = Number(text)
+    return Number.isSafeInteger(number) ? number : undefined
+  }
+
+  if (startText === '') {
+    const suffix = safeInteger(endText)
+    if (suffix === undefined || suffix === 0) return { kind: 'invalid' }
+    return { kind: 'partial', start: Math.max(0, size - suffix), end: size - 1 }
+  }
+
+  const start = safeInteger(startText)
+  if (start === undefined || start >= size) return { kind: 'invalid' }
+  if (endText === '') return { kind: 'partial', start, end: size - 1 }
+  const requestedEnd = safeInteger(endText)
+  if (requestedEnd === undefined || start > requestedEnd) return { kind: 'invalid' }
+  return { kind: 'partial', start, end: Math.min(requestedEnd, size - 1) }
+}
+
+/** Injectable stream factory used by cancellation tests without reading user files. */
+export type MediaReadStreamFactory = (
+  path: string,
+  options: { start?: number; end?: number },
+) => Readable
+
+/**
+ * Pipe one file interval and destroy it promptly if the request/response goes
+ * away. Resolves normally for client cancellation; rejects genuine read
+ * errors so the route can terminate the response.
+ */
+export async function streamFileToResponse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  options: { start?: number; end?: number },
+  factory: MediaReadStreamFactory = createReadStream,
+): Promise<void> {
+  const stream = factory(path, options)
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const cleanup = (): void => {
+      req.off('aborted', abort)
+      res.off('close', responseClosed)
+      res.off('finish', finished)
+      stream.off('error', failed)
+    }
+    const settle = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error === undefined) resolve()
+      else reject(error)
+    }
+    const abort = (): void => {
+      stream.destroy()
+      settle()
+    }
+    const responseClosed = (): void => {
+      if (!res.writableEnded) abort()
+      else settle()
+    }
+    const finished = (): void => { settle() }
+    const failed = (error: Error): void => { settle(error) }
+
+    req.once('aborted', abort)
+    res.once('close', responseClosed)
+    res.once('finish', finished)
+    stream.once('error', failed)
+    if (req.aborted || res.destroyed) {
+      abort()
+      return
+    }
+    stream.pipe(res)
+  })
+}
+
+/** Resolve a preview/download target without allowing symlink escapes. */
+export async function resolveWorkspaceMediaPath(cwdValue: string, pathValue: string): Promise<{ path: string; size: number }> {
+  const cwd = requireAbsolute(cwdValue)
+  const requested = requireAbsolute(pathValue)
+  if (!isWithin(cwd, requested)) {
+    throw new SidebarError('fs-error', 'media path outside the session working directory', 403)
+  }
+  let workspaceReal: string
+  let pathReal: string
+  try {
+    ;[workspaceReal, pathReal] = await Promise.all([realpath(cwd), realpath(requested)])
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw new SidebarError('not-found', 'media file does not exist', 404)
+    }
+    throw new SidebarError('fs-error', `cannot resolve media path: ${error instanceof Error ? error.message : String(error)}`, 400)
+  }
+  if (!isWithin(workspaceReal, pathReal)) {
+    throw new SidebarError('fs-error', 'media path resolves outside the session working directory', 403)
+  }
+  const info = await stat(pathReal)
+  if (!info.isFile()) throw new SidebarError('fs-error', 'media path is not a file', 400)
+  return { path: pathReal, size: info.size }
 }
 
 /** The connection row's resolved trustedHosts (live read; the /api fence's own list). */
@@ -168,6 +321,19 @@ async function readText(path: string, readLimit: number): Promise<{
   }
 }
 
+/**
+ * Apparent size of one Explorer entry. Directories are walked without ever
+ * following symbolic links: a symlink contributes its own inode size, so a
+ * preview cannot escape the workspace or loop back into an ancestor.
+ */
+async function entrySize(path: string): Promise<number> {
+  const info = await lstat(path)
+  if (!info.isDirectory()) return info.size
+  const children = await readdir(path)
+  const sizes = await Promise.all(children.map(child => entrySize(join(path, child))))
+  return sizes.reduce((total, size) => total + size, 0)
+}
+
 /** One API method dispatch table entry. */
 type ApiMethod = (payload: unknown) => Promise<unknown> | unknown
 
@@ -193,6 +359,24 @@ function buildApi(
   resolved: ResolvedSidebarConfig,
   getSettings: () => SidebarSettingsFace | undefined,
 ): Record<string, ApiMethod> {
+  const explorerMarks = new ExplorerMarksStore(join(
+    process.env.DSH_HOME ?? process.cwd(),
+    'state',
+    'dsh-better-sidebar',
+    'explorer-marks.json',
+  ))
+  const explorerVisibility = new ExplorerVisibilityStore(join(
+    process.env.DSH_HOME ?? process.cwd(),
+    'state',
+    'dsh-better-sidebar',
+    'explorer-visibility.json',
+  ))
+  const sidebarLayouts = new SidebarLayoutStore(join(
+    process.env.DSH_HOME ?? process.cwd(),
+    'state',
+    'dsh-better-sidebar',
+    'layouts.json',
+  ))
   const cwdOf = (payload: unknown): { sessionId: string; cwd: string } => {
     const sessionId = requireString(payload, 'sessionId')
     const record = payload as { cwd?: unknown } | null
@@ -206,9 +390,48 @@ function buildApi(
   // API). A deployment without the jobs registry downgrades kill to a 503.
   const jobsApi: SidebarJobsRoutes = buildJobsApi(ctx, resolved.readLimit)
   return {
+    'layout.get': async (payload) => {
+      const sessionId = requireString(payload, 'sessionId')
+      return { state: await sidebarLayouts.get(sessionId) }
+    },
+    'layout.set': async (payload) => {
+      const sessionId = requireString(payload, 'sessionId')
+      const record = payload as { state?: unknown } | null
+      if (record?.state === undefined) throw new SidebarError('bad-request', 'missing sidebar layout state')
+      await sidebarLayouts.set(sessionId, record.state)
+      return { ok: true }
+    },
+    'session-titles.get': async () => ({
+      titles: await readPersistedSessionTitles(process.env.DSH_HOME ?? process.cwd()),
+    }),
     'session.cwd': (payload) => {
       const { sessionId, cwd } = cwdOf(payload)
       return { sessionId, cwd, root: rootLabel(cwd), parent: parentOf(cwd) ?? null }
+    },
+    'explorer-marks.get': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      return explorerMarks.get(cwd)
+    },
+    'explorer-marks.set': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const record = payload as { marks?: unknown } | null
+      return { marks: await explorerMarks.set(cwd, record?.marks) }
+    },
+    'explorer-visibility.get': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      return explorerVisibility.get(cwd)
+    },
+    'explorer-visibility.snapshot': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      return explorerVisibility.snapshot(cwd)
+    },
+    'explorer-visibility.set': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      return explorerVisibility.set(cwd, payload)
+    },
+    'explorer-visibility.update': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      return explorerVisibility.update(cwd, payload)
     },
     'fs.tree': async (payload) => {
       const { cwd } = cwdOf(payload)
@@ -225,6 +448,18 @@ function buildApi(
       if (binary) return { kind: 'binary', size, truncated, head }
       return { kind: 'text', content, truncated }
     },
+    'fs.reveal': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      await revealPathInFileManager(cwd, path)
+      return { ok: true }
+    },
+    'fs.open': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      await openPathWithSystemApp(cwd, path)
+      return { ok: true }
+    },
     'fs.write': async (payload) => {
       const { cwd } = cwdOf(payload)
       const path = requireAbsolute(requireString(payload, 'path'))
@@ -239,6 +474,230 @@ function buildApi(
         throw new SidebarError('fs-error', `cannot write "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
       }
       return { ok: true }
+    },
+    'fs.mkdir': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const parent = requireAbsolute(requireString(payload, 'parent'))
+      if (!isWithin(workspace, parent)) {
+        throw new SidebarError('forbidden', 'folders can only be created inside the workspace', 403)
+      }
+      let parentInfo
+      try {
+        parentInfo = await lstat(parent)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot create a folder in "${parent}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      if (!parentInfo.isDirectory()) {
+        throw new SidebarError('bad-request', 'new folders require a directory parent')
+      }
+
+      // mkdir without `recursive` is the atomic collision guard. Parallel
+      // callers can never claim the same name, and existing entries are never
+      // overwritten. Match familiar IDE behavior with numbered fallbacks.
+      const base = '新文件夹'
+      for (let index = 1; index <= 10_000; index += 1) {
+        const name = index === 1 ? base : `${base} ${index}`
+        const target = requireAbsolute(join(parent, name))
+        if (!isWithin(workspace, target)) {
+          throw new SidebarError('forbidden', 'the new folder must stay inside the workspace', 403)
+        }
+        try {
+          await mkdir(target)
+          return { ok: true, path: target, name }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+          throw new SidebarError('fs-error', `cannot create "${target}": ${error instanceof Error ? error.message : String(error)}`, 400)
+        }
+      }
+      throw new SidebarError('fs-error', 'too many folders use the default name', 409)
+    },
+    'fs.create-markdown': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const parent = requireAbsolute(requireString(payload, 'parent'))
+      if (!isWithin(workspace, parent)) {
+        throw new SidebarError('forbidden', 'Markdown files can only be created inside the workspace', 403)
+      }
+      let parentInfo
+      try {
+        parentInfo = await lstat(parent)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot create a Markdown file in "${parent}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      if (!parentInfo.isDirectory()) {
+        throw new SidebarError('bad-request', 'new Markdown files require a directory parent')
+      }
+
+      // Exclusive creation is the collision guard: an existing file is never
+      // overwritten, and concurrent callers receive distinct numbered names.
+      const base = '新增MD文件'
+      for (let index = 1; index <= 10_000; index += 1) {
+        const stem = index === 1 ? base : `${base} ${index}`
+        const name = `${stem}.md`
+        const target = requireAbsolute(join(parent, name))
+        if (!isWithin(workspace, target)) {
+          throw new SidebarError('forbidden', 'the new Markdown file must stay inside the workspace', 403)
+        }
+        try {
+          await writeFile(target, '', { encoding: 'utf8', flag: 'wx' })
+          return { ok: true, path: target, name }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+          throw new SidebarError('fs-error', `cannot create "${target}": ${error instanceof Error ? error.message : String(error)}`, 400)
+        }
+      }
+      throw new SidebarError('fs-error', 'too many Markdown files use the default name', 409)
+    },
+    'fs.rename': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      const name = requireString(payload, 'name')
+      if (!isWithin(workspace, path) || path === workspace) {
+        throw new SidebarError('forbidden', 'only entries inside the workspace can be renamed', 403)
+      }
+      if (name === '.' || name === '..' || /[\\/\0]/.test(name) || /[\u0001-\u001f\u007f]/.test(name)) {
+        throw new SidebarError('bad-request', 'the new name contains invalid characters')
+      }
+
+      let sourceInfo
+      try {
+        sourceInfo = await lstat(path)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot rename "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+
+      // The client submits only the editable stem for a file. The host owns
+      // the invariant too: callers cannot bypass the UI and alter the suffix.
+      const suffix = sourceInfo.isDirectory() ? '' : extname(basename(path))
+      const targetName = `${name}${suffix}`
+      const target = requireAbsolute(join(dirname(path), targetName))
+      if (!isWithin(workspace, target)) {
+        throw new SidebarError('forbidden', 'the renamed entry must stay inside the workspace', 403)
+      }
+      if (target === path) return { ok: true, path: target, name: targetName }
+
+      // POSIX rename replaces an existing target. Explorer rename must never
+      // silently destroy one, while still allowing case-only renames on a
+      // case-insensitive volume (both spellings resolve to the same inode).
+      const existing = await lstat(target).catch(() => undefined)
+      if (existing !== undefined && (existing.dev !== sourceInfo.dev || existing.ino !== sourceInfo.ino)) {
+        throw new SidebarError('fs-error', `"${targetName}" already exists`, 409)
+      }
+      try {
+        await rename(path, target)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot rename "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      return { ok: true, path: target, name: targetName }
+    },
+    'fs.move': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      const destination = requireAbsolute(requireString(payload, 'destination'))
+      if (!isWithin(workspace, path) || path === workspace) {
+        throw new SidebarError('forbidden', 'only entries inside the workspace can be moved', 403)
+      }
+      if (!isWithin(workspace, destination)) {
+        throw new SidebarError('forbidden', 'entries can only be moved inside the workspace', 403)
+      }
+
+      let sourceInfo
+      let destinationInfo
+      try {
+        sourceInfo = await lstat(path)
+        destinationInfo = await lstat(destination)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot inspect move target: ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      // Explorer moves real files and directories only. A final-component
+      // symlink is neither; intermediate symlinks are rejected by the realpath
+      // boundary check below.
+      if (!sourceInfo.isFile() && !sourceInfo.isDirectory()) {
+        throw new SidebarError('bad-request', 'only regular files and folders can be moved')
+      }
+      if (!destinationInfo.isDirectory()) {
+        throw new SidebarError('bad-request', 'the move destination must be a folder')
+      }
+
+      let workspaceReal: string
+      let sourceReal: string
+      let destinationReal: string
+      try {
+        [workspaceReal, sourceReal, destinationReal] = await Promise.all([
+          realpath(workspace),
+          realpath(path),
+          realpath(destination),
+        ])
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot resolve move target: ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      if (!isWithin(workspaceReal, sourceReal) || !isWithin(workspaceReal, destinationReal)) {
+        throw new SidebarError('forbidden', 'move paths must resolve inside the workspace', 403)
+      }
+      if (sourceInfo.isDirectory() && isWithin(sourceReal, destinationReal)) {
+        throw new SidebarError('bad-request', 'a folder cannot be moved into itself or one of its descendants')
+      }
+
+      const target = requireAbsolute(join(destination, basename(path)))
+      const targetReal = join(destinationReal, basename(path))
+      if (!isWithin(workspace, target) || !isWithin(workspaceReal, targetReal)) {
+        throw new SidebarError('forbidden', 'the moved entry must stay inside the workspace', 403)
+      }
+      if (target === path) return { ok: true, path: target, name: basename(path) }
+
+      // Node's rename replaces an existing target on POSIX. Refuse every
+      // collision before moving so drag-and-drop can never overwrite data.
+      if (await lstat(target).catch(() => undefined) !== undefined) {
+        throw new SidebarError('fs-error', `"${basename(path)}" already exists in the destination folder`, 409)
+      }
+      try {
+        await rename(path, target)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot move "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      return { ok: true, path: target, name: basename(target) }
+    },
+    'fs.delete-preview': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      if (!isWithin(workspace, path) || path === workspace) {
+        throw new SidebarError('forbidden', 'only entries inside the workspace can be deleted', 403)
+      }
+      try {
+        const info = await lstat(path)
+        return {
+          path,
+          name: basename(path),
+          kind: info.isDirectory() ? 'folder' : 'file',
+          size: await entrySize(path),
+        }
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot inspect "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+    },
+    'fs.delete': async (payload) => {
+      const { cwd } = cwdOf(payload)
+      const workspace = requireAbsolute(cwd)
+      const path = requireAbsolute(requireString(payload, 'path'))
+      if (!isWithin(workspace, path) || path === workspace) {
+        throw new SidebarError('forbidden', 'only entries inside the workspace can be deleted', 403)
+      }
+      let info
+      try {
+        info = await lstat(path)
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot delete "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      try {
+        await rm(path, info.isDirectory() ? { recursive: true, force: false } : { force: false })
+      } catch (error) {
+        throw new SidebarError('fs-error', `cannot delete "${path}": ${error instanceof Error ? error.message : String(error)}`, 400)
+      }
+      return { ok: true, path }
     },
     'git.status': async (payload) => {
       const { cwd } = cwdOf(payload)
@@ -540,7 +999,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   // (see bundle-route.ts / src/client/chunk-loader.ts).
   ctx.effect(() => registerBundleRoute(ctx, fence), 'dsh-better-sidebar: /sidebar/bundle chunk route')
 
-  // ── Media route (images for the editor) ─────────────────────────────────
+  // ── Media route (images/documents + range-streamed video) ───────────────
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/sidebar/file',
@@ -550,7 +1009,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         res.end('forbidden')
         return
       }
-      if (req.method !== 'GET') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
         res.writeHead(405)
         res.end()
         return
@@ -561,29 +1020,78 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         const raw = url.searchParams.get('path')
         if (sessionId === null || raw === null) throw new SidebarError('bad-request', 'sessionId and path are required')
         const cwd = sessionCwdOf(ctx, sessionId, url.searchParams.get('cwd') ?? undefined)
-        const path = requireAbsolute(raw)
-        if (!isWithin(cwd, path)) {
-          // Only files under the session cwd are served as media (the editor
-          // opens images from the explorer; produced files go through read).
-          // isWithin (not a raw startsWith) so case-mismatched Windows paths
-          // and mixed separators cannot be misclassified.
-          throw new SidebarError('fs-error', 'media path outside the session working directory', 403)
-        }
-        const info = await stat(path)
-        if (!info.isFile() || info.size > resolved.mediaLimit) {
-          throw new SidebarError('fs-error', 'not a file or too large', 400)
-        }
+        // Lexical + realpath checks keep both direct traversal and symlink
+        // escapes outside the workspace from reaching Preview bytes.
+        const media = await resolveWorkspaceMediaPath(cwd, raw)
+        const path = media.path
         const type = mediaTypeForPath(path)
-        const body = await readFile(path)
+        const video = isVideoMediaPath(path)
+        const downloading = url.searchParams.get('download') === '1'
+        const limit = video ? resolved.videoLimit : resolved.mediaLimit
+        // Oversized videos remain explicitly downloadable because this route
+        // streams them; only inline preview is bounded by videoLimit.
+        if (media.size > limit && !(video && downloading)) throw new SidebarError('fs-error', 'file is too large', 413)
         // Raw bytes either way (binary-safe); ?download=1 switches the
         // disposition so the browser saves the file instead of showing it.
-        const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'no-cache' }
-        if (url.searchParams.get('download') === '1') {
+        // SVG is displayed through <img>, never as active same-origin XML.
+        // mediaSecurityHeaders adds a response sandbox for accidental direct
+        // navigation and blocks embedded script/plugin execution.
+        const headers = mediaSecurityHeaders(type)
+        if (downloading) {
           headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(basename(path))}`
         }
-        res.writeHead(200, headers)
-        res.end(body)
+        if (!video) {
+          headers['content-length'] = String(media.size)
+          res.writeHead(200, headers)
+          if (req.method === 'HEAD') {
+            res.end()
+            return
+          }
+          const body = await readFile(path)
+          res.end(body)
+          return
+        }
+
+        // Chromium's native media element uses single byte ranges for
+        // seeking. Multipart ranges are intentionally rejected: one request
+        // maps to one bounded file stream and never buffers the whole video.
+        headers['accept-ranges'] = 'bytes'
+        headers['cache-control'] = 'no-cache, no-transform'
+        const range = parseMediaRange(req.headers.range, media.size)
+        if (range.kind === 'invalid') {
+          headers['x-dsh-media-error'] = 'range'
+          headers['content-range'] = `bytes */${media.size}`
+          headers['content-length'] = '0'
+          res.writeHead(416, headers)
+          res.end()
+          return
+        }
+        const start = range.kind === 'partial' ? range.start : 0
+        const end = range.kind === 'partial' ? range.end : media.size - 1
+        headers['content-length'] = String(range.kind === 'partial' ? end - start + 1 : media.size)
+        if (range.kind === 'partial') headers['content-range'] = `bytes ${start}-${end}/${media.size}`
+        res.writeHead(range.kind === 'partial' ? 206 : 200, headers)
+        if (req.method === 'HEAD' || media.size === 0) {
+          res.end()
+          return
+        }
+        try {
+          await streamFileToResponse(req, res, path, { start, end })
+        } catch (error) {
+          // stat/realpath succeeded but opening or reading can still race a
+          // delete. Headers are already committed, so terminate the partial
+          // response instead of appending a JSON error to media bytes.
+          res.destroy(error instanceof Error ? error : new Error(String(error)))
+        }
       } catch (error) {
+        const marker = error instanceof SidebarError
+          ? error.status === 404 ? 'missing'
+            : error.status === 413 ? 'too-large'
+              : error.status === 403 ? 'forbidden'
+                : error.status >= 500 ? 'network'
+                  : 'unreadable'
+          : 'network'
+        res.setHeader('x-dsh-media-error', marker)
         writeError(res, error)
       }
     },

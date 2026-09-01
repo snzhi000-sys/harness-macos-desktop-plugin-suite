@@ -1,15 +1,9 @@
 /**
- * The built-in browser tab: an address bar plus a sandboxed iframe.
+ * The built-in browser tab: an address bar plus an unrestricted iframe.
  *
- * Security model (see browser.ts + the sandbox tokens below): the iframe is
- * ALWAYS sandboxed without `allow-same-origin` (opaque origin — the visited
- * page can never sit on the GUI's origin, read its storage, or reach
- * /sidebar/api) and without `allow-top-navigation` (a page must not hijack
- * the GUI). The address bar only accepts http(s) and refuses loopback /
- * the GUI's own origin. The side card setting "关闭浏览器沙箱" drops the
- * sandbox attribute entirely for fully trusted sites — the visited page then
- * runs with the GUI's own origin and full session access, so a persistent
- * warning bar renders while it is off.
+ * The Browser surface deliberately behaves like a normal embedded web view:
+ * it does not apply the HTML previewer's iframe sandbox. URL normalization
+ * still accepts only http(s) and refuses loopback / the GUI's own origin.
  *
  * The URL is persisted onto the tab (path/title via the patchTab reducer)
  * so a reload restores the visited page; the back/forward stack only tracks
@@ -22,26 +16,14 @@ import {
   IconChevronRightOutline14,
   IconLinkOutline14,
   IconRefreshOutline14,
-  IconRightUpOutline16,
   IconWarningOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api } from './api.ts'
 import { embeddabilityOf, normalizeBrowserUrl } from './browser.ts'
 import { patchTab } from './state.ts'
-import { SandboxStatusBar } from './SandboxStatusBar.tsx'
 import { t } from './locales.ts'
 import type { TabComponentProps } from './service.ts'
 import css from './sidebar.module.css'
-
-/**
- * The browser iframe sandbox tokens. NO allow-same-origin (opaque origin —
- * no GUI storage/API access), NO allow-top-navigation (a browsed page must
- * not hijack the GUI). allow-forms/allow-popups/allow-downloads/allow-modals
- * keep login flows working; allow-popups-to-escape-sandbox lets OAuth
- * popups open as normal tabs (they are cross-origin to the GUI either way).
- */
-export const BROWSER_IFRAME_SANDBOX =
-  'allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-popups-to-escape-sandbox'
 
 export function BrowserView(props: TabComponentProps) {
   const { store, tab } = props
@@ -54,12 +36,8 @@ export function BrowserView(props: TabComponentProps) {
   /** Address-bar navigation history (in-frame clicks are not tracked). */
   const [history, setHistory] = useState<string[]>(tab.path !== undefined ? [tab.path] : [])
   const [cursor, setCursor] = useState<number>(tab.path !== undefined ? 0 : -1)
-  /** Bumped on reload to remount the iframe (also remounts on sandbox flip). */
+  /** Bumped on reload to remount the iframe. */
   const [reloadKey, setReloadKey] = useState(0)
-  /** TEMPORARY sandbox unlock for THIS surface only (never writes the global
-   *  side card setting; lasts until the tab unmounts or the user restores). */
-  const [localUnlock, setLocalUnlock] = useState(false)
-  const noSandbox = store.getPrefs().browserNoSandbox === true || localUnlock
   /** A site that refuses to be embedded (X-Frame-Options / frame-ancestors):
    *  the probe verdict shown instead of the blank iframe. */
   const [embedBlocked, setEmbedBlocked] = useState<string | null>(null)
@@ -176,41 +154,20 @@ export function BrowserView(props: TabComponentProps) {
         >
           <IconLinkOutline14 />
         </button>
-        <button
-          type="button"
-          className={css.iconButton}
-          aria-label={t('browserOpenExternal')}
-          title={t('browserOpenExternal')}
-          disabled={url === undefined}
-          onClick={() => {
-            if (url !== undefined) window.open(url, '_blank', 'noopener')
-          }}
-        >
-          <IconRightUpOutline16 size={15} />
-        </button>
       </div>
       {message !== null && <div className={css.browserMessage}>{message}</div>}
-      <SandboxStatusBar
-        sandboxed={!noSandbox}
-        local={localUnlock}
-        dangerCopy={t('browserNoSandboxWarning')}
-        onUnlock={() => { setLocalUnlock(true) }}
-        onRestore={() => { setLocalUnlock(false) }}
-      />
       {url === undefined ? (
         <div className={css.browserStart}>{t('browserStart')}</div>
       ) : embedBlocked !== null && !forceEmbed ? (
         <BrowserEmbedBlocked
           url={embedBlocked}
-          onOpenInBrowser={() => { window.open(embedBlocked, '_blank', 'noopener') }}
           onLoadAnyway={() => { setForceEmbed(true) }}
         />
       ) : (
         <iframe
-          key={`${reloadKey}:${noSandbox ? 'ns' : 'sb'}`}
+          key={reloadKey}
           className={css.browserFrame}
           src={url}
-          sandbox={noSandbox ? undefined : BROWSER_IFRAME_SANDBOX}
           referrerPolicy="no-referrer"
           allow=""
           title={url}
@@ -229,10 +186,9 @@ export function BrowserView(props: TabComponentProps) {
  */
 export function BrowserEmbedBlocked(props: {
   url: string
-  onOpenInBrowser: () => void
   onLoadAnyway: () => void
 }) {
-  const { url, onOpenInBrowser, onLoadAnyway } = props
+  const { url, onLoadAnyway } = props
   let host = url
   try { host = new URL(url).hostname } catch { /* keep the raw URL */ }
   return (
@@ -241,9 +197,6 @@ export function BrowserEmbedBlocked(props: {
       <div className={css.browserBlockedTitle}>{t('browserEmbedBlocked', { host })}</div>
       <div className={css.browserBlockedDesc}>{t('browserEmbedBlockedDesc')}</div>
       <div className={css.browserBlockedActions}>
-        <button type="button" className={css.browserBlockedButton} onClick={onOpenInBrowser}>
-          {t('browserOpenExternal')}
-        </button>
         <button type="button" className={css.browserBlockedButton} onClick={onLoadAnyway}>
           {t('browserEmbedAnyway')}
         </button>

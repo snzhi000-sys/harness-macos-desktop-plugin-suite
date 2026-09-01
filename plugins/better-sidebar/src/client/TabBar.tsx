@@ -5,7 +5,7 @@
  * terminal). Tabs are draggable; dropping onto another tab inserts before it,
  * dropping on the strip background appends to this pane.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
   IconCloseFill14, IconPlusOutline16, Menu,
@@ -45,6 +45,11 @@ export function parseDrag(raw: string): TabDragPayload | null {
   }
 }
 
+/** Tooltip copy keeps Preview labels compact while exposing their full path. */
+export function tabTooltip(tab: SidebarTab): string {
+  return tab.type === 'preview' && tab.path !== undefined ? tab.path : tab.title
+}
+
 /** Global tab-drag flag: PDF iframes become non-interactive synchronously. */
 function setTabDragging(active: boolean): void {
   if (active) document.body.setAttribute('data-dsh-tab-dragging', '')
@@ -69,6 +74,16 @@ export function TabBar(props: {
   } = props
   const [menuOpen, setMenuOpen] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const tabElements = useRef(new Map<string, HTMLDivElement>())
+  const directOption = newTabOptions.length === 1 ? newTabOptions[0] : undefined
+
+  // A deduplicated Preview can activate a tab that is outside the visible
+  // portion of a long strip. Keep the active label in view without moving
+  // the rest of the workbench or disturbing the user's tab order.
+  useEffect(() => {
+    if (active === null) return
+    tabElements.current.get(active)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }, [active])
 
   useEffect(() => {
     const clear = (): void => { setTabDragging(false); setDragOver(false) }
@@ -108,8 +123,12 @@ export function TabBar(props: {
         {tabs.map(tab => (
           <div
             key={tab.id}
+            ref={(element) => {
+              if (element === null) tabElements.current.delete(tab.id)
+              else tabElements.current.set(tab.id, element)
+            }}
             className={clsx(css.tab, active === tab.id && css.tabActive)}
-            title={tab.title}
+            title={tabTooltip(tab)}
             draggable
             onDragStart={(event) => {
               setTabDragging(true)
@@ -150,11 +169,25 @@ export function TabBar(props: {
             </button>
           </div>
         ))}
-        {/*
-          The + sits immediately after the rightmost tab (sticky at the
-          right edge of the scrollport when the tabs overflow, so it stays
-          reachable no matter how many tabs are open).
-        */}
+      </div>
+      {/*
+        Keep + OUTSIDE the horizontally scrolling tab list so it stays
+        reachable with any number of tabs. A workbench exposing exactly one
+        kind (the Browser/Preview right rail) opens it directly; multiple kinds
+        retain the chooser menu.
+      */}
+      {directOption !== undefined ? (
+        <button
+          type="button"
+          className={css.tabBarPlus}
+          aria-label={t('newTab')}
+          title={t('newTab')}
+          disabled={directOption.disabled === true}
+          onClick={() => { onNewTab(directOption.id) }}
+        >
+          <IconPlusOutline16 />
+        </button>
+      ) : (
         <Menu
           open={menuOpen}
           onClose={() => { setMenuOpen(false) }}
@@ -182,7 +215,7 @@ export function TabBar(props: {
             </button>
           )}
         />
-      </div>
+      )}
     </div>
   )
 }

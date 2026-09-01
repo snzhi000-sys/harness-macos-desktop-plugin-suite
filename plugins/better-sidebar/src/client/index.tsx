@@ -12,6 +12,7 @@ import { Component, createElement, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { Context } from '../context-types.ts'
 import { createSidebarStore } from './state.ts'
+import { startupTaskLane } from './startup-tasks.ts'
 import { createBetterSidebarService } from './service.ts'
 import { resetChunks } from './chunk-loader.ts'
 import { registerBuiltins } from './builtins/index.ts'
@@ -19,6 +20,7 @@ import { Sidebar } from './Sidebar.tsx'
 import { registerOpenPathInterception, registerTurnTailInterception } from './intercept.tsx'
 import { registerLinkInterception } from './link-intercept.ts'
 import { registerImeGuard } from './ime-guard.ts'
+import { registerWindowChrome } from './window-chrome.ts'
 import { loadPrefs } from './prefs.ts'
 import { SideCardSection } from './SideCardSection.tsx'
 import { api } from './api.ts'
@@ -85,7 +87,10 @@ export function apply(ctx: Context): void {
   // then hands it to the mounted panel and closes over it in the slot
   // registrations (the official createXXXStore() factory rule — no
   // module-level singleton).
-  const sidebarStore = createSidebarStore()
+  const sidebarStore = createSidebarStore({
+    load: async sessionId => (await api.layoutGet(sessionId)).state,
+    save: async (sessionId, state) => { await api.layoutSet(sessionId, state) },
+  }, startupTaskLane(ctx))
   // The sidebar registry service: external plugins register tab types and
   // file previewers through `ctx.betterSidebar.registerTab/registerFileViewer`.
   // Published before the panel mounts so consumers injecting 'betterSidebar'
@@ -116,6 +121,11 @@ export function apply(ctx: Context): void {
     }
   }
   try {
+    ctx.effect(
+      () => registerWindowChrome(),
+      'dsh-better-sidebar: window chrome',
+    )
+
     // Fresh chunk state for this activation: invalidate any chunk factories
     // registered by a previous fiber (HMR) and drop the in-memory load cache
     // so the next lazy open re-fetches the current chunk scripts.

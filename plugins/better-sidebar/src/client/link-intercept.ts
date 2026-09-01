@@ -7,7 +7,7 @@
  * user can still force a real browser tab.
  *
  * Only the GUI's OWN document is watched — links inside the browser tab's
- * sandboxed iframe live in another document and never bubble here (and
+ * iframe live in another document and never bubble here (and
  * their clicks must keep working inside the sidebar).
  */
 

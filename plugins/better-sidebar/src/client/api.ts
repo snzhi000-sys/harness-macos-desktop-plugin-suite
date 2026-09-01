@@ -27,6 +27,36 @@ export interface FsEntry {
   hidden: boolean
 }
 
+/** Safe delete metadata shown before the destructive operation. */
+export interface FsDeletePreview {
+  path: string
+  name: string
+  kind: 'file' | 'folder'
+  size: number
+}
+
+export interface ExplorerMarkWire {
+  path: string
+  emoji: '🍿' | '🍔' | '🍟' | '🍄' | '🚗' | '🍎'
+  isDir: boolean
+}
+
+export interface ExplorerUncommonPathWire {
+  path: string
+  isDir: boolean
+}
+
+export interface ExplorerVisibilityWire {
+  paths: ExplorerUncommonPathWire[]
+  hideUncommon: boolean
+}
+
+export type ExplorerVisibilityMutationWire =
+  | { kind: 'set-hidden'; hidden: boolean }
+  | { kind: 'toggle-path'; path: string; isDir: boolean }
+  | { kind: 'rename-path'; from: string; to: string }
+  | { kind: 'delete-path'; path: string }
+
 /** Git status entry (host git shape). */
 export interface GitStatusEntry {
   path: string
@@ -112,14 +142,52 @@ function scopePayload(scope: SessionScope, extra: Record<string, unknown>): Reco
 
 /** The sidebar API surface (session scope threaded through every call). */
 export const api = {
+  layoutGet: (sessionId: string, signal?: AbortSignal) =>
+    call<{ state?: unknown }>('layout.get', { sessionId }, signal),
+  layoutSet: (sessionId: string, state: unknown) =>
+    call<{ ok: true }>('layout.set', { sessionId, state }),
   sessionCwd: (scope: SessionScope, signal?: AbortSignal) =>
     call<{ sessionId: string; cwd: string; root: string; parent: string | null }>('session.cwd', scopePayload(scope, {}), signal),
+  explorerMarksGet: (scope: SessionScope, signal?: AbortSignal) =>
+    call<{ marks: ExplorerMarkWire[]; initialized: boolean }>('explorer-marks.get', scopePayload(scope, {}), signal),
+  explorerMarksSet: (scope: SessionScope, marks: readonly ExplorerMarkWire[]) =>
+    call<{ marks: ExplorerMarkWire[] }>('explorer-marks.set', scopePayload(scope, { marks })),
+  explorerVisibilityGet: (scope: SessionScope, signal?: AbortSignal) =>
+    call<ExplorerVisibilityWire>('explorer-visibility.get', scopePayload(scope, {}), signal),
+  explorerVisibilitySnapshot: (scope: SessionScope, signal?: AbortSignal) =>
+    call<ExplorerVisibilityWire>('explorer-visibility.snapshot', scopePayload(scope, {}), signal),
+  explorerVisibilityUpdate: (scope: SessionScope, mutation: ExplorerVisibilityMutationWire) =>
+    call<ExplorerVisibilityWire>('explorer-visibility.update', scopePayload(scope, mutation)),
   fsTree: (scope: SessionScope, path: string, signal?: AbortSignal) =>
     call<{ path: string; entries: FsEntry[]; truncated: boolean }>('fs.tree', scopePayload(scope, { path }), signal),
   fsRead: (scope: SessionScope, path: string, signal?: AbortSignal) =>
     call<FsTextResult | FsBinaryResult>('fs.read', scopePayload(scope, { path }), signal),
+  /** Reveal one existing workspace file or folder in the system file manager. */
+  fsReveal: (scope: SessionScope, path: string) =>
+    call<{ ok: true }>('fs.reveal', scopePayload(scope, { path })),
+  /** Open one existing workspace file with the operating system's default app. */
+  fsOpen: (scope: SessionScope, path: string) =>
+    call<{ ok: true }>('fs.open', scopePayload(scope, { path })),
   fsWrite: (scope: SessionScope, path: string, content: string) =>
     call<{ ok: true }>('fs.write', scopePayload(scope, { path, content })),
+  /** Create a uniquely named child folder ("新文件夹", then numbered variants). */
+  fsMkdir: (scope: SessionScope, parent: string) =>
+    call<{ ok: true; path: string; name: string }>('fs.mkdir', scopePayload(scope, { parent })),
+  /** Create an empty, uniquely named Markdown child file. */
+  fsCreateMarkdown: (scope: SessionScope, parent: string) =>
+    call<{ ok: true; path: string; name: string }>('fs.create-markdown', scopePayload(scope, { parent })),
+  /** Rename one Explorer entry. Files submit only the editable stem; the host preserves their suffix. */
+  fsRename: (scope: SessionScope, path: string, name: string) =>
+    call<{ ok: true; path: string; name: string }>('fs.rename', scopePayload(scope, { path, name })),
+  /** Move one regular file or folder into another workspace folder without overwriting. */
+  fsMove: (scope: SessionScope, path: string, destination: string) =>
+    call<{ ok: true; path: string; name: string }>('fs.move', scopePayload(scope, { path, destination })),
+  /** Inspect one entry before showing the native confirmation modal. */
+  fsDeletePreview: (scope: SessionScope, path: string) =>
+    call<FsDeletePreview>('fs.delete-preview', scopePayload(scope, { path })),
+  /** Permanently remove one non-root entry after explicit confirmation. */
+  fsDelete: (scope: SessionScope, path: string) =>
+    call<{ ok: true; path: string }>('fs.delete', scopePayload(scope, { path })),
   gitStatus: (scope: SessionScope, signal?: AbortSignal) =>
     call<GitStatusResult>('git.status', scopePayload(scope, {}), signal),
   gitDiff: (scope: SessionScope, path: string | undefined, staged: boolean, signal?: AbortSignal) =>
@@ -188,7 +256,7 @@ export const api = {
     call<BrowserProbeResult>('browser.probe', { url }, signal),
 }
 
-/** Absolute URL of the media route for one path (images only). */
+/** Absolute URL of the media route for one image/document/video path. */
 export function mediaUrl(scope: SessionScope, path: string): string {
   return fileUrl(scope, path, false)
 }

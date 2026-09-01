@@ -543,6 +543,50 @@ describe('service.openTab auto-expand for content opens', () => {
     expect(store.getSnapshot().state!.panelOpen).toBe(true)
   })
 
+  it('routes browser opens to the right tree even when the bottom pane was focused', () => {
+    const store = createSidebarStore()
+    const service = createBetterSidebarService(store)
+    service.registerTab({ id: 'browser', title: 'Browser', component: () => null })
+    store.setSession('s1')
+    store.reduce(s => ({
+      ...s,
+      activePane: (s.bottomSplits as { id: string }).id,
+      panelOpen: false,
+      bottomOpen: true,
+    }))
+    service.openTab({ type: 'browser', url: 'https://example.com', title: 'example.com' })
+    const state = store.getSnapshot().state!
+    expect(allLeaves(state.splits).flatMap(leaf => leaf.tabs).some(tab => tab.type === 'browser')).toBe(true)
+    expect(allLeaves(state.bottomSplits).flatMap(leaf => leaf.tabs).some(tab => tab.type === 'browser')).toBe(false)
+    expect(state.panelOpen).toBe(true)
+  })
+
+  it('routes Preview opens to the right tree and expands it even when the bottom pane was focused', () => {
+    const store = createSidebarStore()
+    const service = createBetterSidebarService(store)
+    service.registerTab({ id: 'preview', title: 'Preview', component: () => null })
+    store.setSession('s1')
+    store.reduce(s => ({
+      ...s,
+      activePane: (s.bottomSplits as { id: string }).id,
+      panelOpen: false,
+      bottomOpen: true,
+    }))
+    service.openTab({
+      type: 'preview',
+      id: 'preview:/work/a.png',
+      title: 'a.png',
+      path: '/work/a.png',
+      viewerId: 'image',
+    })
+    const state = store.getSnapshot().state!
+    expect(allLeaves(state.splits).flatMap(leaf => leaf.tabs)).toContainEqual(expect.objectContaining({
+      type: 'preview', path: '/work/a.png', viewerId: 'image',
+    }))
+    expect(allLeaves(state.bottomSplits).flatMap(leaf => leaf.tabs).some(tab => tab.type === 'preview')).toBe(false)
+    expect(state.panelOpen).toBe(true)
+  })
+
   it('a wide-viewport path open landing in the bottom tree expands the bottom panel instead', () => {
     const store = createSidebarStore()
     const service = createBetterSidebarService(store)

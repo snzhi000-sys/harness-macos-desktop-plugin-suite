@@ -20,6 +20,17 @@ export const IconPanelRightOutline16 = ({ size = 16, className }: IconProps) => 
 )
 
 /**
+ * Left-panel toggle glyph (the explorer dock button): a frame with a filled
+ * strip along its LEFT edge, in the app's outline style.
+ */
+export const IconPanelLeftOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2" width="13" height="12" rx="2.5" stroke="currentColor" strokeWidth="1.5" />
+    <rect x="2.75" y="3.25" width="2.75" height="9.5" rx="1" fill="currentColor" stroke="none" />
+  </svg>
+)
+
+/**
  * Bottom-panel toggle glyph (the "底栏" button): a frame with a filled strip
  * along its BOTTOM edge, in the app's outline style.
  */
@@ -61,6 +72,22 @@ export const IconStopOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
+/** Rename/edit glyph: a diagonal pencil in the same 1.5px rounded outline style. */
+export const IconEditOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="m3 11.75-.5 2 2-.5 7.9-7.9a1.45 1.45 0 0 0 0-2.05l-.7-.7a1.45 1.45 0 0 0-2.05 0z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m8.65 3.6 3.75 3.75M2.5 13.75h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+/** Visibility glyph used by Explorer's uncommon-path marker and toolbar toggle. */
+export const IconEyeOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M1.5 8s2.35-4 6.5-4 6.5 4 6.5 4-2.35 4-6.5 4-6.5-4-6.5-4Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+)
+
 // ── File-viewer inventory glyphs (Side card settings page) ────────────────
 
 /** Image viewer glyph: a picture frame with a sun and a mountain. */
@@ -69,6 +96,14 @@ export const IconImageOutline16 = ({ size = 16, className }: IconProps) => (
     <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" strokeWidth="1.5" />
     <circle cx="5.5" cy="6" r="1.2" stroke="currentColor" strokeWidth="1.5" />
     <path d="m3.5 12 3-3 2.25 2.25L11.5 8.5 13 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+/** Video viewer glyph: a display frame with the familiar play triangle. */
+export const IconVideoOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" strokeWidth="1.5" />
+    <path d="m6.5 5.25 4.25 2.75-4.25 2.75z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
   </svg>
 )
 

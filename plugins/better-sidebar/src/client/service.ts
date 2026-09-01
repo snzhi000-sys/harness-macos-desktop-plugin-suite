@@ -22,9 +22,10 @@
 import type { ReactNode } from 'react'
 import type { Context } from '../context-types.ts'
 import {
-  activateTab, allLeaves, closeTab as closeTabReducer, openTabInActivePane, patchTab, togglePanel, treeOf,
+  activateTab, allLeaves, firstLeaf, openTabInActivePane, patchTab, togglePanel, treeOf,
   type SidebarState, type SidebarStore, type SidebarTab,
 } from './state.ts'
+import { closeTabAndMaybeCollapseRightSurface } from './browser-panel.ts'
 import { isNarrowWidth } from './breakpoints.ts'
 import type { SessionScope } from './api.ts'
 
@@ -62,7 +63,7 @@ export interface TabComponentProps {
   /** The explorer's expanded directory set (ExplorerView). */
   expanded?: string[]
   onToggleDir?: (path: string) => void
-  onReferenceFile?: (path: string) => void
+  onReferenceFile?: (path: string, isDir?: boolean) => void
   onOpenFile?: (path: string) => void
   onOpenDiff?: (tab: SidebarTab) => void
   onSubagentJump?: (childSessionId: string) => void
@@ -117,7 +118,7 @@ export interface TabDescriptor {
 
 /** How the host loads a file's bytes for one viewer. */
 export type FileFetchStrategy =
-  | 'none'               // no bytes needed (image/pdf/office fetch through mediaUrl themselves)
+  | 'none'               // no bytes needed (media/document viewers may build or fetch their own URL)
   | 'fsRead'             // text read through /sidebar/api fs.read
   | 'mediaUrl'           // the viewer gets a media URL string
   | 'custom'             // the viewer's load() fetches its own bytes
@@ -132,6 +133,8 @@ export interface FileViewerProps {
   title: string
   /** The matching descriptor's id (`'code'`, `'my-plugin:csv'`). */
   viewerId: string
+  /** Whether the owning tab is active and its panel is expanded. */
+  visible: boolean
   /** fsRead text content (fetchStrategy='fsRead'). */
   content?: string
   truncated?: boolean
@@ -207,7 +210,7 @@ export interface BetterSidebarService {
    * Type-only opens (the + menu, agent-terminal auto-tabs) never expand —
    * the panel behavior is their caller's business.
    */
-  openTab(seed: { type: string; title?: string; path?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void
+  openTab(seed: { type: string; title?: string; path?: string; viewerId?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void
   /** Close a tab by id. */
   closeTab(tabId: string): void
   /** Subscribe to registry changes (register/dispose). */
@@ -308,7 +311,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     return undefined
   }
 
-  const openTab = (seed: { type: string; title?: string; path?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void => {
+  const openTab = (seed: { type: string; title?: string; path?: string; viewerId?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void => {
     // A type the user disabled in settings never opens — neither from the
     // + menu nor from derived flows (file opens, subagent auto-open,
     // external plugins). Already-open tabs keep rendering.
@@ -316,7 +319,12 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
       console.warn(`[dsh-better-sidebar] tab type "${seed.type}" is disabled in the side card settings`)
       return
     }
-    store.reduce((state) => {
+    store.reduce((currentState) => {
+      // Browser and Preview own the product's right content rail. Their opens
+      // always target that tree even when the bottom workbench was focused.
+      const state = seed.type === 'browser' || seed.type === 'preview'
+        ? { ...currentState, activePane: firstLeaf(currentState.splits).id }
+        : currentState
       const descriptor = tabs.get(seed.type)
       if (descriptor === undefined) return state
       // Let the descriptor mint the tab (terminal's nextTerminal bump, etc.).
@@ -336,6 +344,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
           // otherwise the descriptor's (possibly i18n) title is the default.
           title: seed.title ?? (typeof descriptor.title === 'function' ? descriptor.title() : descriptor.title),
           ...(seed.path !== undefined ? { path: seed.path } : {}),
+          ...(seed.viewerId !== undefined ? { viewerId: seed.viewerId } : {}),
           ...(seed.diff !== undefined ? { diff: seed.diff } : {}),
         }
         next = applyDedupe(state, tab, descriptor)
@@ -385,7 +394,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     store.reduce((state) => {
       const paneId = findPaneIdOf(state, tabId)
       if (paneId === '') return state
-      return closeTabReducer(state, paneId, tabId)
+      return closeTabAndMaybeCollapseRightSurface(state, paneId, tabId)
     })
   }
 

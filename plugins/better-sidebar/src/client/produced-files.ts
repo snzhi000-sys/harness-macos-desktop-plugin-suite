@@ -63,6 +63,25 @@ export function producedForClosing(nodes: readonly unknown[], seq: number): read
   return []
 }
 
+/** Read the current Harness deliverables vocabulary published on Turn.data. */
+export function producedFromTurnData(data: unknown, seq: number): readonly string[] {
+  if (data === null || typeof data !== 'object') return []
+  const produced = (data as { produced?: unknown }).produced
+  if (!Array.isArray(produced)) return []
+  const paths: string[] = []
+  const seen = new Set<string>()
+  for (const item of produced) {
+    if (item === null || typeof item !== 'object') continue
+    const record = item as { path?: unknown; seq?: unknown }
+    if (typeof record.path !== 'string') continue
+    if (typeof record.seq === 'number' && record.seq > seq) continue
+    if (seen.has(record.path)) continue
+    seen.add(record.path)
+    paths.push(record.path)
+  }
+  return paths
+}
+
 /**
  * Claim the turn-tail chain only when the closing turn produced files.
  * @param owner - the turn-tail owner currency ({nodes, seq}).
@@ -71,8 +90,16 @@ export function producedForClosing(nodes: readonly unknown[], seq: number): read
 export function selectProducedFiles(owner: unknown): readonly string[] | null {
   const record = owner as { nodes?: unknown; seq?: unknown } | null
   if (record === null || typeof record !== 'object') return null
-  if (!Array.isArray(record.nodes) || typeof record.seq !== 'number') return null
-  const paths = producedForClosing(record.nodes, record.seq)
+  if (typeof record.seq !== 'number') return null
+  // Current Harness publishes immutable deliverables on the closing Turn.
+  // Keep the legacy node walk for rolling desktop/plugin updates.
+  const modern = record as unknown as { turn?: { data?: { get?: (key: string) => unknown } } }
+  let paths: readonly string[] = []
+  try {
+    const get = modern.turn?.data?.get
+    if (typeof get === 'function') paths = producedFromTurnData(get.call(modern.turn?.data, 'deliverables'), record.seq)
+  } catch {}
+  if (paths.length === 0 && Array.isArray(record.nodes)) paths = producedForClosing(record.nodes, record.seq)
   return paths.length === 0 ? null : paths
 }
 

@@ -43,9 +43,9 @@ export interface SidebarPrefs {
   /**
    * Whether chat-side file opens (tool-row path links, the produced-files
    * row, prose file mentions — every path that funnels through the client
-   * runtime's `ctx.workspaces.openPath`) open in the sidebar editor instead
-   * of the Host OS's default application. On by default; the editor tab's
-   * own enable switch gates it too (both must be on for the takeover).
+   * runtime's `ctx.workspaces.openPath`) use the unified Preview/file-edit/
+   * fallback router. On by default; disabling it restores the untouched
+   * Host OS open behavior.
    */
   interceptOpenPath: boolean
   /**
@@ -64,14 +64,6 @@ export interface SidebarPrefs {
    * restore for the current file.
    */
   htmlViewerDefaultUnsafe: boolean
-  /**
-   * Whether the browser tab drops its sandboxed iframe. Sandbox ON (the
-   * default) keeps browsed sites in an opaque origin with no GUI access;
-   * turning it OFF runs any visited site with the GUI's own origin — it
-   * can read session data and act as the logged-in GUI. Only for trusted
-   * sites; the setting copy warns.
-   */
-  browserNoSandbox: boolean
   /**
    * Whether clicking an http(s) EXTERNAL link in the GUI (chat messages,
    * tool rows, prose mentions) opens the sidebar browser instead of a new
@@ -115,7 +107,6 @@ export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
   interceptOpenPath: true,
   htmlViewerNoSandbox: false,
   htmlViewerDefaultUnsafe: false,
-  browserNoSandbox: false,
   browserInterceptLinks: true,
   tabsEnabled: {},
   viewersEnabled: {},

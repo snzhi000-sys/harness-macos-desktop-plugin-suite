@@ -30,14 +30,17 @@ import { useSyncExternalStore } from 'react'
 import clsx from 'clsx'
 import { IconCloseFill14, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context, SidebarSessionList } from '../context-types.ts'
-import { appendToDraft } from './conversation-draft.ts'
+import { insertInlineFileReference } from './conversation-draft.ts'
 import {
-  BOTTOM_MIN, PANEL_MIN, agentUuidOf, closeTab, firstLeaf, isAgentTabId, leafWithTab, mapLeaf, migrateBottomTabs, moveTab, moveTabToEdge, openDiffTab,
-  reconcileAgentTerminals,
-  resizeSplitIn, setBottomHeight, setWidth, toggleBottomPanel, toggleExpanded, togglePanel,
+  BOTTOM_MIN, LEFT_MAX, LEFT_MIN, PANEL_MIN, agentUuidOf, allLeaves, collapseAllFoldersInState, firstLeaf, isAgentTabId, leafWithTab, mapLeaf, migrateBottomTabs, moveTab, moveTabToEdge, openDiffTab,
+  reconcileAgentTerminals, revealPathInState,
+  resizeSplitIn, setBottomHeight, setLeftWidth, setWidth, toggleBottomPanel, toggleExpanded, toggleLeftPanel, togglePanel,
   type DropZone, type SidebarState, type SidebarStore, type SidebarTab, type SplitNode,
 } from './state.ts'
-import { IconPanelBottomOutline16, IconPanelRightOutline16 } from './icons.tsx'
+import { IconGlobeOutline16, IconPanelBottomOutline16, IconPanelLeftOutline16, IconPanelRightOutline16 } from './icons.tsx'
+import { ExplorerView } from './ExplorerView.tsx'
+import { startupTaskLane } from './startup-tasks.ts'
+import { openHtmlInBrowser, openSidebarFile, synchronizeDeletedPath, synchronizeRenamedPath } from './intercept.tsx'
 import { Workbench, type WorkbenchActions } from './split-pane.tsx'
 import { useNarrowViewport } from './breakpoints.ts'
 import type { NewTabOption } from './TabBar.tsx'
@@ -48,11 +51,16 @@ import { detectNewDirectSubagent } from './subagent-detect.ts'
 import { detectNewJob } from './subagent-jobs.ts'
 import { t } from './locales.ts'
 import { api, type SessionScope } from './api.ts'
+import { closeTabAndMaybeCollapseRightSurface, rightSurfaceTree } from './browser-panel.ts'
+import { previewTabIcon } from './preview.tsx'
 import css from './sidebar.module.css'
 
 /** How many consecutive reconnect failures stop the agent-terminals push loop
  * (mirror of the terminal view's own cap; the loop restarts on session switch). */
 const FAILURE_LIMIT = 3
+
+/** Product configuration: the right rail hosts Browser and read-only Preview. */
+const RIGHT_PANEL_ENABLED = true
 
 /** Render the content of one tab (dispatched by type). */
 function TabContent(props: {
@@ -61,7 +69,7 @@ function TabContent(props: {
   cwd: string | undefined
   expanded: string[]
   onToggleDir: (path: string) => void
-  onReferenceFile: (path: string) => void
+  onReferenceFile: (path: string, isDir?: boolean) => void
   ctx: Context
   store: SidebarStore
   /** Whether this tab is the active one AND the panel is open (live views pause otherwise). */
@@ -141,18 +149,9 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   const state = snapshot.state
   const sessionId = snapshot.sessionId
   const summaryCwd = sessionId === undefined ? undefined : sessionList.byId[sessionId]?.cwd
-
-  // The collapsed toggle cluster reclaims the top-right corner, so the DSH
-  // session header's right-aligned utilities (the "Session log" download
-  // capsule) must yield. layout.css keys off this body attribute to push the
-  // header's right padding out past the cluster. Only the CLOSED panel needs
-  // it — an open panel already squeezes `#root` left, moving the header clear.
-  const collapsed = state === undefined || !state.panelOpen
-  useEffect(() => {
-    if (collapsed) document.body.setAttribute('data-dsh-sidebar-collapsed', '')
-    else document.body.removeAttribute('data-dsh-sidebar-collapsed')
-    return () => { document.body.removeAttribute('data-dsh-sidebar-collapsed') }
-  }, [collapsed])
+  const browserEnabled = ctx.betterSidebar?.isTabEnabled('browser') !== false
+  const previewEnabled = ctx.betterSidebar?.isTabEnabled('preview') !== false
+  const rightPanelEnabled = RIGHT_PANEL_ENABLED && (browserEnabled || previewEnabled)
 
   /**
    * Bottom-panel merge on narrow viewports: whenever a session is current
@@ -250,6 +249,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
    */
   const listBaselineRef = useRef<SidebarSessionList | undefined>(undefined)
   useEffect(() => {
+    if (!rightPanelEnabled) return
     const prev = listBaselineRef.current
     listBaselineRef.current = sessionList
     if (sessionId === undefined || prev === undefined) return
@@ -275,6 +275,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
    */
   const jobBaselineRef = useRef<SidebarSessionList | undefined>(undefined)
   useEffect(() => {
+    if (!rightPanelEnabled) return
     const prev = jobBaselineRef.current
     jobBaselineRef.current = sessionList
     if (sessionId === undefined || prev === undefined) return
@@ -299,6 +300,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
    */
   const subagentJumpRef = useRef<string | undefined>(undefined)
   useEffect(() => {
+    if (!rightPanelEnabled) return
     const pending = subagentJumpRef.current
     if (pending === undefined || sessionId !== pending) return
     subagentJumpRef.current = undefined
@@ -318,12 +320,22 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   // right panel opens/closes; a frame that never appears keeps the initial
   // zero-size fallback (the panel renders at 0 width until measured).
   const [centerRect, setCenterRect] = useState({ left: 0, right: 0 })
+  // Stable anchor for the LEFT panel: the app's session-list column's right
+  // edge. Unlike centerRect.left (which shifts right by the left panel's own
+  // margin-left push while it opens/closes), the session list never moves —
+  // so the left panel sits at this value and slides purely via transform,
+  // decoupled from the center column's push animation. Observed DIRECTLY (not
+  // derived from the center column) so the left panel hugs the native sidebar
+  // with no gap even as the sidebar itself resizes. `null` = not measured yet
+  // (the panel stays unrendered until the first measure, avoiding a flash).
+  const [sessionListRight, setSessionListRight] = useState<number | null>(null)
   // Refs keep the measure step stable across renders and let it skip work
   // mid-drag: during a width/corner drag the layout push resizes the center
   // column every frame, and reacting (setCenterRect → re-render) would
   // re-introduce the drag lag this shell deliberately avoids. applyDrag
   // writes the bottom panel's edges directly, so measurement pauses then.
   const centerColRef = useRef<HTMLElement | null>(null)
+  const sessionListRef = useRef<HTMLElement | null>(null)
   const draggingRef = useRef(false)
   const measureCenter = useCallback((): void => {
     if (draggingRef.current) return
@@ -338,9 +350,17 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         ? prev
         : { left: rect.left, right: rect.right })
   }, [])
+  const measureSessionList = useCallback((): void => {
+    if (draggingRef.current) return
+    const list = sessionListRef.current
+    if (list === null) return
+    const right = list.getBoundingClientRect().right
+    setSessionListRight(prev => prev === right ? prev : right)
+  }, [])
   useEffect(() => {
     let disposed = false
     let observer: ResizeObserver | undefined
+    let sessionObserver: ResizeObserver | undefined
     // Locate the AppFrame's center column. DSH 0.1.x wraps slot hosts in
     // [data-slot] containers: the conversation slot wrapper
     // ([data-slot="conversation"]) sits directly inside the center column,
@@ -361,6 +381,11 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           observer?.disconnect()
           observer = undefined
         }
+        if (sessionListRef.current !== null) {
+          sessionListRef.current = null
+          sessionObserver?.disconnect()
+          sessionObserver = undefined
+        }
         return
       }
       if (centerColRef.current !== col) {
@@ -369,7 +394,22 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         observer = new ResizeObserver(measureCenter)
         observer.observe(col)
       }
+      // The left panel hugs the app's session-list column (the center
+      // column's previous sibling): observe it independently so the panel
+      // tracks the native sidebar's own resize with no gap.
+      const list = col.previousElementSibling as HTMLElement | null
+      if (list !== null && sessionListRef.current !== list) {
+        sessionListRef.current = list
+        sessionObserver?.disconnect()
+        sessionObserver = new ResizeObserver(measureSessionList)
+        sessionObserver.observe(list)
+      } else if (list === null && sessionListRef.current !== null) {
+        sessionListRef.current = null
+        sessionObserver?.disconnect()
+        sessionObserver = undefined
+      }
       measureCenter()
+      measureSessionList()
     }
     locate()
     const watcher = new MutationObserver(locate)
@@ -378,10 +418,12 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     return () => {
       disposed = true
       observer?.disconnect()
+      sessionObserver?.disconnect()
       watcher.disconnect()
       centerColRef.current = null
+      sessionListRef.current = null
     }
-  }, [measureCenter])
+  }, [measureCenter, measureSessionList])
 
   /**
    * Bottom-panel first-expansion auto terminal: the FIRST time the user
@@ -429,7 +471,12 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   const [draggingBottom, setDraggingBottom] = useState(false)
   const cornerDrag = useRef({ startX: 0, startY: 0, startWidth: 0, startHeight: 0 })
   const [draggingCorner, setDraggingCorner] = useState(false)
-  const anyDragging = draggingWidth || draggingBottom || draggingCorner
+  // The LEFT panel (explorer dock) width drag: its resize strip sits on the
+  // panel's right edge, so dragging right widens it.
+  const leftRef = useRef<HTMLDivElement | null>(null)
+  const leftDrag = useRef({ startX: 0, startWidth: 0 })
+  const [draggingLeft, setDraggingLeft] = useState(false)
+  const anyDragging = draggingWidth || draggingBottom || draggingCorner || draggingLeft
 
   // Pause center-column measurement while dragging, and re-measure once the
   // drag settles at its committed size. The store commit lands on release and
@@ -437,8 +484,11 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   // fires to refresh centerRect — this explicit re-measure covers that gap.
   useEffect(() => {
     draggingRef.current = anyDragging
-    if (!anyDragging) measureCenter()
-  }, [anyDragging, measureCenter])
+    if (!anyDragging) {
+      measureCenter()
+      measureSessionList()
+    }
+  }, [anyDragging, measureCenter, measureSessionList])
 
   // Clamp mirrors of setWidth/setBottomHeight for mid-drag values (the store
   // re-clamps on commit; these keep the panels from overshooting mid-drag).
@@ -446,6 +496,8 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     Math.min(Math.max(PANEL_MIN, Math.round(width)), Math.max(PANEL_MIN, window.innerWidth))
   const clampHeight = (height: number): number =>
     Math.min(Math.max(BOTTOM_MIN, Math.round(height)), Math.max(BOTTOM_MIN, window.innerHeight - PANEL_MIN))
+  const clampLeftWidth = (width: number): number =>
+    Math.min(Math.max(LEFT_MIN, Math.round(width)), Math.max(LEFT_MIN, window.innerWidth))
 
   /** Apply a drag size to the DOM without touching React state or the store.
    *  The bottom panel's right edge tracks the right panel's left edge HERE
@@ -496,6 +548,35 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     pendingDrag.current = null
   }
 
+  // The left panel drag is a write-only twin of the right panel's width drag:
+  // it writes the panel width and --dsh-sidebar-left directly (batched to one
+  // frame), committing the clamped size to the store once on release.
+  const applyLeftDrag = (leftWidth: number): void => {
+    leftRef.current?.style.setProperty('width', `${leftWidth}px`)
+    document.documentElement.style.setProperty('--dsh-sidebar-left', `${leftWidth}px`)
+  }
+  const leftDragFrame = useRef<number | null>(null)
+  const pendingLeftDrag = useRef<number | null>(null)
+  const scheduleLeftDrag = (leftWidth: number): void => {
+    pendingLeftDrag.current = leftWidth
+    if (leftDragFrame.current !== null) return
+    leftDragFrame.current = requestAnimationFrame(() => {
+      leftDragFrame.current = null
+      const pending = pendingLeftDrag.current
+      if (pending !== null) {
+        pendingLeftDrag.current = null
+        applyLeftDrag(pending)
+      }
+    })
+  }
+  const stopLeftDragScheduling = (): void => {
+    if (leftDragFrame.current !== null) {
+      cancelAnimationFrame(leftDragFrame.current)
+      leftDragFrame.current = null
+    }
+    pendingLeftDrag.current = null
+  }
+
   // Layout push: the app shell gives up the panel's width/height while the
   // panels are open (0 while collapsed), so the conversation and input bar
   // are squeezed instead of covered. The margins are capped at the viewport
@@ -504,20 +585,23 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   // On NARROW viewports the drawer FLOATS over the app shell — no push, the
   // conversation keeps the full width behind the drawer.
   useEffect(() => {
-    const width = !narrow && snapshot.state?.panelOpen === true
+    const width = rightPanelEnabled && !narrow && snapshot.state?.panelOpen === true
       ? Math.min(snapshot.state.width, window.innerWidth)
       : 0
     const height = !narrow && snapshot.state?.bottomOpen === true
       ? Math.min(snapshot.state.bottomHeight, window.innerHeight)
       : 0
+    const leftWidth = !narrow && snapshot.state?.leftOpen === true
+      ? Math.min(snapshot.state.leftWidth, window.innerWidth)
+      : 0
     document.documentElement.style.setProperty('--dsh-sidebar-width', `${width}px`)
     document.documentElement.style.setProperty('--dsh-sidebar-height', `${height}px`)
-  }, [narrow, snapshot.state?.panelOpen, snapshot.state?.width, snapshot.state?.bottomOpen, snapshot.state?.bottomHeight])
+    document.documentElement.style.setProperty('--dsh-sidebar-left', `${leftWidth}px`)
+  }, [narrow, rightPanelEnabled, snapshot.state?.panelOpen, snapshot.state?.width, snapshot.state?.leftOpen, snapshot.state?.leftWidth, snapshot.state?.bottomOpen, snapshot.state?.bottomHeight])
   useEffect(() => {
     if (anyDragging) document.body.setAttribute('data-dsh-sidebar-dragging', '')
     else document.body.removeAttribute('data-dsh-sidebar-dragging')
   }, [anyDragging])
-
 
   const actions: WorkbenchActions = useMemo(() => ({
     closeTab: (paneId, tabId) => {
@@ -531,7 +615,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
       const current = store.getSnapshot().state
       const leaf = current === undefined ? undefined : leafWithTab(current.splits, tabId)
       const tab = leaf?.tabs.find(candidate => candidate.id === tabId)
-      store.reduce(s => closeTab(s, paneId, tabId))
+      store.reduce(s => closeTabAndMaybeCollapseRightSurface(s, paneId, tabId))
       if (tab?.type === 'terminal') {
         if (isAgentTabId(tabId)) {
           const uuid = agentUuidOf(tabId)
@@ -570,18 +654,17 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   }), [store, sessionId, cwd])
 
   /**
-   * The explorer's @-reference button: append `@<relative path>` to the
-   * session's composer draft (space-separated). The conversation service is
-   * resolved lazily through `ctx.get` (the inject-free read — the app's own
-   * plugins read 'conversation' the same way); a missing service or scope
-   * degrades to a logged no-op, never a crash. Defined above the no-session
-   * early return — a hook must never sit behind a conditional return
-   * (React counts hooks per render).
+   * The explorer's @-reference button inserts an occurrence-backed inline
+   * file/folder chip through dsh-file-edit. No literal `@path` is written, so
+   * dsh-at-file does not create its separate attachment dock.
    */
-  const referenceInChat = useCallback((path: string): void => {
+  const referenceInChat = useCallback((path: string, isDir = false): void => {
     if (sessionId === undefined) return
-    appendToDraft(ctx, sessionId, `@${relativeTo(cwd ?? '', path)}`)
-  }, [ctx, sessionId, cwd])
+    const normalized = path.replace(/[\\/]+$/, '')
+    const slash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+    const displayName = slash === -1 ? normalized : normalized.slice(slash + 1)
+    insertInlineFileReference(relativeTo(cwd ?? '', path), displayName, isDir ? 'folder' : 'file')
+  }, [sessionId, cwd])
 
   if (state === undefined || sessionId === undefined) {
     return (
@@ -593,11 +676,6 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
             </button>
           </Tooltip>
         )}
-        <Tooltip label={t('noSession')} side="bottom" delayMs={500}>
-          <button type="button" className={css.toggleButton} disabled aria-label={t('noSession')}>
-            <IconPanelRightOutline16 />
-          </button>
-        </Tooltip>
       </div>
     )
   }
@@ -610,14 +688,10 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     service.openTab({ type: optionId, title })
   }
 
-  /**
-   * The explorer's @-reference button: append `@<relative path>` to the
-   * session's composer draft (space-separated). Resolves the session-scope
-   * ctx and the conversation input service at click time; a missing service
-   * or scope degrades to a logged no-op, never a crash.
-   */
   /** The tab icon from the tab-type registry (shared by every workbench). */
   const tabIconOf = (tab: SidebarTab): ReactNode => {
+    const previewIcon = previewTabIcon(ctx.betterSidebar, tab, 14)
+    if (previewIcon !== undefined) return previewIcon
     const descriptor = ctx.betterSidebar?.getTab(tab.type)
     if (descriptor === undefined) return null
     return typeof descriptor.icon === 'function' ? descriptor.icon(14) : descriptor.icon
@@ -640,11 +714,33 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
       onReferenceFile={referenceInChat}
       ctx={ctx}
       store={store}
-      visible={bottom ? state.bottomOpen && active : state.panelOpen && active}
+      visible={bottom ? state.bottomOpen && active : rightPanelEnabled && state.panelOpen && active}
       onSubagentJump={(childSessionId) => { subagentJumpRef.current = childSessionId }}
       onOpenDiff={(diffTab) => { store.reduce(s => openDiffTab(s, paneId, diffTab)) }}
     />
   )
+
+  const openBrowserPanel = (): void => {
+    const existingLeaf = allLeaves(state.splits).find(leaf => leaf.tabs.some(tab => tab.type === 'browser'))
+    const existing = existingLeaf?.tabs.find(tab => tab.type === 'browser')
+    if (existingLeaf !== undefined && existing !== undefined) {
+      store.reduce(s => ({
+        ...s,
+        panelOpen: true,
+        activePane: existingLeaf.id,
+        splits: mapLeaf(s.splits, existingLeaf.id, leaf => { leaf.active = existing.id }),
+      }))
+      return
+    }
+    store.reduce(s => ({ ...s, panelOpen: true, activePane: firstLeaf(s.splits).id }))
+    ctx.betterSidebar?.openTab({ type: 'browser', title: t('browser') })
+  }
+
+  const rightTree = rightSurfaceTree(state.splits)
+  const browserTabOptions = buildNewTabOptions(state, ctx, { sessionId, cwd })
+    .filter(option => option.id === 'browser')
+  const nonBrowserTabOptions = buildNewTabOptions(state, ctx, { sessionId, cwd })
+    .filter(option => option.id !== 'browser')
 
   return (
     <>
@@ -657,6 +753,18 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         so the tabs genuinely yield space to it.
       */}
       <div className={css.toggleCluster}>
+        {!narrow && (
+          <Tooltip label={state.leftOpen ? t('collapse') : t('expand')} side="bottom" delayMs={500}>
+            <button
+              type="button"
+              className={css.toggleButton}
+              aria-label={state.leftOpen ? 'Collapse explorer' : 'Expand explorer'}
+              onClick={() => { store.reduce(toggleLeftPanel) }}
+            >
+              <IconPanelLeftOutline16 />
+            </button>
+          </Tooltip>
+        )}
         {/*
           Narrow viewports merge the two workbenches into the one drawer —
           there is no bottom panel, so its toggle button is not offered.
@@ -673,17 +781,108 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
             </button>
           </Tooltip>
         )}
-        <Tooltip label={state.panelOpen ? t('collapse') : t('expand')} side="bottom" delayMs={500}>
-          <button
-            type="button"
-            className={css.toggleButton}
-            aria-label={state.panelOpen ? t('collapse') : t('expand')}
-            onClick={() => { store.reduce(togglePanel) }}
-          >
-            <IconPanelRightOutline16 />
-          </button>
-        </Tooltip>
       </div>
+      {/* Explorer, right-surface visibility, and Browser creation share the
+          packaged app's titlebar control area. The panel control never
+          creates content; the globe remains the explicit Browser action. */}
+      <div className={css.titlebarToggles}>
+        {!narrow && ctx.betterSidebar?.isTabEnabled('explorer') !== false && (
+          <div className={css.desktopExplorerToggle}>
+            <Tooltip label={state.leftOpen ? t('collapse') : t('expand')} side="bottom" delayMs={500}>
+              <button
+                type="button"
+                className={css.toggleButton}
+                aria-label={state.leftOpen ? 'Collapse explorer' : 'Expand explorer'}
+                aria-pressed={state.leftOpen}
+                onClick={() => { store.reduce(toggleLeftPanel) }}
+              >
+                <IconPanelLeftOutline16 />
+              </button>
+            </Tooltip>
+          </div>
+        )}
+        {rightPanelEnabled && (
+          <Tooltip label={state.panelOpen ? t('closeContentPanel') : t('openContentPanel')} side="bottom" delayMs={500}>
+            <button
+              type="button"
+              className={css.toggleButton}
+              aria-label={state.panelOpen ? t('closeContentPanel') : t('openContentPanel')}
+              aria-pressed={state.panelOpen}
+              onClick={() => { store.reduce(togglePanel) }}
+            >
+              <IconPanelRightOutline16 />
+            </button>
+          </Tooltip>
+        )}
+        {browserEnabled && (
+          <Tooltip label={t('openBrowserPanel')} side="bottom" delayMs={500}>
+            <button
+              type="button"
+              className={css.toggleButton}
+              aria-label={t('openBrowserPanel')}
+              onClick={openBrowserPanel}
+            >
+              <IconGlobeOutline16 />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      {/*
+        The left panel (dedicated explorer dock): fixed between the app's own
+        session-list sidebar and the center column. Its inline `left` is the
+        measured session-list column's right edge — a STABLE value (the
+        session list never moves when the center column gets its margin-left
+        push), so the panel slides purely via transform and stays in sync with
+        the center column's push. Not rendered on narrow viewports, nor before
+        the first measurement (avoiding a flash at left:0).
+      */}
+      {!narrow && sessionListRight !== null && ctx.betterSidebar?.isTabEnabled('explorer') !== false && (
+        <div
+          ref={leftRef}
+          className={clsx(css.leftPanel, !state.leftOpen && css.leftPanelHidden)}
+          style={{ left: sessionListRight, width: state.leftWidth }}
+          data-dragging={draggingLeft || undefined}
+        >
+          <div
+            className={clsx(css.leftResize, draggingLeft && css.leftResizeActive)}
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.currentTarget.setPointerCapture(event.pointerId)
+              leftDrag.current = { startX: event.clientX, startWidth: state.leftWidth }
+              setDraggingLeft(true)
+            }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+              const { startX, startWidth } = leftDrag.current
+              scheduleLeftDrag(clampLeftWidth(startWidth + (event.clientX - startX)))
+            }}
+            onPointerUp={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+              event.currentTarget.releasePointerCapture(event.pointerId)
+              const { startX, startWidth } = leftDrag.current
+              stopLeftDragScheduling()
+              store.reduce(s => setLeftWidth(s, startWidth + (event.clientX - startX)))
+              setDraggingLeft(false)
+            }}
+          />
+          <div className={css.panelBody}>
+            <ExplorerView
+              startupTasks={startupTaskLane(ctx)}
+              sessionId={sessionId}
+              cwd={cwd}
+              expanded={state.expanded}
+              onToggle={(path) => { store.reduce(s => toggleExpanded(s, path)) }}
+              onRevealPath={(path, isDir) => { store.reduce(s => revealPathInState(s, cwd, path, isDir)) }}
+              onCollapseAll={() => { store.reduce(collapseAllFoldersInState) }}
+              onOpenFile={(path) => { openSidebarFile(ctx, store, sessionId, path, cwd) }}
+              onReferenceFile={referenceInChat}
+              onOpenInBrowser={browserEnabled ? (path) => { openHtmlInBrowser(ctx, sessionId, path, cwd) } : undefined}
+              onRenamed={(from, to) => { synchronizeRenamedPath(store, cwd, from, to) }}
+              onDeleted={(path) => { synchronizeDeletedPath(store, cwd, path) }}
+            />
+          </div>
+        </div>
+      )}
       {/*
         The right panel stays mounted while collapsed (hidden off-screen) so
         the slide in/out can animate; visibility hides it after the slide
@@ -693,7 +892,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         workbenches (see MobileWorkbench); the width drag strip is not
         offered there — a full-screen sheet has nothing to drag.
       */}
-      <div
+      {rightPanelEnabled && <div
         ref={panelRef}
         className={clsx(css.panel, !state.panelOpen && css.panelHidden)}
         style={{ width: narrow ? '100vw' : Math.min(state.width, window.innerWidth) }}
@@ -701,7 +900,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
       >
           {!narrow && (
             <div
-              className={clsx(css.panelResize, draggingWidth && css.panelResizeActive)}
+              className={css.panelResize}
               onPointerDown={(event) => {
                 event.preventDefault()
                 event.currentTarget.setPointerCapture(event.pointerId)
@@ -723,19 +922,31 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
                 store.reduce(s => setWidth(s, startWidth + (startX - event.clientX)))
                 setDraggingWidth(false)
               }}
+              onPointerCancel={(event) => {
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId)
+                }
+                stopDragScheduling()
+                const width = Math.min(state.width, window.innerWidth)
+                const height = state.bottomOpen ? Math.min(state.bottomHeight, window.innerHeight) : 0
+                applyDrag(width, height)
+                setDraggingWidth(false)
+              }}
+              onLostPointerCapture={() => { setDraggingWidth(false) }}
             />
           )}
         <div className={css.panelBody}>
           <Workbench
             state={state}
-            newTabOptions={buildNewTabOptions(state, ctx, { sessionId, cwd })}
+            tree={rightTree}
+            newTabOptions={browserTabOptions}
             actions={actions}
             onNewTab={onNewTab}
             renderTab={renderTab}
             getTabIcon={tabIconOf}
           />
         </div>
-      </div>
+      </div>}
       {/*
         The bottom panel: a second, independent workbench. It squeezes ONLY
         the center column (the agent output area): it starts at the app
@@ -761,7 +972,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           // The seam against the open right panel needs its own hairline
           // (the right panel's border-left alone is covered by this panel's
           // fill — without it the corner looks cut off).
-          borderRight: state.panelOpen ? '1px solid var(--dsw-alias-border-l2)' : undefined,
+          borderRight: rightPanelEnabled && state.panelOpen ? '1px solid var(--dsw-alias-border-l2)' : undefined,
         }}
         data-dragging={(draggingBottom || draggingCorner) || undefined}
       >
@@ -807,7 +1018,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           <Workbench
             state={state}
             tree={state.bottomSplits}
-            newTabOptions={buildNewTabOptions(state, ctx, { sessionId, cwd })}
+            newTabOptions={nonBrowserTabOptions}
             actions={actions}
             onNewTab={onNewTab}
             renderTab={(tab, active, paneId) => renderTab(tab, active, paneId, true)}
@@ -823,7 +1034,7 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
         bottom panel's height — the two panels drag against each other.
         (Never on narrow viewports: the bottom panel does not exist there.)
       */}
-      {!narrow && state.panelOpen && state.bottomOpen && (
+      {rightPanelEnabled && !narrow && state.panelOpen && state.bottomOpen && (
         <div
           ref={cornerRef}
           className={css.cornerHandle}

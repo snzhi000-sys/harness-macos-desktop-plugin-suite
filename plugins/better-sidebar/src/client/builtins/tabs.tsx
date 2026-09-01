@@ -1,6 +1,6 @@
 /**
- * The 7 built-in tab descriptors: the plugin registers its own pages
- * (explorer / git / terminal / browser / subagent / editor / diff) through
+ * The 8 built-in tab descriptors: the plugin registers its own pages
+ * (explorer / git / terminal / browser / subagent / editor / preview / diff) through
  * the same {@link BetterSidebarService} external plugins use — eating its
  * own dogfood. The terminal descriptor owns its quota (`TERMINAL_LIMIT`)
  * and mints `terminal:<n>` ids through `createTab`; the browser mints
@@ -8,17 +8,19 @@
  */
 import { IconBranchOutline16, IconCodeOutline16, IconFolderOpen16, IconThinkOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../../context-types.ts'
-import { allLeaves, isAgentTabId, type SidebarState } from '../state.ts'
+import { allLeaves, collapseAllFoldersInState, isAgentTabId, revealPathInState, type SidebarState } from '../state.ts'
 import { t } from '../locales.ts'
-import { openSidebarFile } from '../intercept.tsx'
+import { openHtmlInBrowser, openSidebarFile, synchronizeDeletedPath, synchronizeRenamedPath } from '../intercept.tsx'
 import { ExplorerView } from '../ExplorerView.tsx'
+import { startupTaskLane } from '../startup-tasks.ts'
 import { EditorHost } from '../EditorHost.tsx'
+import { PreviewHost } from '../preview.tsx'
 import { lazyChunkComponent } from '../lazy-chunk.tsx'
 import { GitView } from '../GitView.tsx'
 import { DiffTab } from '../DiffTab.tsx'
 import { SubagentView } from '../SubagentView.tsx'
 import { BrowserView } from '../BrowserView.tsx'
-import { IconTerminalOutline16, IconDiffOutline16, IconGlobeOutline16 } from '../icons.tsx'
+import { IconTerminalOutline16, IconDiffOutline16, IconGlobeOutline16, IconImageOutline16 } from '../icons.tsx'
 import type { ComponentType } from 'react'
 import type { SessionScope } from '../api.ts'
 import type { SidebarStore } from '../state.ts'
@@ -58,7 +60,7 @@ function uiTerminalCount(state: SidebarState): number {
     .filter(tab => tab.type === 'terminal' && !isAgentTabId(tab.id)).length
 }
 
-/** The 7 built-in tab descriptors. */
+/** The 8 built-in tab descriptors. */
 export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
   return [
     {
@@ -68,9 +70,20 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       order: -1,
       hidden: true,
       dedupeKey: (tab) => tab.path,
-      component: ({ ctx, store, scope, tab }) => (
-        <EditorHost ctx={ctx} store={store} scope={scope} path={tab.path ?? ''} title={tab.title} />
+      component: ({ ctx, store, scope, tab, visible }) => (
+        <EditorHost ctx={ctx} store={store} scope={scope} path={tab.path ?? ''} title={tab.title} visible={visible} />
       ),
+    },
+    {
+      id: 'preview',
+      title: () => t('mediaPreview'),
+      icon: (size: number) => <IconImageOutline16 size={size} />,
+      order: -1,
+      // Preview tabs are created from a matched media/document file, never
+      // as an empty surface from the + menu.
+      hidden: true,
+      dedupeKey: (tab) => tab.path,
+      component: PreviewHost,
     },
     {
       id: 'explorer',
@@ -78,14 +91,26 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       icon: (size: number) => <IconFolderOpen16 size={size} />,
       order: 10,
       single: true,
+      // The explorer lives in its own dedicated LEFT panel, not as a tab in
+      // the right workbench — keep it out of the + menu so it is never
+      // opened as a duplicate right-panel tab.
+      hidden: true,
       component: ({ ctx, store, scope, expanded, onToggleDir, onReferenceFile }) => (
         <ExplorerView
+          startupTasks={startupTaskLane(ctx)}
           sessionId={scope.sessionId}
           cwd={scope.cwd}
           expanded={expanded ?? []}
           onToggle={onToggleDir ?? (() => { /* no-op */ })}
-          onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path) }}
+          onRevealPath={(path, isDir) => { store.reduce(state => revealPathInState(state, scope.cwd, path, isDir)) }}
+          onCollapseAll={() => { store.reduce(collapseAllFoldersInState) }}
+          onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path, scope.cwd) }}
           onReferenceFile={onReferenceFile ?? (() => { /* no-op */ })}
+          onOpenInBrowser={ctx.betterSidebar?.isTabEnabled('browser') !== false
+            ? (path) => { openHtmlInBrowser(ctx, scope.sessionId, path, scope.cwd) }
+            : undefined}
+          onRenamed={(from, to) => { synchronizeRenamedPath(store, scope.cwd, from, to) }}
+          onDeleted={(path) => { synchronizeDeletedPath(store, scope.cwd, path) }}
         />
       ),
     },
@@ -98,7 +123,7 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       component: ({ ctx, store, scope, onOpenDiff }) => (
         <GitView
           scope={scope}
-          onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path) }}
+          onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path, scope.cwd) }}
           onOpenDiff={onOpenDiff ?? (() => { /* no-op */ })}
         />
       ),
@@ -176,10 +201,6 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       // page (the sandbox one is warned on).
       settings: {
         toggles: [{
-          key: 'browserNoSandbox',
-          title: () => t('settingsBrowserSandboxTitle'),
-          desc: () => t('settingsBrowserSandboxDesc'),
-        }, {
           key: 'browserInterceptLinks',
           title: () => t('settingsBrowserLinksTitle'),
           desc: () => t('settingsBrowserLinksDesc'),

@@ -25,8 +25,8 @@ type EditorLoad =
   | { status: 'ready'; viewer: FileViewerDescriptor; content?: string; truncated?: boolean; mediaUrl?: string; customData?: unknown }
   | { status: 'binary' }
 
-export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: SessionScope; path: string; title: string }) {
-  const { ctx, store, scope, path, title } = props
+export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: SessionScope; path: string; title: string; visible: boolean; viewerId?: string }) {
+  const { ctx, store, scope, path, title, visible, viewerId } = props
   const [load, setLoad] = useState<EditorLoad>({ status: 'loading' })
 
   useEffect(() => {
@@ -76,9 +76,16 @@ export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: Se
           return
       }
     }
-    apply(planFirstMatch(ctx.betterSidebar?.matchFileViewer(path), mediaUrlOf))
+    const viewer = viewerId === undefined
+      ? ctx.betterSidebar?.matchFileViewer(path)
+      : ctx.betterSidebar?.getFileViewers().find(candidate => candidate.id === viewerId)
+    if (viewerId !== undefined && (viewer === undefined || ctx.betterSidebar?.isViewerEnabled(viewerId) === false)) {
+      setLoad({ status: 'error', message: t('previewUnavailable') })
+      return () => { cancelled = true }
+    }
+    apply(planFirstMatch(viewer, mediaUrlOf))
     return () => { cancelled = true }
-  }, [scope.sessionId, scope.cwd, path, ctx])
+  }, [scope.sessionId, scope.cwd, path, viewerId, ctx])
 
   return (
     <div className={css.editor}>
@@ -91,6 +98,7 @@ export function EditorHost(props: { ctx: Context; store: SidebarStore; scope: Se
       {load.status === 'ready' && createElement(load.viewer.component, {
         ctx, store, scope, path, title,
         viewerId: load.viewer.id,
+        visible,
         content: load.content,
         truncated: load.truncated,
         mediaUrl: load.mediaUrl,

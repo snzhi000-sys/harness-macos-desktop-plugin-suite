@@ -1,8 +1,8 @@
 /**
- * Built-in registration tests: the plugin registers 7 tabs and 9 file
+ * Built-in registration tests: the plugin registers 8 tabs and 10 file
  * viewers through the same service external plugins use (dogfooding);
  * the catch-all `code` viewer, the NUL-sniffing `binary-download` viewer,
- * and the html/browser sandbox settings pin the registry's behavior.
+ * and the HTML sandbox / Browser link settings pin the registry's behavior.
  */
 import { describe, expect, it } from 'vitest'
 // First import: browser globals before the xterm-carrying builtin graph loads.
@@ -22,16 +22,24 @@ function setup(): { service: ReturnType<typeof createBetterSidebarService>; stor
 }
 
 describe('built-in tab registrations', () => {
-  it('registers the 7 built-in tabs', () => {
+  it('registers the 8 built-in tabs', () => {
     const { service } = setup()
     expect(service.getTabs().map(t => t.id).sort()).toEqual(
-      ['browser', 'diff', 'editor', 'explorer', 'git', 'subagent', 'terminal'],
+      ['browser', 'diff', 'editor', 'explorer', 'git', 'preview', 'subagent', 'terminal'],
     )
   })
 
-  it('editor and diff are hidden from the + menu (opened by file-open / git view)', () => {
+  it('editor, preview, diff and explorer are hidden from the + menu (opened by derived flows)', () => {
     const { service } = setup()
-    expect(service.getTabs().filter(t => t.hidden).map(t => t.id).sort()).toEqual(['diff', 'editor'])
+    expect(service.getTabs().filter(t => t.hidden).map(t => t.id).sort()).toEqual(['diff', 'editor', 'explorer', 'preview'])
+  })
+
+  it('preview is independent from editor and dedupes by file path', () => {
+    const { service } = setup()
+    const preview = service.getTab('preview')
+    expect(preview?.hidden).toBe(true)
+    expect(preview?.dedupeKey?.({ id: 'p1', type: 'preview', title: 'a.png', path: '/w/a.png', viewerId: 'image' })).toBe('/w/a.png')
+    expect(service.getTab('editor')).not.toBe(preview)
   })
 
   it('single-instance tabs use the single sugar', () => {
@@ -53,27 +61,24 @@ describe('built-in tab registrations', () => {
     expect(toggles.map(t => t.key)).toEqual(['agentTerminalTools', 'bottomPanelAutoTerminal'])
   })
 
-  it('the browser tab declares its sandbox and link-takeover related settings', () => {
+  it('the browser tab declares only its link-takeover related setting', () => {
     const { service } = setup()
     const toggles = service.getTab('browser')?.settings?.toggles ?? []
-    expect(toggles.map(t => t.key)).toEqual(['browserNoSandbox', 'browserInterceptLinks'])
+    expect(toggles.map(t => t.key)).toEqual(['browserInterceptLinks'])
     expect(toggles[0]?.title).toBeDefined()
     expect(toggles[0]?.desc).toBeDefined()
-    expect(toggles[1]?.title).toBeDefined()
-    expect(toggles[1]?.desc).toBeDefined()
   })
 
-  it('the browser createTab mints browser:<n> ids and bumps nextBrowser', () => {
+  it('the browser createTab has no three-tab quota and keeps minting browser:<n>', () => {
     const { service, store } = setup()
     store.setSession('s1')
-    service.openTab({ type: 'browser' })
-    service.openTab({ type: 'browser' })
+    for (let index = 0; index < 12; index += 1) service.openTab({ type: 'browser' })
     const state = store.getSnapshot().state!
     const tabs = allLeaves(state.splits).flatMap(leaf => leaf.tabs).filter(t => t.type === 'browser')
-    expect(tabs).toHaveLength(2)
+    expect(tabs).toHaveLength(12)
     expect(tabs[0]!.id).toBe('browser:1')
-    expect(tabs[1]!.id).toBe('browser:2')
-    expect(state.nextBrowser).toBe(3)
+    expect(tabs[11]!.id).toBe('browser:12')
+    expect(state.nextBrowser).toBe(13)
   })
 
   it('every built-in tab carries the settings-surface icon', () => {
@@ -85,11 +90,25 @@ describe('built-in tab registrations', () => {
 })
 
 describe('built-in file viewer registrations', () => {
-  it('registers the 9 built-in file viewers', () => {
+  it('registers the 10 built-in file viewers', () => {
     const { service } = setup()
     expect(service.getFileViewers().map(v => v.id).sort()).toEqual(
-      ['binary-download', 'code', 'docx', 'html', 'image', 'markdown', 'pdf', 'pptx', 'xlsx'],
+      ['binary-download', 'code', 'docx', 'html', 'image', 'markdown', 'pdf', 'pptx', 'video', 'xlsx'],
     )
+  })
+
+  it('registers the streaming video viewer and keeps unsupported containers on fallback', () => {
+    const { service } = setup()
+    const video = service.getFileViewers().find(v => v.id === 'video')
+    expect(video).toMatchObject({
+      exts: ['mp4', 'm4v', 'webm', 'mov', 'ogv'],
+      fetchStrategy: 'mediaUrl',
+    })
+    for (const ext of ['mp4', 'm4v', 'webm', 'mov', 'ogv']) {
+      expect(service.matchFileViewer(`movie.${ext}`)?.id, ext).toBe('video')
+    }
+    expect(service.matchFileViewer('movie.mkv')?.id).toBe('binary-download')
+    expect(service.matchFileViewer('movie.avi')?.id).toBe('binary-download')
   })
 
   it('code is the catch-all at the lowest priority', () => {

@@ -18,18 +18,43 @@
 .toggleCluster {
   position: fixed;
   top: 3px;
-  right: 10px;
+  right: 42px;
   z-index: 55;
   display: flex;
   flex-direction: row;
   gap: 4px;
 }
 
-/* The tab strip of the OPEN right panel reserves the cluster's width at its
-   right end, so the tabs and the + menu genuinely yield space to the cluster
-   (never hiding under it). */
-.panel:not(.panelHidden) .tabBar {
-  padding-right: 72px;
+/* Desktop titlebar controls. Explorer and Browser share one right-aligned
+   cluster so their geometry, hover treatment and click behaviour stay in
+   lockstep. The shell titlebar is a high-z-index drag surface, therefore the
+   cluster must sit above it and explicitly opt out of window dragging. */
+.titlebarToggles {
+  position: fixed;
+  top: 2px;
+  right: 10px;
+  z-index: 2147483001;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+/* Ordinary web builds already expose Explorer in the legacy cluster. Add
+   the second entry only when the packaged desktop titlebar is present. */
+.desktopExplorerToggle {
+  display: none;
+}
+
+:global(html[data-dsh-desktop-titlebar]) .desktopExplorerToggle {
+  display: block;
+}
+
+/* The packaged app uses the dedicated titlebar controls for Explorer,
+   right-surface visibility, and Browser creation. Keep the legacy cluster
+   available only to the ordinary web shell. */
+:global(html[data-dsh-desktop-titlebar]) .toggleCluster {
+  display: none;
 }
 
 /* The closed-state affordance is the native rail icon control: a plain
@@ -77,19 +102,36 @@
      exactly like the app's own sidebar column (SidebarRoot .root). */
   background: var(--dsw-specific-sidebar-fill);
   border-left: 1px solid var(--dsw-alias-border-l2);
-  /* Expand/collapse slides the panel; fullscreen animates the width. */
+  opacity: 1;
+  /* Mirror the Explorer dock's motion from the opposite edge: the Browser
+     rail enters from the RIGHT while fading in, and exits to the right while
+     fading out. Fullscreen/resize changes continue to animate the width. */
   transition:
     transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out),
     width var(--ds-transition-duration-slow) var(--ds-ease-in-out);
 }
 
-/* Collapsed: slid off-screen, interactive nothing, hidden after the slide. */
+/* Fixed elements ignore the desktop shell's padding-top, so without an
+   explicit offset the first 32px of the Browser workbench (its tab strip)
+   sit underneath the custom draggable titlebar. Start only the packaged
+   desktop Browser rail below that chrome; the ordinary web shell keeps its
+   original top: 0 layout. */
+:global(html[data-dsh-desktop-titlebar]) .panel {
+  top: 32px;
+}
+
+/* Collapsed: slide to the RIGHT (opposite the left-side Explorer) while
+   fading to transparent, then become interactive nothing after both motion
+   tracks have completed. */
 .panelHidden {
   transform: translateX(102%);
+  opacity: 0;
   pointer-events: none;
   visibility: hidden;
   transition:
     transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out),
     width var(--ds-transition-duration-slow) var(--ds-ease-in-out),
     visibility 0s linear var(--ds-transition-duration-slow);
 }
@@ -110,15 +152,76 @@
   touch-action: none;
 }
 
-.panelResizeActive {
-  background: var(--dsw-alias-interactive-bg-hover-accent);
-}
-
 .panelBody {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: flex;
+}
+
+/* ── Left panel (dedicated explorer dock) ──────────────────────────────── */
+
+/* The left panel: a fixed dock hosting the explorer, positioned between the
+   app's own session-list sidebar and the center column. Its inline `left` is
+   the measured session-list column's right edge, so it hugs the native
+   sidebar with no gap and follows it when the sidebar resizes. */
+.leftPanel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--dsw-specific-sidebar-fill);
+  border-right: 1px solid var(--dsw-alias-border-l2);
+  opacity: 1;
+  transition:
+    transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    width var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+/* Like the fixed Browser rail, the fixed Explorer dock does not participate
+   in the desktop shell's html padding-top. Without this explicit offset its
+   36px marker bar starts at viewport y=0 and the draggable 32px titlebar
+   covers almost all of it, while the tree below appears deceptively normal. */
+:global(html[data-dsh-desktop-titlebar]) .leftPanel {
+  top: 32px;
+}
+
+/* Collapsed: slides off-screen to the LEFT while fading to fully transparent
+   (both animations share the same duration/easing, so opacity reaches 0
+   exactly as the panel settles at its off-screen position) — then becomes
+   interactive nothing. */
+.leftPanelHidden {
+  transform: translateX(-102%);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    width var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    visibility 0s linear var(--ds-transition-duration-slow);
+}
+
+.leftPanel[data-dragging] {
+  transition: none;
+}
+
+.leftResize {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.leftResizeActive {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
 }
 
 /* ── Bottom panel ──────────────────────────────────────────────────────── */
@@ -545,10 +648,8 @@
 .tabBarPlus {
   flex: none;
   align-self: center;
-  /* Adjacent to the rightmost tab; sticky so overflowing tab rows keep it
-     visible at the right edge of the scrollport. */
-  position: sticky;
-  right: 0;
+  /* This control is a sibling of the scrolling tab list, so it remains
+     visible while an unrestricted number of Browser tabs scroll beneath. */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -563,6 +664,11 @@
   cursor: pointer;
 }
 
+.tabBarPlus:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .tabBarPlus:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
@@ -573,6 +679,10 @@
 .explorer {
   flex: 1;
   min-height: 0;
+  /* Shrink to the panel's width (a fixed 280px left dock) instead of
+     spilling long names / the header's refresh button outside the panel. */
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -581,13 +691,173 @@
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 4px;
   height: 36px;
-  padding: 0 8px 0 12px;
+  padding: 0 6px;
+}
+
+/* Workspace-scoped folder anchors replace the redundant project-name label.
+   Only the emoji is visible; folder names remain available to assistive tech
+   and the native title tooltip. */
+.explorerMarks {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.explorerMarks::-webkit-scrollbar {
+  display: none;
+}
+
+.explorerProjectName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-14);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorerMarkButton,
+.explorerMarkChoice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.explorerMarkButton {
+  flex: none;
+  width: 27px;
+  height: 27px;
+  border-radius: 7px;
+  font-size: 17px;
+}
+
+.explorerMarkButton:hover,
+.explorerMarkButton:focus-visible {
+  outline: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.explorerMarkPalette {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.explorerMarkChoice {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 17px;
+}
+
+.explorerMarkChoice:hover,
+.explorerMarkChoice:focus-visible,
+.explorerMarkChoiceSelected {
+  outline: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.explorerMarkChoiceDisabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+  background: transparent;
+  box-shadow: none;
+}
+
+.explorerMarkChoiceDisabled:hover,
+.explorerMarkChoiceDisabled:focus-visible {
+  background: transparent;
+}
+
+.explorerCollapseAll,
+.explorerVisibilityToggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.explorerVisibilityToggle {
+  margin-left: auto;
+}
+
+.explorerVisibilityToggleActive {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+.explorerCollapseAll:hover:not([aria-disabled='true']),
+.explorerCollapseAll:focus-visible:not([aria-disabled='true']),
+.explorerVisibilityToggle:hover,
+.explorerVisibilityToggle:focus-visible {
+  outline: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.explorerCollapseAll[aria-disabled='true'] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.explorerMarkChoiceSelected {
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
+}
+
+.explorerMarkCheck {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-static-white, #fff);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+/* The header is fixed while the tree scrolls, so it doubles as an always-
+   reachable "move to workspace root" target. A subtle outline advertises
+   the target while dragging a nested file; the stronger fill confirms that
+   the pointer is currently over it. */
+.explorerRootDropReady {
+  box-shadow: inset 0 -1px 0 var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
+}
+
+.explorerRootDropTarget {
+  background: var(--dsw-alias-interactive-bg-active);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
 }
 
 .explorerRoot {
+  flex: 1;
+  min-width: 0;
   font: var(--dsw-font-s-14);
   color: var(--dsw-alias-label-secondary);
   overflow: hidden;
@@ -598,8 +868,18 @@
 .explorerBody {
   flex: 1;
   min-height: 0;
+  /* The file tree only scrolls vertically. Long names truncate inside the
+     current panel width; users can drag the Explorer edge wider when needed. */
+  /* Direct horizontal gestures stay disabled; ExplorerView also locks
+     focus-driven programmatic scrollLeft to the only valid origin (0). */
+  overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 2px 6px 8px;
+}
+
+.explorerBody::-webkit-scrollbar {
+  display: none;
 }
 
 /* One tree row: the app's session-row cell (34px, radius 8, inset, hover
@@ -611,6 +891,10 @@
   align-items: center;
   gap: 6px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   height: 34px;
   padding: 0 8px;
   border: none;
@@ -628,8 +912,62 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.explorerDropTarget,
+.explorerDropTarget:hover {
+  background: var(--dsw-alias-interactive-bg-active);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
+}
+
+.explorerRowDragging {
+  opacity: 0.42;
+}
+
+.explorerRowMoving {
+  opacity: 0.58;
+  cursor: progress;
+}
+
 .explorerDir {
   font: var(--dsw-font-s-strong-14);
+}
+
+.explorerFolderMark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.explorerUncommonMark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.explorerAnchorHighlight,
+.explorerAnchorHighlight:hover {
+  background: var(--dsw-alias-interactive-bg-active);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
+}
+
+/* Markdown rows: tint the "M↓" badge the theme's info blue (DeepSeek blue in
+   light mode, a brighter blue in dark mode — one semantic token keeps it
+   legible on both the white and dark surfaces). */
+.fileIconMarkdown {
+  flex: none;
+  color: var(--dsw-alias-button-info-fill, var(--dsw-static-deepseek-500));
+}
+
+/* CSV/TSV rows: tint the spreadsheet grid the theme's success green — the
+   same green the app uses for success states, legible on light and dark. */
+.fileIconCsv {
+  flex: none;
+  color: var(--dsw-alias-state-success-primary, var(--dsw-static-green-500));
 }
 
 .explorerHidden {
@@ -637,37 +975,60 @@
 }
 
 .explorerName {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* The hover-revealed @-reference button at the row's far right (and the
-   transient "copied" label that replaces it after a copy). Hidden rows
-   keep the name at full width; hovering or focusing the row reveals it. */
-.explorerRef {
-  flex: none;
-  display: none;
+.explorerRenameWrap {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  display: flex;
   align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-tertiary);
-  font: var(--dsw-font-xxxs-strong-11);
-  cursor: pointer;
+  gap: 2px;
+  overflow: hidden;
 }
 
-.explorerRef:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.explorerRenameInput {
+  min-width: 0;
+  width: auto;
+  flex: 1 1 0;
+  height: 24px;
+  padding: 1px 5px;
+  border: 1px solid var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
+  border-radius: 5px;
+  outline: none;
+  background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
+  font: inherit;
 }
 
-.explorerRow:hover .explorerRef,
-.explorerRow:focus-within .explorerRef {
-  display: inline-flex;
+.explorerRenameInput:focus {
+  box-shadow: 0 0 0 1px var(--dsw-alias-interactive-border-accent, var(--dsw-alias-button-info-fill));
 }
 
+.explorerRenameInputError {
+  border-color: var(--dsw-alias-state-error-primary);
+  box-shadow: 0 0 0 1px var(--dsw-alias-state-error-primary);
+}
+
+.explorerRenameSuffix {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  text-overflow: ellipsis;
+}
+
+.explorerRenameStatus {
+  flex: none;
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xxxs-strong-11);
+}
+
+/* Short-lived confirmation shown after copying a path from the row menu. */
 .explorerCopied {
   flex: none;
   font: var(--dsw-font-xxxs-11);
@@ -678,6 +1039,18 @@
   font: var(--dsw-font-xxs-12);
   color: var(--dsw-alias-state-error-primary);
   cursor: default;
+}
+
+.explorerMoveError {
+  flex: none;
+  margin: 2px 8px 4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xxxs-11);
+  overflow-wrap: anywhere;
 }
 
 /* Mount fade for tree rows (the app's session-row reveal). */
@@ -699,6 +1072,48 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.previewHost {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.previewWidthHint {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.previewWidthHint > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previewExpandButton {
+  flex: none;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+  cursor: pointer;
+}
+
+.previewExpandButton:hover {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .editorHeader {
@@ -811,7 +1226,7 @@
   background: var(--dsw-alias-state-warn-tertiary);
 }
 
-/* Live sandbox status row (HTML preview / browser tab): GREEN while the
+/* Live sandbox status row (HTML preview): GREEN while the
    sandbox is on (with the one-tap temporary unlock), RED while it is off
    (global setting or temporary unlock) — the red state is the persistent
    warning that the page runs on the GUI's own origin. */
@@ -1057,6 +1472,280 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+.videoWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 12px;
+  background: var(--dsw-alias-bg-base);
+  container-type: inline-size;
+}
+
+.videoFrame {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  outline: none;
+}
+
+.videoFrame:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.videoFrame:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border: none;
+  border-radius: 0;
+}
+
+.videoStage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+
+.videoPlayer {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.videoLoading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--dsw-alias-label-primary-inverted);
+}
+
+.videoLoading span {
+  width: 24px;
+  height: 24px;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: videoSpin 800ms linear infinite;
+}
+
+@keyframes videoSpin {
+  to { transform: rotate(360deg); }
+}
+
+.videoControls {
+  flex: none;
+  padding: 7px 9px 8px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.videoTimelineRow {
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+}
+
+.videoTimelineRow::before {
+  content: '';
+  position: absolute;
+  inset: 6px 0 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.videoBufferedTrack,
+.videoPlayedTrack {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.videoBufferedTrack {
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.videoPlayedTrack {
+  background: var(--dsw-alias-brand-primary);
+}
+
+.videoTimeline,
+.videoVolume {
+  position: relative;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.videoTimeline::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.videoVolume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.videoTimeline::-webkit-slider-thumb,
+.videoVolume::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  appearance: none;
+  border: 2px solid var(--dsw-alias-bg-layer-1);
+  border-radius: 50%;
+  background: var(--dsw-alias-brand-primary);
+}
+
+.videoTimeline:focus-visible,
+.videoVolume:focus-visible,
+.videoRate:focus-visible,
+.videoControlButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.videoTimeline:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.videoControlRow {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.videoControlButton {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.videoControlButton:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.videoControlButton:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.videoControlButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.videoTime {
+  flex: none;
+  min-width: 76px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.videoControlSpacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.videoVolume {
+  flex: none;
+  width: 68px;
+}
+
+.videoRate {
+  flex: none;
+  height: 28px;
+  padding: 0 5px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.videoError {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xxs-12);
+}
+
+.videoErrorDetail {
+  max-width: 100%;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.videoErrorActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+@container (max-width: 360px) {
+  .videoWrap { padding: 6px; }
+  .videoVolume { display: none; }
+  .videoControls { padding-inline: 6px; }
+}
+
+.videoFrame:fullscreen .videoVolume {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .videoLoading span { animation-duration: 1600ms; }
 }
 
 .editorMd {
@@ -1678,6 +2367,54 @@
   white-space: pre-wrap;
 }
 
+.explorerDeleteBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.explorerDeleteQuestion {
+  margin: 0;
+  font: var(--dsw-font-s-14);
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+.explorerDeleteMeta {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-default);
+}
+
+.explorerDeleteMeta > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font: var(--dsw-font-xs-13);
+}
+
+.explorerDeleteMeta > div + div {
+  margin-top: 8px;
+}
+
+.explorerDeleteMeta dt {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.explorerDeleteMeta dd {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.explorerDeleteError {
+  margin: 0;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-error-primary);
+  overflow-wrap: anywhere;
+}
+
 .gitCommit {
   display: flex;
   gap: 6px;
@@ -1854,7 +2591,7 @@
 .tabBarPlus:focus-visible,
 .paneCard:focus-visible,
 .explorerRow:focus-visible,
-.explorerRef:focus-visible,
+.explorerRenameInput:focus-visible,
 .gitRowMain:focus-visible,
 .gitLink:focus-visible,
 .gitCommitButton:focus-visible,
@@ -1877,6 +2614,7 @@
   .bottomPanel,
   .bottomPanelHidden,
   .toggleCluster,
+  .titlebarToggles,
   .toggleButton,
   .tab,
   .tabBarPlus,
@@ -1900,14 +2638,6 @@
    switches (which panels render, the migration) are JS-driven via
    useNarrowViewport; this block only adapts the pure style details. */
 @media (max-width: 767px) {
-  /* The toggle cluster holds a single button on narrow viewports (the
-     bottom panel button is not rendered), so the open panel's tab strip
-     reserves 40px instead of the desktop 72px — the tabs and + menu still
-     yield space to the one remaining control. */
-  .panel:not(.panelHidden) .tabBar {
-    padding-right: 40px;
-  }
-
   /* Narrower tabs: a phone-width drawer fits more open tabs before the
      strip scrolls. */
   .tab {

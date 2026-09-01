@@ -31,6 +31,7 @@ describe('dsh-better-sidebar plugin export shape', () => {
     })(undefined)
     expect(resolved.readLimit).toBe(512 * 1024)
     expect(resolved.mediaLimit).toBe(20 * 1024 * 1024)
+    expect(resolved.videoLimit).toBe(4 * 1024 * 1024 * 1024)
     expect(resolved.listLimit).toBe(1000)
     expect(resolved.terminalsPerSession).toBe(3)
     expect(resolved.reconnectGraceMs).toBe(30_000)
@@ -59,6 +60,6 @@ describe('dsh-better-sidebar plugin export shape', () => {
     const overridden = (PrefsSchema as unknown as {
       (input: Record<string, unknown> | undefined): Record<string, unknown>
     })({ openByDefault: false, defaultWidthPercent: 45 })
-    expect(overridden).toEqual({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserNoSandbox: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
+    expect(overridden).toEqual({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
   })
 })

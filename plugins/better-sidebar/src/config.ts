@@ -30,6 +30,8 @@ export interface SidebarConfig {
   readLimit?: number
   /** Media route cap (bytes); larger binaries are refused. */
   mediaLimit?: number
+  /** Streaming video cap (bytes); separate from image/document media. */
+  videoLimit?: number
   /** Explorer row bound of one level. */
   listLimit?: number
   /** Terminals per session. */
@@ -42,6 +44,7 @@ export interface SidebarConfig {
 export const Config: z<SidebarConfig> = z.object({
   readLimit: z.number().step(1).min(1).default(512 * 1024),
   mediaLimit: z.number().step(1).min(1).default(20 * 1024 * 1024),
+  videoLimit: z.number().step(1).min(1).default(4 * 1024 * 1024 * 1024),
   listLimit: z.number().step(1).min(1).default(1000),
   terminalsPerSession: z.number().step(1).min(1).default(3),
   reconnectGraceMs: z.number().step(1).min(0).default(30_000),
@@ -51,6 +54,7 @@ export const Config: z<SidebarConfig> = z.object({
 export interface ResolvedSidebarConfig {
   readLimit: number
   mediaLimit: number
+  videoLimit: number
   listLimit: number
   terminalsPerSession: number
   reconnectGraceMs: number
@@ -66,6 +70,7 @@ export function resolveSidebarConfig(config: SidebarConfig | undefined): Resolve
   return {
     readLimit: config?.readLimit ?? 512 * 1024,
     mediaLimit: config?.mediaLimit ?? 20 * 1024 * 1024,
+    videoLimit: config?.videoLimit ?? 4 * 1024 * 1024 * 1024,
     listLimit: config?.listLimit ?? 1000,
     terminalsPerSession: config?.terminalsPerSession ?? 3,
     reconnectGraceMs: config?.reconnectGraceMs ?? 30_000,
@@ -85,7 +90,6 @@ export const PrefsSchema: z<SidebarPrefs> = z.object({
   interceptOpenPath: z.boolean().default(true),
   htmlViewerNoSandbox: z.boolean().default(false),
   htmlViewerDefaultUnsafe: z.boolean().default(false),
-  browserNoSandbox: z.boolean().default(false),
   browserInterceptLinks: z.boolean().default(true),
   // Per-feature enable switches are OPEN maps (any tab/viewer id, built-in or
   // external): an absent key means enabled, so old documents resolve to {}

@@ -104,7 +104,7 @@ interface TabDescriptor {
   icon?: ReactNode | ((size: number) => ReactNode)
   /** + 菜单排序（升序）；默认 100。内置：explorer=10, git=20, subagent=30, terminal=40 */
   order?: number
-  /** 从 + 菜单隐藏（editor/diff 用：由其他流程触发打开，不在菜单里） */
+  /** 从 + 菜单隐藏（editor/preview/diff 用：由其他流程触发打开，不在菜单里） */
   hidden?: boolean
   /** + 菜单禁用判定（如 terminal 配额满）。三参：ctx、会话 scope、当前状态 */
   available?: (ctx: Context, scope: SessionScope, state: SidebarState) => boolean
@@ -116,7 +116,7 @@ interface TabDescriptor {
   /**
    * 去重键：openTab 时若已存在 dedupeKey 相同的 tab，则聚焦而非新开。
    * 返回 undefined 表示不去重（每次都新开，但同 id 会被 id 安全网聚焦）。
-   * 内置策略：explorer/git/subagent 用 single: true；editor 用 tab => tab.path；diff 用 tab => tab.id。
+   * 内置策略：explorer/git/subagent 用 single: true；editor/preview 用 tab => tab.path；diff 用 tab => tab.id。
    */
   dedupeKey?: (tab: SidebarTab) => string | undefined
   /**
@@ -150,7 +150,7 @@ interface TabComponentProps {
   ctx: Context                 // client cordis context
   store: SidebarStore          // better-sidebar 的状态 store（可调 reduce 等）
   scope: SessionScope          // { sessionId, cwd? }
-  tab: SidebarTab              // 当前 tab 实例（含 id/type/title/path?/diff?）
+  tab: SidebarTab              // 当前 tab 实例（含 id/type/title/path?/viewerId?/diff?）
   visible: boolean             // 是否是当前激活 tab 且面板打开（不可见时暂停轮询等）
   // 以下由内置 tab 使用，外部 tab 可忽略：
   expanded?: string[]          // explorer 的展开目录集
@@ -214,14 +214,19 @@ ctx.effect(() =>
 | id | order | single | hidden | 用途 |
 |---|---|---|---|---|
 | `editor` | -1 | 否（按 path 去重） | 是 | 文件编辑/预览（由 openSidebarFile 触发） |
-| `explorer` | 10 | 是 | 否 | 文件资源管理器 |
+| `preview` | -1 | 否（按 path 去重） | 是 | 图片/视频/PDF/Office 只读预览；与 Browser 共用右栏（由文件路由触发） |
+| `explorer` | 10 | 是 | 是 | 文件资源管理器（挂在左侧专属面板，不出现在右侧工作台 `+` 菜单） |
 | `git` | 20 | 是 | 否 | Git 面板 |
 | `subagent` | 30 | 是 | 否 | 子代理拓扑 |
 | `terminal` | 40 | 否 | 否 | 终端（nextTerminal 自增） |
-| `browser` | 50 | 否（createTab 铸造 browser:`<n>`，nextBrowser 自增） | 否 | 内嵌网页浏览器（沙箱 iframe；可设置关闭沙箱） |
+| `browser` | 50 | 否（createTab 铸造 browser:`<n>`，nextBrowser 自增） | 否 | 与 Preview 共用右栏的内嵌网页浏览器（普通 iframe） |
 | `diff` | -1 | 否（按 id 去重） | 是 | 差异查看（由 GitView 触发） |
 
 你的 `id` 不可与上述重复，否则 `registerTab` 抛 `"tab type \"X\" already registered"`。
+
+文件打开统一经过 `src/client/file-open-router.ts` 与 `openSidebarFile`：image/video/PDF/DOCX/XLSX/PPTX 进入右栏 `preview`；Markdown、HTML、代码及普通文本进入 `dsh-file-edit` 的顶部「文件」；关闭的 Preview Viewer、MKV/AVI、旧版 DOC/XLS/PPT、未知二进制或缺失的 `dsh-file-edit` 使用调用方提供的系统打开或下载兜底。Explorer 点击/右键、Git 右键、聊天产物与正文链接、工具路径、`ctx.workspaces.openPath` 及遵循该标准入口的其他插件不得各自复制扩展名判断。
+
+Host `/sidebar/file` 已为 MP4/M4V/WebM/MOV/OGV 提供 `GET`/`HEAD`、单段 byte Range、`206`/`416`、断流销毁及独立 `videoLimit`（默认 4GB）；图片/PDF/Office 继续使用 `mediaLimit`（默认 20MB）。每个完整/Range 请求都重新走 Host 信任、session cwd、realpath、普通文件、软链接越界和大小校验；失败通过 `x-dsh-media-error` 暴露 missing / too-large / forbidden / range / unreadable / network 分类，视频超限时普通预览返回 413，但显式下载仍保持流式。内置 `video` Viewer 仍以原生 `<video playsinline preload="metadata">` 直接指向该 URL，不 fetch 全文件、不创建 Blob、不自动播放，但控制层使用 Harness 主题：播放/暂停、时间、拖动与缓冲进度、音量/静音、0.5×–2× 倍速、全屏、画中画和加载/错误状态。播放器首次激活先做 `HEAD` 预检并结合 `canPlayType()` 判断容器能力，成功后才附加 `src`；20 秒未获得 metadata 必须退出加载态，只有音轨而无视频尺寸时必须显示无视频轨错误。播放器局部聚焦时支持 Space、方向键、J/L、M、F；不得注册全局快捷键或拦截表单控件与 IME。折叠恢复态挂载无 `src` 的元素，首次激活才附加媒体地址；切走标签、收起右栏或切换会话立即暂停但保留播放时间，重新激活不自动续播；同时只允许一个 Preview 视频播放，关闭时必须 `pause()`、移除 `src` 并 `load()` 取消媒体请求。错误状态提供重试、经过工作区词法与 realpath 双边界验证的系统默认播放器入口及下载入口。不要增加自动转码、整文件缓冲或大型临时文件；浏览器不能可靠区分编码不支持与文件损坏，文案不得伪造过度精确的诊断。
 
 ---
 
@@ -264,6 +269,7 @@ interface FileViewerProps {
   path: string
   title: string
   viewerId: string         // 命中 viewer 的 id（如 'code' / 'my-plugin:csv'）
+  visible: boolean         // 所属 tab 激活且面板展开；媒体 viewer 据此暂停后台活动
   content?: string        // fetchStrategy='fsRead' 时
   truncated?: boolean     // fetchStrategy='fsRead' 时
   mediaUrl?: string       // fetchStrategy='mediaUrl' 时
@@ -277,7 +283,7 @@ interface FileViewerProps {
 |---|---|---|---|
 | `none` | 不需要字节 | （无） | 自渲染（如纯 UI） |
 | `fsRead` | `/sidebar/api` 的 `fs.read` | `content`, `truncated` | 文本类（CSV/JSON/XML） |
-| `mediaUrl` | `/sidebar/file` 媒体路由 URL | `mediaUrl` | 图片/PDF/Office（viewer 自己 fetch 字节） |
+| `mediaUrl` | `/sidebar/file` 媒体路由 URL | `mediaUrl` | 图片/视频/PDF/Office（视频直接使用 URL；Office viewer 自己 fetch 字节） |
 | `custom` | viewer 的 `load()` 函数 | `customData` | 自定义协议（如远程拉取） |
 | `binary-download` | 不预览，显示下载按钮 | （无） | 无客户端渲染器的二进制格式 |
 
@@ -292,7 +298,7 @@ interface FileViewerProps {
 
 > **head 字节从哪来**：第一次匹配（纯扩展名）没有 head。`fsRead` 策略读取后若文件为二进制，host 的 `fs.read` 响应会带 `head` 字段（base64，前 4KB），编辑器会用它对 `detect` viewer **重匹配一次**——所以 detect 型 viewer 的实际触发场景是"扩展名匹配落空/二进制文件"。文本文件的 detect 嗅探不在内置流程内（用 `exts` 或 `custom` 策略替代）。
 
-> **内置 viewer**（不可重复注册，全部 9 个）：image(0) / pdf(0) / docx(0) / xlsx(0) / pptx(0) / markdown(0, fsRead) / html(0, fsRead, 沙箱 iframe 预览) / code(-100, catch-all, fsRead) / binary-download(-50, exts doc/xls/ppt + NUL detect)。
+> **内置 viewer**（不可重复注册，全部 10 个）：image(0) / video(0, MP4/M4V/WebM/MOV/OGV) / pdf(0) / docx(0) / xlsx(0) / pptx(0) / markdown(0, fsRead) / html(0, fsRead, 沙箱 iframe 预览) / code(-100, catch-all, fsRead) / binary-download(-50, exts doc/xls/ppt/mkv/avi + NUL detect)。
 > code 是兜底 viewer：任何其他 viewer 未认领的文件都会落到 code（CodeMirror 文本编辑）；二进制文件经 head 重匹配被 binary-download 的 NUL detect 认领（下载按钮）。外部 viewer 注册同扩展名 + 更高 priority 即可覆盖。
 
 ### 4.5 注册示例
@@ -376,7 +382,7 @@ interface BetterSidebarService {
    * 折叠时自动展开（右侧面板；落点 pane 在底部树则展开底部面板；窄视口
    * 展开合并抽屉）；类型型打开（+ 菜单、agent 终端自动补 tab）不展开。
    */
-  openTab(seed: { type: string; title?: string; path?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void
+  openTab(seed: { type: string; title?: string; path?: string; viewerId?: string; diff?: SidebarTab['diff']; id?: string; url?: string }): void
   /** 关闭一个 tab */
   closeTab(tabId: string): void
   /** 订阅注册表变化（register/dispose 时触发） */
@@ -492,11 +498,11 @@ function parseCsv(text: string): string[][] { /* ... */ }
 
 better-sidebar 自己的内置 tab 和 viewer 就是参考实现（"吃狗粮"）：
 
-- **`src/client/builtins/`**：7 个内置 tab（explorer/git/subagent/terminal/browser/editor/diff）+ 9 个内置 viewer（image/pdf/docx/xlsx/pptx/markdown/html/code/binary-download）的注册代码（tabs.tsx / viewers.tsx / index.ts）
+- **`src/client/builtins/`**：8 个内置 tab（explorer/git/subagent/terminal/browser/editor/preview/diff）+ 10 个内置 viewer（image/video/pdf/docx/xlsx/pptx/markdown/html/code/binary-download）的注册代码（tabs.tsx / viewers.tsx / index.ts）
 - **`src/client/service.ts`**：`BetterSidebarService` 接口 + `createBetterSidebarService` 工厂实现
 - **`src/client/SideCardSection.tsx`**：声明式设置页（注册表驱动清单 + `settings.toggles` 嵌套开关 + 开关持久化）
 - **`tests/service.spec.ts`**：注册表生命周期 / 匹配算法 / dedupe / createTab / 启用态 gating 测试
-- **`tests/builtins.spec.ts`**：内置注册清单断言（7 tab + 9 viewer + 声明式元数据）
+- **`tests/builtins.spec.ts`**：内置注册清单断言（8 tab + 10 viewer + 声明式元数据）
 - **`docs/plans/2026-08-11-service-registry-design.md`** / **`docs/plans/2026-08-11-declarative-sidebar-settings-design.md`**：设计文档（含实施偏差记录）
 
 调试时直接读这些文件即可看到所有 API 的真实用法。

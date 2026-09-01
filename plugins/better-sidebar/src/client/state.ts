@@ -1,16 +1,18 @@
 /**
  * Per-session sidebar state: the panel geometry, the split-pane workbench
  * tree, open tabs, and the explorer expansion set. One state instance per
- * conversation id, persisted to localStorage under `dsh-sidebar:v1:<id>` so
- * a reload restores the exact layout of the session it belongs to — switching
- * conversations swaps the whole state (memory + isolation).
+ * conversation id, persisted through the Host-owned layout store (with
+ * localStorage retained as a same-origin compatibility cache) so a reload or
+ * desktop restart restores the layout of the session it belongs to — switching
+ * conversations swaps the whole state (memory + isolation). Panel visibility
+ * is deliberately transient: entering a session always starts with the web
+ * right content rail closed, while its tabs, URLs, and geometry remain restorable.
  *
  * The split tree is a recursive structure: a leaf holds a tab group, a split
  * divides the space row- or column-wise with fractional sizes. All tree
  * operations are pure functions over the node, unit-tested in tests/state.spec.ts.
  */
 import { SIDEBAR_PREFS_DEFAULTS, type SidebarPrefs } from '../prefs-shared.ts'
-import { isNarrowWidth } from './breakpoints.ts'
 
 /**
  * Tab type identifier. Builtins register their ids (explorer / git / editor
@@ -32,6 +34,8 @@ export interface SidebarTab {
   type: TabType
   title: string
   path?: string
+  /** File-viewer descriptor selected when a read-only preview tab opens. */
+  viewerId?: string
   diff?: SidebarDiffRef
 }
 
@@ -58,6 +62,10 @@ export type SplitNode = SidebarLeaf | SidebarSplit
 export interface SidebarState {
   panelOpen: boolean
   width: number
+  /** Whether the left panel (the dedicated explorer dock) is open. */
+  leftOpen: boolean
+  /** The left panel's width (clamped to the LEFT contract range). */
+  leftWidth: number
   /** The pane receiving newly opened tabs (last pane the user touched).
    *  Pane ids are globally unique across BOTH trees (shared uid counter), so
    *  one field resolves into either tree — see {@link treeOf}. */
@@ -85,6 +93,45 @@ export interface SidebarState {
   bottomSplits: SplitNode
 }
 
+/** Parent path for POSIX or Windows-style separators. */
+function explorerParentPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const at = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return at <= 0 ? trimmed.slice(0, Math.max(1, at + 1)) : trimmed.slice(0, at)
+}
+
+/** Expand every ancestor needed to reveal a marked file or folder row. */
+export function revealPathInState(
+  state: SidebarState,
+  root: string | undefined,
+  path: string,
+  isDir: boolean,
+): SidebarState {
+  if (root === undefined || !belongsToPath(path, root)) return state
+  const reveal: string[] = []
+  let current = isDir ? path : explorerParentPath(path)
+  while (current !== root) {
+    reveal.unshift(current)
+    const parent = explorerParentPath(current)
+    if (parent === current || !belongsToPath(parent, root)) return state
+    current = parent
+  }
+  const expanded = [...new Set([...state.expanded, ...reveal])]
+  return expanded.length === state.expanded.length && expanded.every((value, index) => value === state.expanded[index])
+    ? state
+    : { ...state, expanded }
+}
+
+/** Backward-compatible directory-only form used by existing consumers/tests. */
+export function revealFolderInState(state: SidebarState, root: string | undefined, path: string): SidebarState {
+  return revealPathInState(state, root, path, true)
+}
+
+/** Close every open Explorer directory without disturbing other sidebar state. */
+export function collapseAllFoldersInState(state: SidebarState): SidebarState {
+  return state.expanded.length === 0 ? state : { ...state, expanded: [] }
+}
+
 export const PANEL_MIN = 280
 export const PANEL_MAX = 640
 export const PANEL_DEFAULT = 400
@@ -93,6 +140,11 @@ export const TAB_MAX_WIDTH = 160
  * bound is the viewport, enforced by {@link setBottomHeight}). */
 export const BOTTOM_MIN = 120
 export const BOTTOM_DEFAULT = 220
+/** Left panel (the dedicated explorer dock) geometry contract. The upper
+ * bound is a hard cap so a file tree never swallows the conversation. */
+export const LEFT_MIN = 200
+export const LEFT_MAX = 460
+export const LEFT_DEFAULT = 280
 
 let nextIdCounter = 0
 /** Unique pane/tab id within one state instance. */
@@ -135,25 +187,23 @@ function maxCounterId(parsed: unknown): number {
   return max
 }
 
-/** A fresh default state: one explorer tab in one pane, open per the caller's
- * preference. `width` is the caller's preferred panel width (default
- * PANEL_DEFAULT) and `panelOpen` whether the panel starts expanded (default
- * true); the store seeds new sessions from the user's side card prefs.
- * `seedExplorer` places the default explorer tab — the store passes false
- * when the user disabled the explorer tab type in settings, so a fresh
- * session starts with an empty pane instead of a tab they turned off. */
+/** A fresh default state: an empty right-panel pane (file/editor tabs open
+ * here) plus a left panel hosting the dedicated explorer. `width` is the
+ * caller's preferred right-panel width (default PANEL_DEFAULT) and
+ * `panelOpen` whether the right panel starts expanded (default true); the
+ * store seeds new sessions from the user's side card prefs. `seedExplorer`
+ * controls whether the LEFT explorer panel starts open — the store passes
+ * false when the user disabled the explorer tab type in settings. */
 export function makeDefaultState(width = PANEL_DEFAULT, panelOpen = true, seedExplorer = true): SidebarState {
   const leaf: SidebarLeaf = { kind: 'leaf', id: uid('pane'), tabs: [], active: null }
-  if (seedExplorer) {
-    leaf.tabs = [{ id: uid('tab'), type: 'explorer', title: 'Explorer' }]
-    leaf.active = leaf.tabs[0]!.id
-  }
   // The bottom panel starts closed with an empty pane (its welcome cards
   // offer the openable types on first use).
   const bottomLeaf: SidebarLeaf = { kind: 'leaf', id: uid('pane'), tabs: [], active: null }
   return {
     panelOpen,
     width,
+    leftOpen: seedExplorer,
+    leftWidth: LEFT_DEFAULT,
     activePane: leaf.id,
     nextTerminal: 1,
     nextBrowser: 1,
@@ -605,11 +655,20 @@ export function toggleBottomPanel(state: SidebarState): SidebarState {
   return { ...state, bottomOpen: !state.bottomOpen }
 }
 
+export function toggleLeftPanel(state: SidebarState): SidebarState {
+  return { ...state, leftOpen: !state.leftOpen }
+}
+
 /** Set the panel width (clamped to the contract range; the upper bound is
  * the viewport so the fullscreen expansion can fill the window). */
 export function setWidth(state: SidebarState, width: number): SidebarState {
   const max = typeof window !== 'undefined' ? Math.max(PANEL_MIN, window.innerWidth) : PANEL_MAX
   return { ...state, width: Math.min(max, Math.max(PANEL_MIN, Math.round(width))) }
+}
+
+/** Set the left panel width (clamped to the LEFT contract range). */
+export function setLeftWidth(state: SidebarState, width: number): SidebarState {
+  return { ...state, leftWidth: Math.min(LEFT_MAX, Math.max(LEFT_MIN, Math.round(width))) }
 }
 
 /** Set the bottom panel height (clamped to the contract range). The upper
@@ -628,6 +687,83 @@ export function toggleExpanded(state: SidebarState, path: string): SidebarState 
     ? state.expanded.filter(item => item !== path)
     : [...state.expanded, path]
   return { ...state, expanded }
+}
+
+/** Replace an exact path or one of its descendants after an Explorer rename. */
+function replacePathPrefix(value: string, from: string, to: string): string {
+  if (value === from) return to
+  if (value.startsWith(`${from}/`) || value.startsWith(`${from}\\`)) return `${to}${value.slice(from.length)}`
+  return value
+}
+
+/** Last segment of a platform path (used to keep renamed editor tabs legible). */
+function pathLabel(value: string): string {
+  const at = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
+  return at === -1 ? value : value.slice(at + 1)
+}
+
+/** Remap file-bearing tabs in every pane without changing their stable ids. */
+function renamePathsInTree(node: SplitNode, from: string, to: string): SplitNode {
+  if (node.kind === 'split') {
+    return { ...node, children: node.children.map(child => renamePathsInTree(child, from, to)) }
+  }
+  return {
+    ...node,
+    tabs: node.tabs.map((tab) => {
+      const path = tab.path === undefined ? undefined : replacePathPrefix(tab.path, from, to)
+      const diff = tab.diff?.kind === 'worktree'
+        ? { ...tab.diff, path: replacePathPrefix(tab.diff.path, from, to) }
+        : tab.diff
+      const renamed = path !== tab.path || diff !== tab.diff
+      return renamed
+        ? { ...tab, ...(path !== undefined ? { path } : {}), diff, ...(path !== tab.path && path !== undefined ? { title: pathLabel(path) } : {}) }
+        : tab
+    }),
+  }
+}
+
+/** Keep Explorer expansion and any sidebar-owned open tabs coherent after a file/folder rename. */
+export function renamePathInState(state: SidebarState, from: string, to: string): SidebarState {
+  if (from === to) return state
+  return {
+    ...state,
+    expanded: [...new Set(state.expanded.map(path => replacePathPrefix(path, from, to)))],
+    splits: renamePathsInTree(state.splits, from, to),
+    bottomSplits: renamePathsInTree(state.bottomSplits, from, to),
+  }
+}
+
+/** Whether a path is the deleted entry itself or one of its descendants. */
+function belongsToPath(value: string, path: string): boolean {
+  return value === path || value.startsWith(`${path}/`) || value.startsWith(`${path}\\`)
+}
+
+/** Remove file-bearing tabs for a deleted entry while preserving the pane layout. */
+function deletePathsInTree(node: SplitNode, path: string): SplitNode {
+  if (node.kind === 'split') {
+    return { ...node, children: node.children.map(child => deletePathsInTree(child, path)) }
+  }
+  const tabs = node.tabs.filter((tab) => {
+    if (tab.path !== undefined && belongsToPath(tab.path, path)) return false
+    return !(tab.diff?.kind === 'worktree' && belongsToPath(tab.diff.path, path))
+  })
+  return {
+    ...node,
+    tabs,
+    active: node.active !== null && tabs.some(tab => tab.id === node.active)
+      ? node.active
+      : tabs[tabs.length - 1]?.id ?? null,
+  }
+}
+
+/** Keep Explorer expansion and sidebar-owned tabs coherent after a deletion. */
+export function deletePathInState(state: SidebarState, path: string): SidebarState {
+  return {
+    ...state,
+    expanded: state.expanded.filter(value => !belongsToPath(value, path)),
+    splits: deletePathsInTree(state.splits, path),
+    bottomSplits: deletePathsInTree(state.bottomSplits, path),
+  }
 }
 
 /** Adjust one split divider: `i` is the left/top child index, delta in fractions. */
@@ -742,7 +878,7 @@ export function defaultWidthFor(viewport: number, percent: number): number {
   return Math.min(viewport, Math.max(PANEL_MIN, Math.round(viewport * percent / 100)))
 }
 
-function loadState(sessionId: string, prefs: SidebarPrefs): SidebarState {
+function loadState(sessionId: string, prefs: SidebarPrefs): { state: SidebarState; local: boolean } {
   try {
     const raw = localStorage.getItem(`${STORAGE_PREFIX}:${sessionId}`)
     if (raw !== null) {
@@ -751,27 +887,23 @@ function loadState(sessionId: string, prefs: SidebarPrefs): SidebarState {
       // sanitize re-ids any duplicates the pre-seeding counter left behind.
       nextIdCounter = maxCounterId(parsed)
       const sanitized = sanitizeState(parsed)
-      if (sanitized !== undefined) return sanitized
+      if (sanitized !== undefined) return { state: { ...sanitized, panelOpen: false }, local: true }
     }
   } catch {
     // Corrupt or unavailable storage: fall through to the default.
   }
-  // New sessions seed from the user's side card prefs: the width is the
+  // New sessions seed geometry from the user's side card prefs: the width is the
   // chosen percent of the window (clamped to the panel floor and the
   // viewport so a huge percent can never crush the app shell), the panel
-  // starts open only when the preference says so, and the default explorer
-  // tab is skipped when the user disabled the explorer tab type. On a
-  // NARROW viewport a brand-new session starts collapsed instead — the
-  // panel is a full-screen drawer there, and auto-opening it on first
-  // paint would cover the conversation before the user asked. Only the
-  // first seeding is affected: once the user expands the drawer,
-  // `panelOpen: true` persists like any other state.
+  // default explorer tab is skipped when the user disabled the explorer tab
+  // type. The Browser/Preview right rail is always collapsed on entry.
+  // Opening it is an explicit content action and never carries across a
+  // reload or session switch; its tabs themselves remain persisted.
   const viewport = typeof window !== 'undefined' ? window.innerWidth : undefined
   const width = viewport === undefined
     ? PANEL_DEFAULT
     : defaultWidthFor(viewport, prefs.defaultWidthPercent)
-  const openByDefault = prefs.openByDefault && (viewport === undefined || !isNarrowWidth(viewport))
-  return makeDefaultState(width, openByDefault, prefs.tabsEnabled['explorer'] !== false)
+  return { state: makeDefaultState(width, false, prefs.tabsEnabled['explorer'] !== false), local: false }
 }
 
 /**
@@ -822,9 +954,19 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
   const bottomSplits = sanitizeNode(record.bottomSplits, seen, reid)
     ?? { kind: 'leaf' as const, id: uid('pane'), tabs: [], active: null }
   const maxWidth = typeof window !== 'undefined' ? window.innerWidth : Infinity
+  // Left-panel fields arrived in a later build: missing/malformed values on
+  // an OLDER persisted state default (open / default width) so existing
+  // layouts keep loading.
+  const leftOpen = record.leftOpen === true
+  const rawLeft = typeof record.leftWidth === 'number' && Number.isFinite(record.leftWidth)
+    ? record.leftWidth
+    : LEFT_DEFAULT
+  const leftWidth = Math.min(LEFT_MAX, Math.max(LEFT_MIN, Math.round(rawLeft)))
   return {
     panelOpen: record.panelOpen,
     width: Math.max(PANEL_MIN, Math.min(record.width, maxWidth)),
+    leftOpen,
+    leftWidth,
     // A stale duplicate pane id may have been re-ided; follow the rename so
     // new tabs still land in the pane the user was using.
     activePane: typeof record.activePane === 'string' ? (reid.get(record.activePane) ?? record.activePane) : null,
@@ -891,6 +1033,7 @@ function sanitizeNode(node: unknown, seen: Set<string>, reid: Map<string, string
         type: candidate.type,
         title: candidate.title,
         ...(typeof candidate.path === 'string' ? { path: candidate.path } : {}),
+        ...(typeof candidate.viewerId === 'string' ? { viewerId: candidate.viewerId } : {}),
       })
     }
     const active = typeof record.active === 'string' ? record.active : null
@@ -920,7 +1063,18 @@ function sanitizeNode(node: unknown, seen: Set<string>, reid: Map<string, string
   return undefined
 }
 
-/** The session-scoped store: one state per conversation, localStorage-backed. */
+/** Stable Host persistence seam; production backs it with `$DSH_HOME/state`. */
+export interface SidebarStatePersistence {
+  load(sessionId: string): Promise<unknown | undefined>
+  save(sessionId: string, state: SidebarState): Promise<void>
+}
+
+/** Optional post-paint lane supplied by the Harness Client Runtime. */
+export interface SidebarStartupTasks {
+  schedule(task: () => void | Promise<void>, signal?: AbortSignal): Promise<void>
+}
+
+/** The session-scoped store: one state per conversation, Host-backed. */
 export class SidebarStore {
   private readonly bySession = new Map<string, SidebarState>()
   private snapshot: SidebarSnapshot = {
@@ -929,9 +1083,16 @@ export class SidebarStore {
     prefs: { ...SIDEBAR_PREFS_DEFAULTS },
   }
   private readonly listeners = new Set<() => void>()
-  private persistTimer: number | undefined
+  private readonly persistTimers = new Map<string, number>()
+  private readonly revisions = new Map<string, number>()
+  private readonly hydratedSessions = new Set<string>()
   /** User-facing side card prefs seeding brand-new session states (defaults until the settings RPC resolves). */
   private prefs: SidebarPrefs = { ...SIDEBAR_PREFS_DEFAULTS }
+
+  constructor(
+    private readonly persistence?: SidebarStatePersistence,
+    private readonly startupTasks?: SidebarStartupTasks,
+  ) {}
 
   /**
    * Replace the side card prefs (the settings RPC result / settings page
@@ -957,16 +1118,31 @@ export class SidebarStore {
       this.snapshot = { sessionId: undefined, state: undefined, prefs: this.prefs }
     } else {
       let state = this.bySession.get(sessionId)
+      let hasLocalState = false
       if (state === undefined) {
-        state = loadState(sessionId, this.prefs)
-        this.bySession.set(sessionId, state)
+        const loaded = loadState(sessionId, this.prefs)
+        state = loaded.state
+        hasLocalState = loaded.local
       } else {
         // Cache hit: another session's load/ops may have left the uid
         // counter below THIS session's persisted ids — re-seed so fresh
         // pane/split ids can never collide with its tree.
         nextIdCounter = maxCounterId(state)
       }
+      // Browser visibility is intentionally not session state: every entry
+      // starts closed, including cache hits after switching away and back.
+      // Tabs/URLs/geometry stay intact and the title-bar globe reopens them.
+      state = state.panelOpen ? { ...state, panelOpen: false } : state
+      this.bySession.set(sessionId, state)
       this.snapshot = { sessionId, state, prefs: this.prefs }
+
+      if (hasLocalState) {
+        // One successful same-origin load migrates the legacy cache into the
+        // Host store, so the next random-port desktop restart can restore it.
+        void this.persistence?.save(sessionId, state).catch(() => {})
+      } else {
+        this.hydrateFromHost(sessionId)
+      }
     }
     this.notify()
   }
@@ -989,6 +1165,7 @@ export class SidebarStore {
     mutator(draft)
     this.bySession.set(sessionId, draft)
     this.snapshot = { sessionId, state: draft, prefs: this.prefs }
+    this.bumpRevision(sessionId)
     this.schedulePersist(sessionId, draft)
     this.notify()
   }
@@ -1016,19 +1193,55 @@ export class SidebarStore {
     const next = reducer(state)
     this.bySession.set(sessionId, next)
     this.snapshot = { sessionId, state: next, prefs: this.prefs }
+    this.bumpRevision(sessionId)
     this.schedulePersist(sessionId, next)
     this.notify()
   }
 
   private schedulePersist(sessionId: string, state: SidebarState): void {
-    window.clearTimeout(this.persistTimer)
-    this.persistTimer = window.setTimeout(() => {
+    const existing = this.persistTimers.get(sessionId)
+    if (existing !== undefined) window.clearTimeout(existing)
+    const timer = window.setTimeout(() => {
+      this.persistTimers.delete(sessionId)
       try {
         localStorage.setItem(`${STORAGE_PREFIX}:${sessionId}`, JSON.stringify(state))
       } catch {
         // Storage full or unavailable: layout memory is best-effort.
       }
+      void this.persistence?.save(sessionId, state).catch(() => {
+        // The in-memory state and local compatibility cache remain usable;
+        // the next mutation retries the Host write.
+      })
     }, 200)
+    this.persistTimers.set(sessionId, timer)
+  }
+
+  private bumpRevision(sessionId: string): void {
+    this.revisions.set(sessionId, (this.revisions.get(sessionId) ?? 0) + 1)
+  }
+
+  private hydrateFromHost(sessionId: string): void {
+    if (this.persistence === undefined || this.hydratedSessions.has(sessionId)) return
+    this.hydratedSessions.add(sessionId)
+    const revision = this.revisions.get(sessionId) ?? 0
+    const load = () => this.persistence?.load(sessionId).then((raw) => {
+      if ((this.revisions.get(sessionId) ?? 0) !== revision || raw === undefined) return
+      nextIdCounter = Math.max(nextIdCounter, maxCounterId(raw))
+      const restored = sanitizeState(raw)
+      if (restored === undefined) return
+      const state = { ...restored, panelOpen: false }
+      this.bySession.set(sessionId, state)
+      if (this.snapshot.sessionId === sessionId) {
+        this.snapshot = { sessionId, state, prefs: this.prefs }
+        this.notify()
+      }
+    }).catch(() => {
+      // Host persistence is best-effort; the fresh session remains usable.
+    })
+    if (this.startupTasks === undefined) void load()
+    else void this.startupTasks.schedule(load).catch(() => {
+      // A deferred Host restore is best-effort, matching the direct path.
+    })
   }
 
   private notify(): void {
@@ -1043,6 +1256,9 @@ export class SidebarStore {
  * lifetime belongs to the plugin activation, exactly like the official
  * `createXXXStore()` factory rule.
  */
-export function createSidebarStore(): SidebarStore {
-  return new SidebarStore()
+export function createSidebarStore(
+  persistence?: SidebarStatePersistence,
+  startupTasks?: SidebarStartupTasks,
+): SidebarStore {
+  return new SidebarStore(persistence, startupTasks)
 }

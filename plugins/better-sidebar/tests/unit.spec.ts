@@ -3,8 +3,8 @@ import { compareEntries, isWithin, parentOf, rootLabel, requireAbsolute } from '
 import { parseLogLines, parsePorcelainZ } from '../src/git.ts'
 import { parseUnifiedDiff } from '../src/client/DiffView.tsx'
 import {
-  activateTab, allLeaves, BOTTOM_DEFAULT, BOTTOM_MIN, closeTab, createSidebarStore, defaultWidthFor, insertLeafAt, makeDefaultState,
-  migrateBottomTabs, moveTab, moveTabToEdge, openDiffTab, openTabInActivePane, patchTab, reconcileAgentTerminals, resizeSplit, resizeSplitIn, sanitizeState, setBottomHeight, splitPane, tabOpenIn, toggleBottomPanel, toggleExpanded, togglePanel,
+  activateTab, allLeaves, BOTTOM_DEFAULT, BOTTOM_MIN, closeTab, collapseAllFoldersInState, createSidebarStore, defaultWidthFor, deletePathInState, insertLeafAt, makeDefaultState,
+  migrateBottomTabs, moveTab, moveTabToEdge, openDiffTab, openTabInActivePane, patchTab, reconcileAgentTerminals, renamePathInState, revealFolderInState, revealPathInState, resizeSplit, resizeSplitIn, sanitizeState, setBottomHeight, splitPane, tabOpenIn, toggleBottomPanel, toggleExpanded, togglePanel,
   type SidebarState, type SidebarTab, type SplitNode,
 } from '../src/client/state.ts'
 import { loadPrefs, type SidebarSettingsClient } from '../src/client/prefs.ts'
@@ -14,9 +14,14 @@ import { officeKindForExt } from '../src/client/office-types.ts'
 import { isPdfExt } from '../src/client/pdf-types.ts'
 import { isImageExt } from '../src/client/image-types.ts'
 import { relativeTo } from '../src/client/paths.ts'
-import { producedForClosing, resolveSidebarPath, selectProducedFiles } from '../src/client/produced-files.ts'
+import { producedForClosing, producedFromTurnData, resolveSidebarPath, selectProducedFiles } from '../src/client/produced-files.ts'
 import { wrapOpenPath, type OpenPathInterceptDeps, type OpenPathService } from '../src/client/openpath-intercept.ts'
 import { registerOpenPathInterception } from '../src/client/intercept.tsx'
+import { createBetterSidebarService } from '../src/client/service.ts'
+import { isHtmlFilePath, remapExplorerDataAfterMove, remapExplorerDataAfterRename } from '../src/client/ExplorerView.tsx'
+import {
+  deleteFolderMarks, FOLDER_MARK_EMOJIS, renameFolderMarks, sanitizeFolderMarks, toggleFolderMark,
+} from '../src/client/folder-marks.ts'
 import type { Context } from '../src/context-types.ts'
 import { defaultShell, ensureSpawnHelper } from '../src/pty-manager.ts'
 import {
@@ -78,6 +83,91 @@ describe('fs-tree', () => {
     // Windows drive-root containment.
     expect(isWithin('C:\\', 'C:\\Users\\me\\a.png', 'win32')).toBe(true)
     expect(isWithin('c:\\users', 'C:/USERS/me/b.png', 'win32')).toBe(true)
+  })
+})
+
+describe('explorer cache continuity', () => {
+  it('shows the built-in browser action only for HTML files', () => {
+    expect(isHtmlFilePath('/work/site/index.html')).toBe(true)
+    expect(isHtmlFilePath('/work/site/legacy.HTM')).toBe(true)
+    expect(isHtmlFilePath('/work/site/component.Html')).toBe(true)
+    expect(isHtmlFilePath('/work/site/index.html.md')).toBe(false)
+    expect(isHtmlFilePath('/work/site/html')).toBe(false)
+  })
+
+  it('remaps a renamed subtree without clearing loaded directory levels', () => {
+    const before = {
+      '/work': { entries: [
+        { name: 'docs', path: '/work/docs', isDir: true, hidden: false },
+        { name: 'keep.md', path: '/work/keep.md', isDir: false, hidden: false },
+      ] },
+      '/work/docs': { entries: [
+        { name: 'note.md', path: '/work/docs/note.md', isDir: false, hidden: false },
+      ] },
+    }
+
+    const after = remapExplorerDataAfterRename(before, '/work/docs', '/work/writing')
+    expect(Object.keys(after).sort()).toEqual(['/work', '/work/writing'])
+    expect(after['/work']?.entries).toEqual([
+      { name: 'writing', path: '/work/writing', isDir: true, hidden: false },
+      before['/work']!.entries[1],
+    ])
+    expect(after['/work/writing']?.entries?.[0]).toMatchObject({
+      name: 'note.md',
+      path: '/work/writing/note.md',
+    })
+    // The unrelated row keeps its original object identity: no full-tree churn.
+    expect(after['/work']?.entries?.[1]).toBe(before['/work']!.entries[1])
+  })
+
+  it('moves one cached file between directory levels without clearing the tree', () => {
+    const keep = { name: 'keep.md', path: '/work/keep.md', isDir: false, hidden: false }
+    const before = {
+      '/work': { entries: [
+        { name: 'docs', path: '/work/docs', isDir: true, hidden: false },
+        keep,
+      ] },
+      '/work/docs': { entries: [
+        { name: 'old.md', path: '/work/docs/old.md', isDir: false, hidden: false },
+      ] },
+    }
+    const after = remapExplorerDataAfterMove(before, '/work/docs/old.md', '/work/old.md')
+    expect(after['/work/docs']?.entries).toEqual([])
+    expect(after['/work']?.entries?.map(entry => entry.path)).toEqual([
+      '/work/docs', '/work/keep.md', '/work/old.md',
+    ])
+    expect(after['/work']?.entries?.[1]).toBe(keep)
+  })
+
+  it('moves one cached folder with all loaded descendant levels intact', () => {
+    const keep = { name: 'keep.md', path: '/work/keep.md', isDir: false, hidden: false }
+    const before = {
+      '/work': { entries: [
+        { name: 'archive', path: '/work/archive', isDir: true, hidden: false },
+        { name: 'docs', path: '/work/docs', isDir: true, hidden: false },
+        keep,
+      ] },
+      '/work/docs': { entries: [
+        { name: 'nested', path: '/work/docs/nested', isDir: true, hidden: false },
+        { name: 'note.md', path: '/work/docs/note.md', isDir: false, hidden: false },
+      ] },
+      '/work/docs/nested': { entries: [
+        { name: 'deep.md', path: '/work/docs/nested/deep.md', isDir: false, hidden: false },
+      ] },
+      '/work/archive': { entries: [] },
+    }
+
+    const after = remapExplorerDataAfterMove(before, '/work/docs', '/work/archive/docs')
+    expect(Object.keys(after).sort()).toEqual([
+      '/work', '/work/archive', '/work/archive/docs', '/work/archive/docs/nested',
+    ])
+    expect(after['/work']?.entries?.map(entry => entry.path)).toEqual(['/work/archive', '/work/keep.md'])
+    expect(after['/work/archive']?.entries?.map(entry => entry.path)).toEqual(['/work/archive/docs'])
+    expect(after['/work/archive/docs']?.entries?.map(entry => entry.path)).toEqual([
+      '/work/archive/docs/nested', '/work/archive/docs/note.md',
+    ])
+    expect(after['/work/archive/docs/nested']?.entries?.[0]?.path).toBe('/work/archive/docs/nested/deep.md')
+    expect(after['/work']?.entries?.[1]).toBe(keep)
   })
 })
 
@@ -215,7 +305,10 @@ describe('git parsing', () => {
 })
 
 describe('sidebar state', () => {
-  const state = (): SidebarState => makeDefaultState()
+  // The explorer no longer seeds into the right workbench (it lives in its
+  // own dedicated LEFT panel), so these tab-operation tests seed a generic
+  // tab into the right pane to operate on.
+  const state = (): SidebarState => openTabInActivePane(makeDefaultState(), { id: 'tab:seed', type: 'seed', title: 'Seed' })
 
   it('opens tabs into the active pane and dedupes by id (safety net)', () => {
     let s = state()
@@ -413,6 +506,24 @@ describe('sidebar state', () => {
     expect(after.tabs).toHaveLength(2)
   })
 
+  it('reorders Browser and Preview tabs together without changing their identity', () => {
+    let s = state()
+    s = openTabInActivePane(s, { id: 'browser:one', type: 'browser', title: 'example.com' })
+    s = openTabInActivePane(s, {
+      id: 'preview:/work/report.pdf', type: 'preview', title: 'report.pdf', path: '/work/report.pdf', viewerId: 'pdf',
+    })
+    const leaf = s.splits as { id: string; tabs: SidebarTab[] }
+    s = moveTab(s, leaf.id, 'preview:/work/report.pdf', leaf.id, 1)
+    const after = s.splits as { tabs: SidebarTab[]; active: string | null }
+    expect(after.tabs.map(tab => tab.id)).toEqual([
+      leaf.tabs[0]!.id,
+      'preview:/work/report.pdf',
+      'browser:one',
+    ])
+    expect(after.tabs[1]).toMatchObject({ path: '/work/report.pdf', viewerId: 'pdf' })
+    expect(after.active).toBe('preview:/work/report.pdf')
+  })
+
   it('closing the last tab removes the pane (promotes the sibling)', () => {
     let s = state()
     s = splitPane(s, 'col')
@@ -452,6 +563,126 @@ describe('sidebar state', () => {
     const tabId = leaf.tabs[0]!.id
     const after = activateTab(s, leaf.id, tabId)
     expect((after.splits as { active: string | null }).active).toBe(tabId)
+  })
+
+  it('reveals a marked folder by expanding its complete ancestor chain', () => {
+    const s = { ...state(), expanded: ['/work/keep'] }
+    const revealed = revealFolderInState(s, '/work', '/work/apps/web/src')
+    expect(revealed.expanded).toEqual([
+      '/work/keep',
+      '/work/apps',
+      '/work/apps/web',
+      '/work/apps/web/src',
+    ])
+    expect(revealFolderInState(s, '/work', '/other/src')).toBe(s)
+    expect(revealPathInState(s, '/work', '/work/apps/web/index.ts', false).expanded).toEqual([
+      '/work/keep',
+      '/work/apps',
+      '/work/apps/web',
+    ])
+    expect(collapseAllFoldersInState(revealed).expanded).toEqual([])
+  })
+
+  it('keeps six unique file/folder anchors, locks occupied emoji, and toggles the owner', () => {
+    let marks = FOLDER_MARK_EMOJIS.reduce(
+      (current, emoji, index) => toggleFolderMark(current, `/work/entry-${index}`, index % 2 === 0, emoji),
+      [] as ReturnType<typeof sanitizeFolderMarks>,
+    )
+    expect(marks).toHaveLength(6)
+    const occupied = toggleFolderMark(marks, '/work/replacement', false, '🍔')
+    expect(occupied).toEqual(marks)
+    expect(occupied.find(mark => mark.emoji === '🍔')?.path).toBe('/work/entry-1')
+    marks = toggleFolderMark(marks, '/work/entry-0', true, '🍿')
+    expect(marks).toHaveLength(5)
+    marks = toggleFolderMark(marks, '/work/replacement', false, '🍿')
+    expect(marks.find(mark => mark.emoji === '🍿')).toEqual({ path: '/work/replacement', emoji: '🍿', isDir: false })
+  })
+
+  it('migrates retired emoji and sanitizes, renames, and deletes persisted anchors', () => {
+    const clean = sanitizeFolderMarks([
+      { path: '/work/docs', emoji: '🌟' },
+      { path: '/work/duplicate-emoji', emoji: '🌟' },
+      { path: '/work/docs', emoji: '🍔' },
+      { path: '/work/tmp', emoji: 'not-allowed' },
+      null,
+    ])
+    expect(clean).toEqual([{ path: '/work/docs', emoji: '🍿', isDir: true }])
+    const renamed = renameFolderMarks([
+      ...clean,
+      { path: '/work/docs/child.ts', emoji: '🍔', isDir: false },
+      { path: '/work/keep', emoji: '🍟', isDir: true },
+    ], '/work/docs', '/work/writing')
+    expect(renamed.map(mark => mark.path)).toEqual([
+      '/work/writing',
+      '/work/writing/child.ts',
+      '/work/keep',
+    ])
+    expect(deleteFolderMarks(renamed, '/work/writing')).toEqual([
+      { path: '/work/keep', emoji: '🍟', isDir: true },
+    ])
+  })
+
+  it('remaps expanded descendants and file-bearing tabs after an explorer rename', () => {
+    let s = makeDefaultState()
+    s = { ...s, expanded: ['/work/docs', '/work/docs/child', '/work/other'] }
+    s = openTabInActivePane(s, { id: 'editor:doc', type: 'editor', title: 'note.md', path: '/work/docs/note.md' })
+    s = openTabInActivePane(s, { id: 'preview:image', type: 'preview', title: 'before.png', path: '/work/docs/before.png', viewerId: 'image' })
+    s = openTabInActivePane(s, { id: 'preview:video', type: 'preview', title: 'before.mp4', path: '/work/docs/before.mp4', viewerId: 'video' })
+    s = openTabInActivePane(s, {
+      id: 'diff:doc',
+      type: 'diff',
+      title: 'note.md',
+      diff: { kind: 'worktree', path: '/work/docs/note.md', staged: false },
+    })
+
+    const renamed = renamePathInState(s, '/work/docs', '/work/writing')
+    expect(renamed.expanded).toEqual(['/work/writing', '/work/writing/child', '/work/other'])
+    const tabs = allLeaves(renamed.splits).flatMap(leaf => leaf.tabs)
+    expect(tabs.find(tab => tab.id === 'editor:doc')).toMatchObject({
+      path: '/work/writing/note.md',
+      title: 'note.md',
+    })
+    expect(tabs.find(tab => tab.id === 'preview:image')).toMatchObject({
+      path: '/work/writing/before.png',
+      title: 'before.png',
+      viewerId: 'image',
+    })
+    expect(tabs.find(tab => tab.id === 'preview:video')).toMatchObject({
+      path: '/work/writing/before.mp4', title: 'before.mp4', viewerId: 'video',
+    })
+    expect(tabs.find(tab => tab.id === 'diff:doc')?.diff).toMatchObject({ path: '/work/writing/note.md' })
+
+    const fileRenamed = renamePathInState(renamed, '/work/writing/before.png', '/work/writing/after.png')
+    expect(allLeaves(fileRenamed.splits).flatMap(leaf => leaf.tabs).find(tab => tab.id === 'preview:image')).toMatchObject({
+      path: '/work/writing/after.png',
+      title: 'after.png',
+      viewerId: 'image',
+    })
+  })
+
+  it('removes deleted descendants from expansion and file-bearing tabs', () => {
+    let s = makeDefaultState()
+    s = { ...s, expanded: ['/work/docs', '/work/docs/child', '/work/other'] }
+    s = openTabInActivePane(s, { id: 'editor:doc', type: 'editor', title: 'note.md', path: '/work/docs/note.md' })
+    s = openTabInActivePane(s, { id: 'preview:image', type: 'preview', title: 'image.png', path: '/work/docs/image.png', viewerId: 'image' })
+    s = openTabInActivePane(s, { id: 'preview:video', type: 'preview', title: 'movie.mp4', path: '/work/docs/movie.mp4', viewerId: 'video' })
+    s = openTabInActivePane(s, { id: 'editor:keep', type: 'editor', title: 'keep.md', path: '/work/keep.md' })
+    s = openTabInActivePane(s, {
+      id: 'diff:doc',
+      type: 'diff',
+      title: 'note.md',
+      diff: { kind: 'worktree', path: '/work/docs/note.md', staged: false },
+    })
+
+    const deleted = deletePathInState(s, '/work/docs')
+    expect(deleted.expanded).toEqual(['/work/other'])
+    const leaf = allLeaves(deleted.splits)[0]!
+    expect(leaf.tabs.map(tab => tab.id)).toContain('editor:keep')
+    expect(leaf.tabs.map(tab => tab.id)).not.toContain('editor:doc')
+    expect(leaf.tabs.map(tab => tab.id)).not.toContain('preview:image')
+    expect(leaf.tabs.map(tab => tab.id)).not.toContain('preview:video')
+    expect(leaf.tabs.map(tab => tab.id)).not.toContain('diff:doc')
+    expect(leaf.active).toBe('editor:keep')
   })
 
   it('patchTab updates the title and path of one open tab (browser persistence)', () => {
@@ -618,8 +849,8 @@ describe('sidebar state', () => {
     const tab = { id: 'git', type: 'git' as const, title: 'Git' }
     s = openTabInActivePane(s, tab)
     expect((s.bottomSplits as { tabs: SidebarTab[] }).tabs.map(t => t.id)).toContain('git')
-    // The right tree is untouched.
-    expect((s.splits as { tabs: SidebarTab[] }).tabs.map(t => t.type)).toEqual(['explorer'])
+    // The right tree is untouched (still holds the seeded tab).
+    expect((s.splits as { tabs: SidebarTab[] }).tabs.map(t => t.type)).toEqual(['seed'])
     expect(s.activePane).toBe(bottomPane)
     // The id safety net works across trees: reopening the same id focuses it.
     const after = openTabInActivePane(s, tab)
@@ -921,6 +1152,9 @@ describe('produced-files derivation', () => {
   it('selector claims only when files exist', () => {
     expect(selectProducedFiles({ nodes: [{ kind: 'assistant', seq: 1, turn: 1 }], seq: 1 })).toBeNull()
     expect(selectProducedFiles({ nodes: [diffResult('a.ts'), { kind: 'assistant', seq: 1, turn: 1 }], seq: 1 })).toEqual(['a.ts'])
+    const deliverables = { produced: [{ path: '/tmp/a.md', seq: 2 }, { path: '/tmp/a.md', seq: 3 }, { path: '/tmp/later.md', seq: 8 }] }
+    expect(producedFromTurnData(deliverables, 3)).toEqual(['/tmp/a.md'])
+    expect(selectProducedFiles({ turn: { data: new Map([['deliverables', deliverables]]) }, seq: 3 })).toEqual(['/tmp/a.md'])
     expect(selectProducedFiles(null)).toBeNull()
   })
 
@@ -968,7 +1202,8 @@ describe('persisted state sanitization', () => {
     // they render as <OrphanedTab/> at view time and recover if the plugin
     // loads later. Only diff tabs are dropped (ephemeral).
     const withExternalTab = JSON.parse(JSON.stringify(makeDefaultState(400)))
-    withExternalTab.splits.tabs[0].type = 'my-plugin:db'
+    withExternalTab.splits.tabs.push({ id: 'tab:ext', type: 'my-plugin:db', title: 'Ext' })
+    withExternalTab.splits.active = 'tab:ext'
     const externalClean = sanitizeState(withExternalTab)
     expect(externalClean).toBeDefined()
     if (externalClean !== undefined && externalClean.splits.kind === 'leaf') {
@@ -1012,9 +1247,10 @@ describe('persisted state sanitization', () => {
 
   it('falls back from a stale active pane instead of dropping the open', () => {
     let s = makeDefaultState()
+    s = openTabInActivePane(s, { id: 'tab:seed', type: 'seed', title: 'Seed' })
     const paneA = allLeaves(s.splits)[0]!.id
-    const explorerTab = allLeaves(s.splits)[0]!.tabs.find(tab => tab.type === 'explorer')!.id
-    s = closeTab(s, paneA, explorerTab)
+    const seedTab = allLeaves(s.splits)[0]!.tabs[0]!.id
+    s = closeTab(s, paneA, seedTab)
     s = openTabInActivePane(s, { id: 'editor:/a.ts', type: 'editor', title: 'a.ts', path: '/a.ts' })
     const split = insertLeafAt(s.splits, paneA, 'col', { id: 'terminal:1', type: 'terminal', title: 'Terminal 1' }, false)
     s = { ...s, splits: split.node, activePane: paneA }
@@ -1156,7 +1392,6 @@ describe('side card preferences', () => {
         interceptOpenPath: true,
         htmlViewerNoSandbox: false,
         htmlViewerDefaultUnsafe: false,
-        browserNoSandbox: false,
         browserInterceptLinks: true,
         tabsEnabled: {},
         viewersEnabled: {},
@@ -1175,7 +1410,6 @@ describe('side card preferences', () => {
         interceptOpenPath: true,
         htmlViewerNoSandbox: false,
         htmlViewerDefaultUnsafe: false,
-        browserNoSandbox: false,
         browserInterceptLinks: true,
         tabsEnabled: {},
         viewersEnabled: {},
@@ -1194,7 +1428,6 @@ describe('side card preferences', () => {
         interceptOpenPath: true,
         htmlViewerNoSandbox: false,
         htmlViewerDefaultUnsafe: false,
-        browserNoSandbox: false,
         browserInterceptLinks: true,
         tabsEnabled: {},
         viewersEnabled: {},
@@ -1238,21 +1471,53 @@ describe('side card preferences', () => {
     expect(parsed.viewersEnabled).toEqual({ image: false })
   })
 
-  it('seeds new-session defaults from the store prefs (open flag + width)', () => {
+  it('seeds new-session width from prefs but always keeps the right content rail closed', () => {
     const store = createSidebarStore()
     // Node environment: no window → the width falls back to PANEL_DEFAULT,
     // while the open flag still follows the preference.
-    store.setPrefs({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserNoSandbox: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
+    store.setPrefs({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
     store.setSession('fresh-session')
-    expect(store.getPrefs()).toEqual({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserNoSandbox: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
+    expect(store.getPrefs()).toEqual({ openByDefault: false, defaultWidthPercent: 45, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
     const snapshot = store.getSnapshot()
     expect(snapshot.sessionId).toBe('fresh-session')
     expect(snapshot.state?.panelOpen).toBe(false)
     expect(snapshot.state?.width).toBe(400)
-    // The default prefs keep the panel open.
+    // Even the legacy openByDefault preference cannot auto-open the
+    // Browser/Preview right rail; opening it must be an explicit content action.
     const openStore = createSidebarStore()
     openStore.setSession('another-fresh')
-    expect(openStore.getSnapshot().state?.panelOpen).toBe(true)
+    expect(openStore.getSnapshot().state?.panelOpen).toBe(false)
+  })
+
+  it('closes the right content rail whenever a session is entered without discarding its tabs', () => {
+    const original = (globalThis as Record<string, unknown>).window
+    ;(globalThis as Record<string, unknown>).window = {
+      innerWidth: 1200,
+      clearTimeout: () => {},
+      setTimeout: (_fn: () => void) => 0,
+    }
+    try {
+      const store = createSidebarStore()
+      store.setSession('first')
+      store.reduce(state => openTabInActivePane({ ...state, panelOpen: true }, {
+        id: 'browser:remembered',
+        type: 'browser',
+        title: 'example.com',
+        path: 'https://example.com',
+      }))
+      store.setSession('second')
+      expect(store.getSnapshot().state?.panelOpen).toBe(false)
+      store.setSession('first')
+      const restored = store.getSnapshot().state!
+      expect(restored.panelOpen).toBe(false)
+      expect(allLeaves(restored.splits).flatMap(leaf => leaf.tabs)).toContainEqual(expect.objectContaining({
+        id: 'browser:remembered',
+        path: 'https://example.com',
+      }))
+    } finally {
+      if (original === undefined) delete (globalThis as Record<string, unknown>).window
+      else (globalThis as Record<string, unknown>).window = original
+    }
   })
 
   it('seeds a brand-new session COLLAPSED on narrow viewports (the panel is a full-screen drawer there)', () => {
@@ -1266,8 +1531,7 @@ describe('side card preferences', () => {
     }
     try {
       const store = createSidebarStore()
-      // Default prefs say openByDefault: true — the narrow viewport overrides
-      // it for the FIRST seeding only (a later user expansion persists).
+      // Narrow and wide viewports now share the same explicit-open rule.
       store.setSession('narrow-fresh')
       expect(store.getSnapshot().state?.panelOpen).toBe(false)
       // The width seeding still follows the window (clamped to the floor).
@@ -1280,18 +1544,21 @@ describe('side card preferences', () => {
 
   it('skips the default explorer tab when the explorer type is disabled', () => {
     const store = createSidebarStore()
-    store.setPrefs({ openByDefault: true, defaultWidthPercent: 30, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserNoSandbox: false, browserInterceptLinks: true, tabsEnabled: { explorer: false }, viewersEnabled: {} })
+    store.setPrefs({ openByDefault: true, defaultWidthPercent: 30, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserInterceptLinks: true, tabsEnabled: { explorer: false }, viewersEnabled: {} })
     store.setSession('no-explorer')
     const state = store.getSnapshot().state!
     const tabs = allLeaves(state.splits).flatMap(leaf => leaf.tabs)
     expect(tabs).toHaveLength(0)
     expect(state.splits.kind).toBe('leaf')
-    // Re-enabling seeds the explorer tab again.
+    // Re-enabling opens the LEFT explorer panel (leftOpen), but the right
+    // workbench stays empty — the explorer is no longer a right-panel tab.
     const openStore = createSidebarStore()
-    openStore.setPrefs({ openByDefault: true, defaultWidthPercent: 30, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserNoSandbox: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
+    openStore.setPrefs({ openByDefault: true, defaultWidthPercent: 30, autoOpenSubagent: true, autoOpenJobs: true, agentTerminalTools: false, bottomPanelAutoTerminal: true, interceptOpenPath: true, htmlViewerNoSandbox: false, htmlViewerDefaultUnsafe: false, browserInterceptLinks: true, tabsEnabled: {}, viewersEnabled: {} })
     openStore.setSession('with-explorer')
-    const openTabs = allLeaves(openStore.getSnapshot().state!.splits).flatMap(leaf => leaf.tabs)
-    expect(openTabs.map(tab => tab.type)).toEqual(['explorer'])
+    const openState = openStore.getSnapshot().state!
+    expect(openState.leftOpen).toBe(true)
+    const openTabs = allLeaves(openState.splits).flatMap(leaf => leaf.tabs)
+    expect(openTabs).toHaveLength(0)
   })
 
   it('derives the default width from the window percent with clamps', () => {
@@ -1304,8 +1571,9 @@ describe('side card preferences', () => {
     expect(makeDefaultState().panelOpen).toBe(true)
     expect(makeDefaultState(400, false).panelOpen).toBe(false)
     expect(makeDefaultState(400, false).width).toBe(400)
-    // The seedExplorer flag controls the default explorer tab.
-    expect(makeDefaultState(400, true, false).splits.kind).toBe('leaf')
+    // The seedExplorer flag controls whether the LEFT explorer panel starts open.
+    expect(makeDefaultState(400, true, false).leftOpen).toBe(false)
+    expect(makeDefaultState(400, true, true).leftOpen).toBe(true)
     expect((makeDefaultState(400, true, false).splits as { tabs: unknown[] }).tabs).toHaveLength(0)
   })
 })
@@ -1573,48 +1841,85 @@ describe('open-path interception', () => {
 })
 
 describe('open-path interception wiring', () => {
-  it('registerOpenPathInterception routes chat opens into the editor tab and restores on dispose', async () => {
-    // A realistic client-context fake: the sessions list feed (current + cwd),
-    // the workspaces funnel, and the sidebar service the editor goes through.
-    const opened: Array<Record<string, unknown>> = []
-    const funnel = { openPath: async (): Promise<void> => {} }
-    const ctx = {
-      sessions: {
-        list: { getSnapshot: () => ({ current: 's1', byId: { s1: { cwd: '/w' } } }) },
-      },
-      workspaces: funnel,
-      betterSidebar: { openTab: (seed: unknown) => { opened.push(seed as Record<string, unknown>) } },
-    } as unknown as Context
-    const store = createSidebarStore()
-    const original = ctx.workspaces.openPath
-    const restore = registerOpenPathInterception(ctx, store)
+  it('routes chat images into Preview, falls through when disabled, and restores on dispose', async () => {
+    const originalWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { clearTimeout: () => {}, setTimeout: () => 0, innerWidth: 1024 },
+    })
+    try {
+      const nativeCalls: string[] = []
+      const funnel = { openPath: async (path: string): Promise<void> => { nativeCalls.push(path) } }
+      const store = createSidebarStore()
+      const service = createBetterSidebarService(store)
+      service.registerFileViewer({ id: 'image', exts: ['png'], fetchStrategy: 'mediaUrl', component: () => null })
+      service.registerTab({ id: 'preview', title: 'Preview', hidden: true, dedupeKey: tab => tab.path, component: () => null })
+      const ctx = {
+        sessions: {
+          list: { getSnapshot: () => ({ current: 's1', byId: { s1: { cwd: '/w' } } }) },
+        },
+        workspaces: funnel,
+        betterSidebar: service,
+      } as unknown as Context
+      store.setSession('s1')
+      const original = ctx.workspaces.openPath
+      const restore = registerOpenPathInterception(ctx, store)
 
-    // Default prefs: the takeover routes the open into the sidebar editor
-    // with the session-scoped absolute path (chat already resolved it).
-    await ctx.workspaces.openPath('/w/src/a.ts')
-    expect(opened).toEqual([{
-      type: 'editor',
-      title: 'a.ts',
-      path: '/w/src/a.ts',
-      id: 'editor:/w/src/a.ts',
-    }])
+      await ctx.workspaces.openPath('/w/assets/a.png')
+      expect(allLeaves(store.getSnapshot().state!.splits).flatMap(leaf => leaf.tabs)).toContainEqual(expect.objectContaining({
+        type: 'preview', path: '/w/assets/a.png', viewerId: 'image',
+      }))
+      expect(nativeCalls).toEqual([])
 
-    // The interceptOpenPath pref off → the original funnel runs untouched.
-    store.setPrefs({ ...store.getPrefs(), interceptOpenPath: false })
-    const calls: string[] = []
-    ctx.workspaces.openPath = async (path: string) => { calls.push(path) }
-    await ctx.workspaces.openPath('/w/src/b.ts')
-    expect(calls).toEqual(['/w/src/b.ts'])
-    expect(opened).toHaveLength(1)
+      // The interceptOpenPath pref off → the original funnel runs untouched.
+      store.setPrefs({ ...store.getPrefs(), interceptOpenPath: false })
+      await ctx.workspaces.openPath('/w/src/b.ts')
+      expect(nativeCalls).toEqual(['/w/src/b.ts'])
 
-    // The editor tab disabled → falls through too (an editor that cannot
-    // open must not swallow opens).
-    store.setPrefs({ ...store.getPrefs(), interceptOpenPath: true, tabsEnabled: { editor: false } })
-    await ctx.workspaces.openPath('/w/src/c.ts')
-    expect(calls).toEqual(['/w/src/b.ts', '/w/src/c.ts'])
+      // Disposal restores the raw original method (HMR-safe).
+      restore()
+      expect(ctx.workspaces.openPath).toBe(original)
+      await ctx.workspaces.openPath('/w/src/c.ts')
+      expect(nativeCalls).toEqual(['/w/src/b.ts', '/w/src/c.ts'])
+    } finally {
+      if (originalWindow === undefined) delete (globalThis as { window?: Window }).window
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow })
+    }
+  })
 
-    // Disposal restores the raw original method (HMR-safe).
-    restore()
-    expect(ctx.workspaces.openPath).toBe(original)
+  it('keeps chat interception active for the top-level 文件 workspace when the fallback editor is disabled', async () => {
+    const calls: unknown[] = []
+    const originalWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __dshFileEdit: { open: (value: unknown) => { calls.push(value) } } },
+    })
+    try {
+      const funnel = { openPath: async (): Promise<void> => {} }
+      const store = createSidebarStore()
+      const service = createBetterSidebarService(store)
+      service.registerFileViewer({ id: 'markdown', exts: ['md'], fetchStrategy: 'fsRead', component: () => null })
+      const ctx = {
+        sessions: {
+          list: { getSnapshot: () => ({ current: 's1', byId: { s1: { cwd: '/w' } } }) },
+        },
+        workspaces: funnel,
+        betterSidebar: service,
+      } as unknown as Context
+      store.setPrefs({ ...store.getPrefs(), tabsEnabled: { editor: false } })
+      const restore = registerOpenPathInterception(ctx, store)
+
+      await ctx.workspaces.openPath('/w/src/a.md')
+      expect(calls).toEqual([{
+        sessionId: 's1',
+        cwd: '/w',
+        absolutePath: '/w/src/a.md',
+        path: 'src/a.md',
+      }])
+      restore()
+    } finally {
+      if (originalWindow === undefined) delete (globalThis as { window?: Window }).window
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow })
+    }
   })
 })

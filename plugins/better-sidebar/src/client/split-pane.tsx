@@ -185,11 +185,12 @@ function LeafView(props: {
       />
       {leaf.tabs.length > 0 ? (
         /*
-          Every tab stays MOUNTED (inactive ones hidden), so switching tabs
-          never tears down the content: a terminal keeps its pty connection
-          and scrollback, an editor keeps its CodeMirror view and unsaved
-          draft, explorer/git keep their loaded data. The unmount (and the
-          terminal's close frame) happens only when a tab is truly closed.
+          Tab hosts stay MOUNTED (inactive ones hidden), so Browser, PDF,
+          image, terminals and ordinary views preserve their live state.
+          PreviewHost deliberately unmounts only the heavy Office renderer
+          inside an inactive host; its tab metadata remains mounted and the
+          renderer is recreated when activated. A true tab close still
+          unmounts the complete host.
         */
         <div className={css.paneContent}>
           {leaf.tabs.map(tab => (

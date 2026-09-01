@@ -5,9 +5,9 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve as resolvePath } from 'node:path'
+import { dirname, join, resolve as resolvePath } from 'node:path'
 import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, mediaTypeForPath } from '../src/index.ts'
 import * as git from '../src/git.ts'
@@ -417,6 +417,249 @@ describe('session cwd resolution over the API route', () => {
     expect(value.value?.kind).toBe('text')
     expect(value.value?.content).toContain('runGit')
   })
+
+  it('fs.rename preserves file suffixes, renames folders, and refuses collisions', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-rename-'))
+    try {
+      writeFileSync(join(root, 'draft.md'), 'draft')
+      writeFileSync(join(root, 'occupied.md'), 'occupied')
+      mkdirSync(join(root, 'notes'))
+      const route = mount({ sessions: { get: () => ({ header: { cwd: root } }) } })
+
+      const fileResult = await invoke(route, 'fs.rename', {
+        sessionId: 's-rename',
+        path: join(root, 'draft.md'),
+        name: 'final.txt',
+      }) as unknown as { ok: boolean; value?: { path: string } }
+      expect(fileResult.ok).toBe(true)
+      expect(fileResult.value?.path).toBe(join(root, 'final.txt.md'))
+      expect(readFileSync(join(root, 'final.txt.md'), 'utf8')).toBe('draft')
+
+      const folderResult = await invoke(route, 'fs.rename', {
+        sessionId: 's-rename',
+        path: join(root, 'notes'),
+        name: 'writing',
+      }) as unknown as { ok: boolean; value?: { path: string } }
+      expect(folderResult.ok).toBe(true)
+      expect(folderResult.value?.path).toBe(join(root, 'writing'))
+      expect(existsSync(join(root, 'writing'))).toBe(true)
+
+      const conflict = await invoke(route, 'fs.rename', {
+        sessionId: 's-rename',
+        path: join(root, 'final.txt.md'),
+        name: 'occupied',
+      })
+      expect(conflict.ok).toBe(false)
+      expect(readFileSync(join(root, 'final.txt.md'), 'utf8')).toBe('draft')
+      expect(readFileSync(join(root, 'occupied.md'), 'utf8')).toBe('occupied')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fs.move safely moves regular files and folder subtrees without overwriting', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-move-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-sidebar-move-outside-'))
+    try {
+      const sourceDir = join(root, 'source')
+      const targetDir = join(root, 'target')
+      mkdirSync(sourceDir)
+      mkdirSync(targetDir)
+      const source = join(sourceDir, 'note.md')
+      writeFileSync(source, 'movable')
+      const route = mount({ sessions: { get: () => ({ header: { cwd: root } }) } })
+
+      const moved = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: source, destination: targetDir,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(moved.ok).toBe(true)
+      expect(moved.value).toEqual({ ok: true, path: join(targetDir, 'note.md'), name: 'note.md' })
+      expect(existsSync(source)).toBe(false)
+      expect(readFileSync(join(targetDir, 'note.md'), 'utf8')).toBe('movable')
+
+      const returning = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: join(targetDir, 'note.md'), destination: root,
+      })
+      expect(returning.ok).toBe(true)
+      expect(readFileSync(join(root, 'note.md'), 'utf8')).toBe('movable')
+
+      writeFileSync(join(sourceDir, 'note.md'), 'second')
+      const conflict = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: join(sourceDir, 'note.md'), destination: root,
+      })
+      expect(conflict.ok).toBe(false)
+      expect(readFileSync(join(sourceDir, 'note.md'), 'utf8')).toBe('second')
+      expect(readFileSync(join(root, 'note.md'), 'utf8')).toBe('movable')
+
+      const nested = join(sourceDir, 'nested')
+      mkdirSync(nested)
+      writeFileSync(join(nested, 'deep.md'), 'deep')
+      const selfMove = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: sourceDir, destination: sourceDir,
+      })
+      expect(selfMove.ok).toBe(false)
+      const descendantMove = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: sourceDir, destination: nested,
+      })
+      expect(descendantMove.ok).toBe(false)
+
+      if (process.platform !== 'win32') {
+        const outsideTarget = join(outside, 'target')
+        mkdirSync(outsideTarget)
+        symlinkSync(outside, join(root, 'escape'))
+        const escapedDestination = await invoke(route, 'fs.move', {
+          sessionId: 's-move', path: join(sourceDir, 'note.md'), destination: join(root, 'escape', 'target'),
+        })
+        expect(escapedDestination.ok).toBe(false)
+        expect(readFileSync(join(sourceDir, 'note.md'), 'utf8')).toBe('second')
+      }
+
+      const folderMove = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: sourceDir, destination: targetDir,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(folderMove.ok).toBe(true)
+      expect(folderMove.value).toEqual({ ok: true, path: join(targetDir, 'source'), name: 'source' })
+      expect(existsSync(sourceDir)).toBe(false)
+      expect(readFileSync(join(targetDir, 'source', 'note.md'), 'utf8')).toBe('second')
+      expect(readFileSync(join(targetDir, 'source', 'nested', 'deep.md'), 'utf8')).toBe('deep')
+
+      const folderReturning = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: join(targetDir, 'source'), destination: root,
+      })
+      expect(folderReturning.ok).toBe(true)
+      expect(readFileSync(join(root, 'source', 'nested', 'deep.md'), 'utf8')).toBe('deep')
+
+      const outsideMove = await invoke(route, 'fs.move', {
+        sessionId: 's-move', path: join(root, 'note.md'), destination: dirname(root),
+      })
+      expect(outsideMove.ok).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('fs.mkdir creates a child folder with collision-safe default names', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-mkdir-'))
+    try {
+      const parent = join(root, 'docs')
+      mkdirSync(parent)
+      mkdirSync(join(parent, '新文件夹'))
+      writeFileSync(join(root, 'plain.txt'), 'not a directory')
+      const route = mount({ sessions: { get: () => ({ header: { cwd: root } }) } })
+
+      const first = await invoke(route, 'fs.mkdir', {
+        sessionId: 's-mkdir',
+        parent,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(first.ok).toBe(true)
+      expect(first.value).toEqual({ ok: true, path: join(parent, '新文件夹 2'), name: '新文件夹 2' })
+      expect(existsSync(join(parent, '新文件夹 2'))).toBe(true)
+
+      const second = await invoke(route, 'fs.mkdir', {
+        sessionId: 's-mkdir',
+        parent,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(second.ok).toBe(true)
+      expect(second.value?.name).toBe('新文件夹 3')
+      expect(existsSync(join(parent, '新文件夹 3'))).toBe(true)
+
+      const fileParent = await invoke(route, 'fs.mkdir', {
+        sessionId: 's-mkdir',
+        parent: join(root, 'plain.txt'),
+      })
+      expect(fileParent.ok).toBe(false)
+
+      const outside = await invoke(route, 'fs.mkdir', {
+        sessionId: 's-mkdir',
+        parent: dirname(root),
+      })
+      expect(outside.ok).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fs.create-markdown creates empty numbered .md files without overwriting', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-markdown-'))
+    try {
+      const parent = join(root, 'docs')
+      mkdirSync(parent)
+      const fresh = join(root, 'fresh')
+      mkdirSync(fresh)
+      writeFileSync(join(parent, '新增MD文件.md'), 'existing content')
+      writeFileSync(join(root, 'plain.txt'), 'not a directory')
+      const route = mount({ sessions: { get: () => ({ header: { cwd: root } }) } })
+
+      const defaultFile = await invoke(route, 'fs.create-markdown', {
+        sessionId: 's-markdown', parent: fresh,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(defaultFile.value).toEqual({
+        ok: true,
+        path: join(fresh, '新增MD文件.md'),
+        name: '新增MD文件.md',
+      })
+      expect(readFileSync(join(fresh, '新增MD文件.md'), 'utf8')).toBe('')
+
+      const first = await invoke(route, 'fs.create-markdown', {
+        sessionId: 's-markdown', parent,
+      }) as unknown as { ok: boolean; value?: { path: string; name: string } }
+      expect(first.ok).toBe(true)
+      expect(first.value).toEqual({
+        ok: true,
+        path: join(parent, '新增MD文件 2.md'),
+        name: '新增MD文件 2.md',
+      })
+      expect(readFileSync(join(parent, '新增MD文件 2.md'), 'utf8')).toBe('')
+      expect(readFileSync(join(parent, '新增MD文件.md'), 'utf8')).toBe('existing content')
+
+      const second = await invoke(route, 'fs.create-markdown', {
+        sessionId: 's-markdown', parent,
+      }) as unknown as { ok: boolean; value?: { name: string } }
+      expect(second.value?.name).toBe('新增MD文件 3.md')
+      expect(readFileSync(join(parent, '新增MD文件 3.md'), 'utf8')).toBe('')
+
+      expect((await invoke(route, 'fs.create-markdown', {
+        sessionId: 's-markdown', parent: join(root, 'plain.txt'),
+      })).ok).toBe(false)
+      expect((await invoke(route, 'fs.create-markdown', {
+        sessionId: 's-markdown', parent: dirname(root),
+      })).ok).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('previews file/folder sizes and safely deletes only non-root workspace entries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-delete-'))
+    try {
+      const folder = join(root, 'remove-me')
+      mkdirSync(folder)
+      writeFileSync(join(folder, 'one.txt'), '1234')
+      writeFileSync(join(folder, 'two.txt'), '56789')
+      const file = join(root, 'single.txt')
+      writeFileSync(file, '123456')
+      const route = mount({ sessions: { get: () => ({ header: { cwd: root } }) } })
+
+      const folderPreview = await invoke(route, 'fs.delete-preview', {
+        sessionId: 's-delete', path: folder,
+      }) as unknown as { ok: boolean; value?: { name: string; kind: string; size: number } }
+      expect(folderPreview.value).toMatchObject({ name: 'remove-me', kind: 'folder', size: 9 })
+
+      const filePreview = await invoke(route, 'fs.delete-preview', {
+        sessionId: 's-delete', path: file,
+      }) as unknown as { ok: boolean; value?: { name: string; kind: string; size: number } }
+      expect(filePreview.value).toMatchObject({ name: 'single.txt', kind: 'file', size: 6 })
+
+      expect((await invoke(route, 'fs.delete', { sessionId: 's-delete', path: folder })).ok).toBe(true)
+      expect(existsSync(folder)).toBe(false)
+      expect((await invoke(route, 'fs.delete', { sessionId: 's-delete', path: root })).ok).toBe(false)
+      expect(existsSync(root)).toBe(true)
+      expect((await invoke(route, 'fs.delete', { sessionId: 's-delete', path: dirname(root) })).ok).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('side card settings routes', () => {
@@ -520,7 +763,6 @@ describe('side card settings routes', () => {
         interceptOpenPath: true,
         htmlViewerNoSandbox: false,
         htmlViewerDefaultUnsafe: false,
-        browserNoSandbox: false,
         browserInterceptLinks: true,
         // The enable-switch maps default to {} (everything on).
         tabsEnabled: {},
