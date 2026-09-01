@@ -1,5 +1,0 @@
-/lib/
-node_modules/
-packages/*/node_modules/
-*.tsbuildinfo
-*.tgz
