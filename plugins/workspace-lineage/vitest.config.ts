@@ -4,16 +4,16 @@ import { fileURLToPath } from 'node:url'
 export default defineConfig({
   resolve: {
     alias: {
-      'react': fileURLToPath(new URL('../deepseek-harness/node_modules/.pnpm/node_modules/react', import.meta.url)),
-      'react-dom': fileURLToPath(new URL('../deepseek-harness/node_modules/.pnpm/node_modules/react-dom', import.meta.url)),
+      'react': fileURLToPath(new URL('../../node_modules/.pnpm/node_modules/react', import.meta.url)),
+      'react-dom': fileURLToPath(new URL('../../node_modules/.pnpm/node_modules/react-dom', import.meta.url)),
       '@deepseek-ai/dsh-client-runtime/client': fileURLToPath(new URL(
-        '../deepseek-harness/packages/client/runtime/src/client/index.ts', import.meta.url,
+        '../../packages/client/runtime/src/client/index.ts', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-test-runtime': fileURLToPath(new URL(
-        '../deepseek-harness/packages/test-support/client-runtime/lib/index.js', import.meta.url,
+        '../../packages/test-support/client-runtime/lib/index.js', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-web-react': fileURLToPath(new URL(
-        '../deepseek-harness/packages/client/web-react/lib/index.js', import.meta.url,
+        '../../packages/client/web-react/lib/index.js', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-ui-workspace/client': fileURLToPath(new URL(
         './src/client/index.ts', import.meta.url,
@@ -25,16 +25,16 @@ export default defineConfig({
         './src/index.ts', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-locale/client': fileURLToPath(new URL(
-        '../deepseek-harness/packages/client/locale/src/client/index.ts', import.meta.url,
+        '../../packages/client/locale/src/client/index.ts', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(new URL(
-        '../deepseek-harness/packages/client/ui-primitives/src/index.ts', import.meta.url,
+        '../../packages/client/ui-primitives/src/index.ts', import.meta.url,
       )),
       '@deepseek-ai/dsh-client-locale/src/locales/zh.ts': fileURLToPath(new URL(
-        '../deepseek-harness/packages/client/locale/src/locales/zh.ts', import.meta.url,
+        '../../packages/client/locale/src/locales/zh.ts', import.meta.url,
       )),
       '@testing-library/react': fileURLToPath(new URL(
-        '../deepseek-harness/node_modules/@testing-library/react/dist/index.js', import.meta.url,
+        '../../node_modules/@testing-library/react/dist/index.js', import.meta.url,
       )),
     },
     dedupe: ['react', 'react-dom'],

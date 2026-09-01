@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve as resolvePath } from 'node:path'
+import { dirname, join, relative, resolve as resolvePath } from 'node:path'
 import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { apply, mediaTypeForPath } from '../src/index.ts'
 import * as git from '../src/git.ts'
@@ -103,7 +103,8 @@ describe('host plugin smoke', () => {
     expect(all.slice(0, 5)).toEqual(first)
     expect(all.slice(5)).toEqual(second)
     // A skip past the end returns an empty page (the lazy loader's stop sign).
-    expect(await git.log(cwd, 5, 10_000)).toEqual([])
+    const commitCount = Number(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).stdout.trim())
+    expect(await git.log(cwd, 5, commitCount + 1)).toEqual([])
   })
 
   it('pty manager releases the quota on close and respawns after exit', async () => {
@@ -399,7 +400,9 @@ describe('session cwd resolution over the API route', () => {
         get: () => ({ header: { cwd: join(process.cwd(), 'src') } }),
       },
     })
-    const result = await invoke(route, 'git.diff', { sessionId: 's-sub', path: 'src/git.ts', staged: false })
+    const repoRoot = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8' }).stdout.trim()
+    const fixture = relative(repoRoot, join(process.cwd(), 'src/git.ts'))
+    const result = await invoke(route, 'git.diff', { sessionId: 's-sub', path: fixture, staged: false })
     expect(result.ok).toBe(true)
     const value = result as unknown as { ok: boolean; value?: { diff: string } }
     expect(typeof value.value?.diff).toBe('string')
@@ -411,7 +414,9 @@ describe('session cwd resolution over the API route', () => {
         get: () => ({ header: { cwd: join(process.cwd(), 'src') } }),
       },
     })
-    const result = await invoke(route, 'fs.read', { sessionId: 's-sub', path: 'src/git.ts' })
+    const repoRoot = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8' }).stdout.trim()
+    const fixture = relative(repoRoot, join(process.cwd(), 'src/git.ts'))
+    const result = await invoke(route, 'fs.read', { sessionId: 's-sub', path: fixture })
     expect(result.ok).toBe(true)
     const value = result as unknown as { ok: boolean; value?: { kind: string; content: string } }
     expect(value.value?.kind).toBe('text')
