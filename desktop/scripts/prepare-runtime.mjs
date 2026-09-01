@@ -67,6 +67,16 @@ function runtimeClosure(byName) {
   return [...selected.values()].sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
 }
 
+function supportsCurrentPlatform(manifest) {
+  const matches = (values, current) => {
+    if (!Array.isArray(values) || values.length === 0) return true
+    if (values.includes(`!${current}`)) return false
+    const positive = values.filter(value => typeof value === 'string' && !value.startsWith('!'))
+    return positive.length === 0 || positive.includes(current)
+  }
+  return matches(manifest.os, process.platform) && matches(manifest.cpu, process.arch)
+}
+
 if (!existsSync(join(root, 'apps', 'cli', 'lib', 'bin.js')) || !existsSync(join(root, 'apps', 'web', 'dist', 'index.html'))) {
   run('pnpm', ['run', 'build'])
 }
@@ -82,7 +92,7 @@ const byName = new Map(packageDirectories().map(directory => {
   const manifest = readManifest(directory)
   return [manifest.name, { directory, manifest }]
 }))
-const selected = runtimeClosure(byName)
+const selected = runtimeClosure(byName).filter(entry => supportsCurrentPlatform(entry.manifest))
 if (!selected.some(entry => entry.manifest.name === '@deepseek-ai/dsh')) throw new Error('workspace @deepseek-ai/dsh package not found')
 
 if (!reusePackedArtifacts) {
