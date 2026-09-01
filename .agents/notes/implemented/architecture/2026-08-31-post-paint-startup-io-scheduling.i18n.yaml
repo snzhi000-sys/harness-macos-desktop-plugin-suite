@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-31-post-paint-startup-io-scheduling.md
+2026-08-31-post-paint-startup-io-scheduling.md: aab51f12a672ae626678264188ad17d9efb4df0b
+2026-08-31-post-paint-startup-io-scheduling.zh.md: fd54dfda8e639fd06a56a0ba845423b598d1c8f2

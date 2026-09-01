@@ -1,0 +1,6 @@
+.section { display:flex; flex-direction:column; gap:10px; padding:16px; border:1px solid var(--dsw-alias-border-l2); border-radius:10px; color:var(--dsw-alias-label-secondary); }
+.title { color:var(--dsw-alias-label-primary); font-size:15px; font-weight:600; }
+.row { display:flex; justify-content:space-between; gap:16px; font-size:13px; }
+.row strong { color:var(--dsw-alias-label-primary); font-weight:500; }
+.test { color:var(--dsw-alias-warning, #c88a00) !important; }
+.stable { color:var(--dsw-alias-success, #299764) !important; }

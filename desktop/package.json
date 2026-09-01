@@ -1,0 +1,60 @@
+{
+  "name": "@deepseek-ai/dsh-desktop-builder",
+  "description": "Self-contained Electron desktop packaging for DeepSeek Harness on macOS",
+  "version": "0.1.0-rc.5-local.5",
+  "private": true,
+  "author": "DeepSeek AI",
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "prepare:icon": "node scripts/prepare-icon.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "prepare:profile": "node scripts/prepare-profile.mjs",
+    "prepare:release": "node scripts/prepare-release-info.mjs",
+    "verify:source-privacy": "node ../scripts/product/verify-privacy.mjs",
+    "verify:release-privacy": "node scripts/verify-release-privacy.mjs",
+    "verify:profile-runtime": "node scripts/verify-profile-runtime.mjs",
+    "dist:mac": "npm run dist:dev",
+    "dist:dev": "npm run test && npm run verify:source-privacy && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && npm run verify:profile-runtime && DSH_DESKTOP_CHANNEL=dev npm run prepare:release && DSH_DESKTOP_CHANNEL=dev electron-builder --config electron-builder.config.cjs --mac dir --arm64 && DSH_DESKTOP_CHANNEL=dev npm run verify:release-privacy",
+    "dist:stable": "npm run test && npm run verify:source-privacy && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && npm run verify:profile-runtime && DSH_DESKTOP_CHANNEL=stable npm run prepare:release && DSH_DESKTOP_CHANNEL=stable electron-builder --config electron-builder.config.cjs --mac dir --arm64 && DSH_DESKTOP_CHANNEL=stable npm run verify:release-privacy",
+    "install:stable": "npm run dist:stable && node scripts/install-mac.mjs"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.deepseek.harness.desktop",
+    "productName": "DeepSeek Harness",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "release-info.json",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".artifacts/runtime",
+        "to": "runtime-bootstrap"
+      },
+      {
+        "from": ".artifacts/profile",
+        "to": "profile-bootstrap"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "-",
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}

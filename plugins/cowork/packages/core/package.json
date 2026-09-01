@@ -1,0 +1,49 @@
+{
+  "name": "@dsh-cowork/core",
+  "version": "0.1.0",
+  "description": "DSH Cowork core \u2014 pure-TS sniff/extract/build for xlsx, pdf, docx, pptx, ipynb with windowing caps and stable addresses",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.8.0",
+    "pdfjs-dist": "^6.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jesse-njx/dsh-cowork.git",
+    "directory": "packages/core"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "documents",
+    "xlsx",
+    "pdf",
+    "docx",
+    "pptx",
+    "ipynb"
+  ]
+}

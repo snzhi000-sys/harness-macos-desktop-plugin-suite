@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "bundles": [
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-web-app",
+    "dsh-workspace-lineage",
+    "dsh-better-sidebar",
+    "@dsh-cowork/plugin",
+    "dsh-message-edit"
+  ],
+  "packages": [
+    "dsh-file-edit"
+  ],
+  "productPlugins": {
+    "dsh-better-sidebar": "plugins/better-sidebar",
+    "dsh-file-edit": "plugins/file-edit",
+    "dsh-message-edit": "plugins/message-edit",
+    "dsh-workspace-lineage": "plugins/workspace-lineage",
+    "@dsh-cowork/plugin": "plugins/cowork/packages/dsh",
+    "@dsh-cowork/core": "plugins/cowork/packages/core"
+  },
+  "patches": [
+    {
+      "id": "dsh-file-edit",
+      "name": "dsh-file-edit"
+    }
+  ],
+  "requiredRuntimePlugins": [
+    {
+      "package": "dsh-workspace-lineage",
+      "entryId": "workspace-lineage",
+      "client": true
+    },
+    {
+      "package": "dsh-better-sidebar",
+      "entryId": "better-sidebar",
+      "client": true
+    },
+    {
+      "package": "@dsh-cowork/plugin",
+      "entryId": "cowork-docs",
+      "client": false
+    },
+    {
+      "package": "dsh-message-edit",
+      "entryId": "message-edit",
+      "client": true
+    },
+    {
+      "package": "dsh-file-edit",
+      "entryId": "dsh-file-edit",
+      "client": true
+    }
+  ]
+}

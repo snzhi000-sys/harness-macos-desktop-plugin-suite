@@ -1,0 +1,44 @@
+{
+  "name": "@dsh-cowork/cli",
+  "version": "0.1.0",
+  "description": "DSH Cowork CLI \u2014 read/write office documents and notebooks from the terminal (also the pi harness adapter)",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "bin": {
+    "doc-read": "./lib/bin/read.js",
+    "doc-write": "./lib/bin/write.js"
+  },
+  "files": [
+    "lib",
+    "SKILL.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@dsh-cowork/core": "workspace:^"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jesse-njx/dsh-cowork.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "cli",
+    "documents",
+    "xlsx",
+    "pdf",
+    "docx",
+    "pptx",
+    "ipynb",
+    "pi"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "channel": "dev",
+  "productName": "DeepSeek Harness Dev",
+  "appId": "ai.deepseek.harness.desktop.dev",
+  "outputDirectory": "desktop/dist/dev",
+  "installByDefault": false
+}
