@@ -1,10 +1,12 @@
 # Harness macOS 桌面端与插件套件统一工程迁移执行计划
 
+> 执行状态：截至 2026-09-01，阶段 0–5 的源码迁移、统一构建和自动化测试已完成；阶段 6 已完成隔离 Dev App 构建、首次启动、干净 Profile 安装和主界面加载验证；阶段 7 已完成未安装的 Stable `.app` 候选构建、签名与隐私检查。完整产品交互回归、许可证缺口、Message Edit 可复现源码、Developer ID 签名、公证及公开发布仍未完成。当前事实以 [迁移状态](migration/STATUS.zh-CN.md) 为准。
+
 ## 1. 文档目的
 
 本文规划将当前分散维护的 Harness 核心定制、Electron macOS 桌面端和产品插件迁移到 `harness-macos-desktop-plugin-suite` 单一工程仓库，并建立可重复的开发、测试、Dev App 打包、Stable App 打包和后续迭代流程。
 
-本文只定义实施顺序、保护边界、测试矩阵、验收条件和回滚条件。编写本文不代表已经迁移源码、修改运行 profile、构建 App、安装 App、修改 Harness Skill 或推送 GitHub。
+本文定义实施顺序、保护边界、测试矩阵、验收条件和回滚条件。迁移的实际执行结果单独记录在迁移状态文档中；本轮没有安装 App、修改真实 Stable profile 或推送 GitHub。
 
 为避免把开发者用户名和本机目录写入公开仓库，文中使用以下逻辑名称：
 

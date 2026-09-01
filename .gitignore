@@ -54,6 +54,8 @@ worktrees/
 # Desktop and release artifacts
 desktop/dist/
 desktop/.artifacts/
+desktop/build/icon.icns
+desktop/build/icon.iconset/
 *.app
 *.dmg
 *.zip

@@ -11,7 +11,19 @@
 - `plugins/`：本项目维护的产品插件。
 - `distribution/`：开发版与正式版的发行清单。
 
-当前迁移过程与保护边界见 [统一工程迁移执行计划](docs/MIGRATION_PLAN.zh-CN.md)。
+当前迁移过程与保护边界见 [统一工程迁移执行计划](docs/MIGRATION_PLAN.zh-CN.md)，实际完成情况见 [迁移状态](docs/migration/STATUS.zh-CN.md)。
+
+## 产品开发命令
+
+```bash
+npm run product:build:plugins
+npm run product:test:plugins
+npm run product:test:desktop
+npm run product:verify:privacy
+npm run product:dist:dev
+```
+
+普通桌面构建默认生成 Dev App。Stable 候选只能显式运行 `npm run product:dist:stable`，安装正式 App 仍需要另外的明确授权。
 
 ## 上游 Harness
 
