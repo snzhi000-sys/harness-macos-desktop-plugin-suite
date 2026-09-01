@@ -6,7 +6,7 @@
 
 统一工程已经成为后续 Harness 核心、macOS Desktop 和产品插件开发的权威源码目录。旧分散源码目录进入只读保留期，不删除，也不再作为新功能修改源。当前系统安装的是 v1.00.03 Stable App；真实凭据、会话和配置继续位于 App 外部的 Stable userData，本轮隐私补丁没有覆盖或重启该 App。
 
-当前工作分支为 `migration/unified-suite`。本轮只提交到本地 Git，没有推送 GitHub。
+权威开发目录当前仍位于本地 `migration/unified-suite`，该分支的迁移历史没有推送 GitHub。公开仓库已从 `origin/main` 创建 `release/open-source-v1` 审查分支：提交 `49757166601a1a7a93c083577019bf5ec1f3dbdd` 只承载当前统一工程的干净文件快照，不包含本地迁移历史；`main` 尚未合并或修改。
 
 ## 已完成范围
 
@@ -75,7 +75,7 @@ Dev 启动使用独立临时数据目录。首次界面只显示空白产品状�
 6. Stable 候选尚未用临时 Stable userData 做完整 UI 回归。
 7. 未生成 DMG、ZIP、checksums 和组件版本发行清单。
 8. 当前仅为 ad-hoc 签名，未执行 Developer ID 签名、Apple 公证或 Gatekeeper 公开发行验证。
-9. 本轮未替换正在运行的 v1.00.03 Stable App，也未推送 GitHub。
+9. 本轮未替换正在运行的 v1.00.03 Stable App；GitHub 仅新增 `release/open-source-v1` 审查分支，尚未合并 `main`。
 
 在以上阻塞关闭前，Stable `.app` 只能作为本地候选，不得标记为公开发行版本。
 
