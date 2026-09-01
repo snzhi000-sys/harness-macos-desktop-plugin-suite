@@ -1,0 +1,7 @@
+# Disable the stock browser row, then mount the compatible two-level fork.
+- id: ui-workspace
+  name: '@deepseek-ai/dsh-client-ui-workspace'
+  disabled: true
+- insert:
+    - id: workspace-lineage
+      name: dsh-workspace-lineage
