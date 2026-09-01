@@ -15,7 +15,9 @@
 - Better Sidebar、File Edit、Message Edit、Workspace Lineage 和 Cowork 位于 `plugins/`。
 - Better Sidebar 与 Cowork 保留上游 Git 历史；其他插件以来源快照迁入。
 - 发行组成由 `distribution/profile-manifest.json` 唯一控制。
+- `requiredRuntimePlugins` 将 Workspace Lineage、Better Sidebar、Cowork、Message Edit 和 File Edit 固定为桌面候选的必需插件。
 - Profile 构建不读取 Stable profile，只从统一工程产品插件和固定 Harness 工作区包生成。
+- Dev/Stable 打包在 Electron Builder 前使用打包 Runtime 启动隔离 Web 后端，验证 Cordis composition 和 Client 启动清单；仅有 `node_modules` 文件不算插件已装配。
 - Dev 和 Stable 分别使用独立 product name、appId 和输出目录。
 - 普通桌面构建默认指向 Dev；Stable 安装仍是显式动作。
 - Runtime 构建遵循包的 `os`/`cpu` 条件，不在 macOS 打包 Linux Landlock 二进制。
@@ -30,17 +32,19 @@
 | Better Sidebar | 49 个测试文件，544 项通过 |
 | File Edit | 69 项通过 |
 | Workspace Lineage | 10 个测试文件，139 项通过 |
-| Cowork | 全部 workspace 测试通过；一次微信桥时序测试抖动，单独复跑及完整复跑均通过 |
+| Cowork | 构建通过；Core 35 项通过；微信桥 35 项中 34 项通过，`task-started` 消息先于最终回答的既有时序断言失败，定向复跑可重复 |
 | Desktop | 12 项通过 |
 | 产品插件统一构建 | 通过 |
-| 源码隐私扫描 | 7,785 个 tracked files 通过 |
+| 源码隐私扫描 | 7,786 个 tracked files 通过 |
 | 发行 Profile | 生成成功；6 个 bundle；未包含 Stable profile 的个人第三方插件 |
 | Profile 隐私 | 未检出开发者主目录、Stable profile 路径或绝对软链接 |
+| 产品插件运行装配 | 5 个必需插件通过；Workspace Lineage、Better Sidebar、Message Edit、File Edit 的 Client bundle 均进入 Web 启动清单，Cowork Host 进入 Cordis composition |
+| Dev 插件列表 | 全新临时 userData 的真实设置页显示 `workspace-lineage`、`better-sidebar`、Cowork `include:cowork-docs`、`message-edit`、`file-edit` 均为 Mounted、Enabled |
 | Dev `.app` | `DeepSeek Harness Dev`，`ai.deepseek.harness.desktop.dev`，约 559MB |
 | Stable 候选 `.app` | `DeepSeek Harness`，`ai.deepseek.harness.desktop`，约 559MB；未安装 |
 | 签名检查 | 两个 `.app` 均通过 `codesign --verify --deep --strict` |
 | 最终包路径扫描 | 未检出开发者主目录、Stable profile 路径或历史测试文件标识 |
-| Dev 真实启动 | 全新临时 userData 中 Runtime 解压、Profile 首装、动态端口后端 ready、空白主界面加载均通过 |
+| Dev 真实启动 | 全新临时 userData 中 Runtime `82852207636f1f42` 解压、Profile `f1757aca4f78941e` 首装、动态端口后端 ready、空白主界面和插件列表加载均通过 |
 
 Dev 启动使用独立临时数据目录。首次界面只显示空白产品状态，没有读取旧会话、工作区、凭据或审核状态。测试结束后仅关闭 Dev 进程，系统安装的 Stable App 继续运行。
 
@@ -60,11 +64,12 @@ Dev 启动使用独立临时数据目录。首次界面只显示空白产品状�
 1. File Edit、Message Edit 和 Workspace Lineage 的独立许可证来源仍需补齐并完成法律来源确认。
 2. Message Edit 缺少 Host TypeScript 维护源和历史构建脚本，目前只能验证 Host/Client 运行快照；不能宣称完全可复现。
 3. Harness 定向 Vitest 仍有迁移前已存在的 152 项 `FiberState`/Client slot 运行时导出失败；不能归因于本次迁移。
-4. Dev App 尚未使用测试工作区逐项人工回归 Explorer、Browser/Preview、文件审核、事务删除、重启持久化和媒体播放。
-5. Stable 候选尚未用临时 Stable userData 做完整 UI 回归。
-6. 未生成 DMG、ZIP、checksums 和组件版本发行清单。
-7. 当前仅为 ad-hoc 签名，未执行 Developer ID 签名、Apple 公证或 Gatekeeper 公开发行验证。
-8. 未安装新 Stable App，未迁移真实用户数据，未推送 GitHub。
+4. Cowork 微信桥的 task-started/最终回答发送顺序测试仍失败；本轮没有扩大迁移任务去修改 Cowork 消息调度逻辑。
+5. Dev App 尚未使用测试工作区逐项人工回归 Explorer、Browser/Preview、文件审核、事务删除、重启持久化和媒体播放。
+6. Stable 候选尚未用临时 Stable userData 做完整 UI 回归。
+7. 未生成 DMG、ZIP、checksums 和组件版本发行清单。
+8. 当前仅为 ad-hoc 签名，未执行 Developer ID 签名、Apple 公证或 Gatekeeper 公开发行验证。
+9. 未安装新 Stable App，未迁移真实用户数据，未推送 GitHub。
 
 在以上阻塞关闭前，Stable `.app` 只能作为本地候选，不得标记为公开发行版本。
 

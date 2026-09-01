@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-桌面构建从已安装 profile 的包清单和插件模块生成独立的干净 profile 压缩包。本地开发链接通过 npm 包内容转为实体文件，生成代码注释中的本机路径会被清除，生成的 profile 使用空根配置和必需的文件编辑插入项。压缩包构建会拒绝残留的个人路径和绝对软链接。
+桌面构建根据 `distribution/profile-manifest.json` 中的产品白名单、`plugins/` 下维护的产品插件和固定 Harness 工作区包生成独立的干净 Profile 压缩包，构建过程不读取已安装的 Stable Profile。本地开发链接通过 npm 包内容转为实体文件，生成代码注释中的本机路径会被清除，生成的 Profile 使用空根配置和声明的产品组成。压缩包构建会拒绝残留的个人路径和绝对软链接。
 
 打包后的 App 首次启动时，Electron 只在 `profiles/web` 不存在时解压该快照，绝不替换已有 profile。运行时与 profile 分开解压，插件组成不会获得会话或其他 Harness 持久状态的所有权。
 
@@ -24,4 +24,4 @@ Status: implemented
 
 ## 后果
 
-分享包会因包含插件代码和必要生产依赖而变大。接收者获得选定插件组成，但会话、工作区状态、设置、凭据和日志均为空。使用空环境进行干净启动，验证 profile 不依赖源机器也能加载。
+分享包会因包含插件代码和必要生产依赖而变大。接收者获得选定插件组成，但会话、工作区状态、设置、凭据和日志均为空。使用空环境进行干净启动，验证 Profile 不依赖源机器也能加载；[运行时插件验证决策](../process/2026-09-01-desktop-profile-runtime-verification.md)会拒绝缺少必需 Host 或 Client 组成的候选包。

@@ -11,9 +11,10 @@
     "prepare:icon": "node scripts/prepare-icon.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "prepare:profile": "node scripts/prepare-profile.mjs",
+    "verify:profile-runtime": "node scripts/verify-profile-runtime.mjs",
     "dist:mac": "npm run dist:dev",
-    "dist:dev": "npm run test && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && DSH_DESKTOP_CHANNEL=dev electron-builder --config electron-builder.config.cjs --mac dir --arm64",
-    "dist:stable": "npm run test && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && DSH_DESKTOP_CHANNEL=stable electron-builder --config electron-builder.config.cjs --mac dir --arm64",
+    "dist:dev": "npm run test && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && npm run verify:profile-runtime && DSH_DESKTOP_CHANNEL=dev electron-builder --config electron-builder.config.cjs --mac dir --arm64",
+    "dist:stable": "npm run test && npm run prepare:icon && npm run prepare:runtime && npm run prepare:profile && npm run verify:profile-runtime && DSH_DESKTOP_CHANNEL=stable electron-builder --config electron-builder.config.cjs --mac dir --arm64",
     "install:stable": "npm run dist:stable && node scripts/install-mac.mjs"
   },
   "devDependencies": {

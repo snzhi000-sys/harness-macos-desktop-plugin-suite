@@ -24,5 +24,32 @@
       "id": "dsh-file-edit",
       "name": "dsh-file-edit"
     }
+  ],
+  "requiredRuntimePlugins": [
+    {
+      "package": "dsh-workspace-lineage",
+      "entryId": "workspace-lineage",
+      "client": true
+    },
+    {
+      "package": "dsh-better-sidebar",
+      "entryId": "better-sidebar",
+      "client": true
+    },
+    {
+      "package": "@dsh-cowork/plugin",
+      "entryId": "cowork-docs",
+      "client": false
+    },
+    {
+      "package": "dsh-message-edit",
+      "entryId": "message-edit",
+      "client": true
+    },
+    {
+      "package": "dsh-file-edit",
+      "entryId": "dsh-file-edit",
+      "client": true
+    }
   ]
 }

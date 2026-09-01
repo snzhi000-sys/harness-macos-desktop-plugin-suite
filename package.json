@@ -21,6 +21,7 @@
     "product:test:plugins": "node scripts/product/test-plugins.mjs",
     "product:verify:privacy": "node scripts/product/verify-privacy.mjs",
     "product:test:desktop": "npm --prefix desktop test",
+    "product:verify:profile-runtime": "npm --prefix desktop run verify:profile-runtime",
     "product:dist:dev": "npm --prefix desktop run dist:dev",
     "product:dist:stable": "npm --prefix desktop run dist:stable",
     "build": "npm run build:lib && npm run build:web",
