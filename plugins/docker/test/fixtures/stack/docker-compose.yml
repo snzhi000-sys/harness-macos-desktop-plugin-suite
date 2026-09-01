@@ -1,6 +1,0 @@
-# A minimal compose stack used by the guard tests (project-scoped tools).
-# The fake shell intercepts every docker invocation, so no real engine runs.
-services:
-  sleeper:
-    image: alpine
-    command: ["sleep", "300"]

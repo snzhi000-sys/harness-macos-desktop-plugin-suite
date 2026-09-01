@@ -1,9 +1,0 @@
-node_modules/
-lib/
-*.tsbuildinfo
-*.tgz
-.DS_Store
-*.log
-.dsh/
-.dsh-home/
-.pnpm-store/
