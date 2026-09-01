@@ -1,0 +1,42 @@
+{
+  "name": "@dsh-cowork/mcp",
+  "version": "0.1.0",
+  "description": "DSH Cowork MCP server \u2014 doc_read / doc_write over the Model Context Protocol for Codex, Claude Code, and any MCP client",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "bin": {
+    "dsh-cowork-mcp": "./lib/index.js"
+  },
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@dsh-cowork/core": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jesse-njx/dsh-cowork.git",
+    "directory": "packages/mcp"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "deepseek-harness",
+    "documents",
+    "codex",
+    "claude-code"
+  ]
+}
