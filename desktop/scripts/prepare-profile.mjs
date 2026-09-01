@@ -1,98 +1,119 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const desktopDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const sourceProfile = process.env.DSH_PROFILE_SOURCE ?? join(homedir(), 'Library', 'Application Support', 'DeepSeek Harness', 'harness', 'profiles', 'web')
-const sourceModules = join(sourceProfile, 'node_modules')
+const suiteRoot = resolve(desktopDir, '..')
+const distributionDir = join(suiteRoot, 'distribution')
+const profileManifestPath = join(distributionDir, 'profile-manifest.json')
 const artifactDir = join(desktopDir, '.artifacts', 'profile')
 const staging = mkdtempSync(join(tmpdir(), 'dsh-clean-profile-'))
-const stagingModules = join(staging, 'node_modules')
-const locallyPacked = new Set(['dsh-better-sidebar', 'dsh-file-edit', 'dsh-message-edit', 'dsh-workspace-lineage', '@dsh-cowork/plugin'])
-const localPathPrefixes = [resolve(desktopDir, '..', '..'), homedir()].sort((left, right) => right.length - left.length)
+const packDir = mkdtempSync(join(tmpdir(), 'dsh-product-pack-'))
+const localPathPrefixes = [suiteRoot, homedir()].sort((left, right) => right.length - left.length)
 
-function run(command, args, cwd = desktopDir, quiet = false) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', stdio: quiet ? 'pipe' : 'inherit' })
-  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} exited ${String(result.status)}${quiet ? `\n${result.stderr || result.stdout}` : ''}`)
+function run(command, args, cwd = suiteRoot, quiet = false) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: quiet ? 'pipe' : 'inherit',
+    env: process.env,
+  })
+  if (result.status !== 0) {
+    const detail = quiet ? `\n${result.stderr || result.stdout}` : ''
+    throw new Error(`${command} ${args.join(' ')} exited ${String(result.status)}${detail}`)
+  }
   return result.stdout
 }
 
-function packageEntries(modulesDir) {
-  const entries = []
-  for (const entry of readdirSync(modulesDir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
-    const first = join(modulesDir, entry.name)
-    if (entry.name.startsWith('@')) {
-      for (const child of readdirSync(first, { withFileTypes: true })) {
-        if (child.isDirectory() || child.isSymbolicLink()) entries.push({ name: `${entry.name}/${child.name}`, source: join(first, child.name) })
-      }
-    } else if (entry.isDirectory() || entry.isSymbolicLink()) {
-      entries.push({ name: entry.name, source: first })
+function readManifest(directory) {
+  return JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+}
+
+function validateProfileManifest(value) {
+  const packageName = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i
+  if (value?.schemaVersion !== 1) throw new Error('Unsupported product profile manifest schema')
+  if (!Array.isArray(value.bundles) || !value.bundles.every(name => typeof name === 'string' && packageName.test(name))) {
+    throw new Error('Product profile manifest has an invalid bundle list')
+  }
+  if (!Array.isArray(value.packages) || !value.packages.every(name => typeof name === 'string' && packageName.test(name))) {
+    throw new Error('Product profile manifest has an invalid package list')
+  }
+  if (value.productPlugins === null || typeof value.productPlugins !== 'object' || Array.isArray(value.productPlugins)) {
+    throw new Error('Product profile manifest has an invalid plugin map')
+  }
+  for (const [name, path] of Object.entries(value.productPlugins)) {
+    if (!packageName.test(name) || typeof path !== 'string' || path.length === 0 || isAbsolute(path) || path.split('/').includes('..')) {
+      throw new Error(`Product profile manifest has an invalid plugin entry: ${name}`)
     }
   }
-  return entries
 }
 
-function unpackPackage(source, destination) {
-  const packDir = mkdtempSync(join(tmpdir(), 'dsh-plugin-pack-'))
-  try {
-    const output = run('npm', ['pack', '--json', '--pack-destination', packDir], realpathSync(source), true)
-    const json = output.match(/\[\s*\{[\s\S]*\}\s*\]\s*$/)?.[0]
-    if (json === undefined) throw new Error(`Cannot read npm pack output for ${source}`)
-    const result = JSON.parse(json)
-    if (!Array.isArray(result) || result.length !== 1 || typeof result[0]?.filename !== 'string') throw new Error(`Cannot pack ${source}`)
-    mkdirSync(destination, { recursive: true })
-    run('/usr/bin/tar', ['-xzf', join(packDir, result[0].filename), '--strip-components=1', '-C', destination])
-  } finally {
-    rmSync(packDir, { recursive: true, force: true })
+function parsePackOutput(output, packageName) {
+  const json = output.match(/(?:\[\s*)?\{[\s\S]*\}(?:\s*\])?\s*$/)?.[0]
+  if (json === undefined) throw new Error(`Cannot read pack output for ${packageName}`)
+  const parsed = JSON.parse(json)
+  const result = Array.isArray(parsed) ? parsed[0] : parsed
+  if (result === undefined || typeof result.filename !== 'string') {
+    throw new Error(`Cannot pack ${packageName}`)
   }
+  return isAbsolute(result.filename) ? result.filename : join(packDir, result.filename)
 }
 
-function destinationFor(packageName) {
-  return join(stagingModules, ...packageName.split('/'))
+function packProduct(name, directory) {
+  const command = name.startsWith('@dsh-cowork/') ? 'pnpm' : 'npm'
+  return parsePackOutput(run(command, ['pack', '--json', '--pack-destination', packDir], directory, true), name)
 }
 
-if (!existsSync(join(sourceProfile, 'package.json')) || !existsSync(sourceModules)) throw new Error(`Installed Web profile not found: ${sourceProfile}`)
-const sourceManifest = JSON.parse(readFileSync(join(sourceProfile, 'package.json'), 'utf8'))
-const bundles = sourceManifest.dsh?.profile?.bundles
-if (!Array.isArray(bundles) || !bundles.every(name => typeof name === 'string' && /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name))) {
-  throw new Error('Installed Web profile has an invalid bundle list')
-}
-
-mkdirSync(stagingModules, { recursive: true })
-for (const entry of packageEntries(sourceModules)) {
-  const destination = destinationFor(entry.name)
-  mkdirSync(dirname(destination), { recursive: true })
-  if (locallyPacked.has(entry.name)) unpackPackage(entry.source, destination)
-  else cpSync(entry.source, destination, { recursive: true, dereference: false, preserveTimestamps: true, verbatimSymlinks: true })
-}
-
-const coworkCore = resolve(desktopDir, '..', '..', 'dsh-cowork', 'packages', 'core')
-if (bundles.includes('@dsh-cowork/plugin')) {
-  const coworkRoot = resolve(coworkCore, '..', '..')
-  const bundledCore = destinationFor('@dsh-cowork/core')
-  unpackPackage(coworkCore, bundledCore)
-  cpSync(join(coworkCore, 'node_modules'), join(bundledCore, 'node_modules'), { recursive: true, dereference: false, preserveTimestamps: true, verbatimSymlinks: true })
-  cpSync(join(coworkRoot, 'node_modules', '.pnpm'), join(stagingModules, '.pnpm'), { recursive: true, dereference: false, preserveTimestamps: true, verbatimSymlinks: true })
-  for (const entry of readdirSync(join(bundledCore, 'node_modules'), { withFileTypes: true })) {
-    if (!entry.isSymbolicLink()) continue
-    const item = join(bundledCore, 'node_modules', entry.name)
-    const target = readlinkSync(item)
-    if (!target.startsWith('../../../node_modules/.pnpm/')) continue
-    unlinkSync(item)
-    symlinkSync(target.replace('../../../node_modules/.pnpm/', '../../../.pnpm/'), item)
+function workspacePackages() {
+  const directories = []
+  for (const group of readdirSync(join(suiteRoot, 'packages'), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+    for (const pkg of readdirSync(join(suiteRoot, 'packages', group.name), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+      directories.push(join(suiteRoot, 'packages', group.name, pkg.name))
+    }
   }
+  for (const parent of ['vendor', 'apps']) {
+    for (const pkg of readdirSync(join(suiteRoot, parent), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+      directories.push(join(suiteRoot, parent, pkg.name))
+    }
+  }
+  return new Map(directories.filter(directory => existsSync(join(directory, 'package.json'))).map(directory => {
+    const manifest = readManifest(directory)
+    return [manifest.name, { directory, manifest }]
+  }))
 }
 
-const dependencies = Object.fromEntries([...new Set([...bundles, 'dsh-file-edit', ...(bundles.includes('@dsh-cowork/plugin') ? ['@dsh-cowork/core'] : [])])].sort().map(name => [name, '*']))
-writeFileSync(join(staging, 'package.json'), `${JSON.stringify({ name: 'dsh-profile-web', private: true, dependencies, dsh: { profile: { bundles } } }, null, 2)}\n`)
-writeFileSync(join(staging, 'cordis.yml'), '[]\n')
-writeFileSync(join(staging, 'cordis.patch.yml'), '- insert:\n    - id: dsh-file-edit\n      name: dsh-file-edit\n')
+function packagePath(root, name) {
+  return join(root, 'node_modules', ...name.split('/'), 'package.json')
+}
 
-const scrubLocalPaths = directory => {
+function exactPeerVersion(name, range, pluginRoots) {
+  for (const root of [...pluginRoots, suiteRoot]) {
+    const candidate = packagePath(root, name)
+    if (!existsSync(candidate)) continue
+    const version = JSON.parse(readFileSync(realpathSync(candidate), 'utf8')).version
+    if (typeof version === 'string' && version.length > 0) return version
+  }
+  const lowerBound = range.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0]
+  if (lowerBound === undefined) throw new Error(`Cannot pin peer dependency ${name} from range ${range}`)
+  return lowerBound
+}
+
+function scrubLocalPaths(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const item = join(directory, entry.name)
     if (entry.isDirectory()) {
@@ -106,41 +127,108 @@ const scrubLocalPaths = directory => {
     }
   }
 }
-scrubLocalPaths(staging)
 
-const forbiddenLinks = []
-const scanLinks = directory => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const item = join(directory, entry.name)
-    if (entry.isSymbolicLink()) {
-      const target = readlinkSync(item)
-      if (target.startsWith('/')) forbiddenLinks.push(item)
-    } else if (entry.isDirectory()) scanLinks(item)
-  }
-}
-// cpSync preserves dependency-relative links; no link may point back to this machine.
-scanLinks(staging)
-if (forbiddenLinks.length > 0) throw new Error(`Profile contains absolute symlinks: ${forbiddenLinks.join(', ')}`)
-
-const personalPathFiles = []
-const scanPersonalPaths = directory => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const item = join(directory, entry.name)
-    if (entry.isDirectory()) scanPersonalPaths(item)
-    else if (entry.isFile()) {
-      const buffer = readFileSync(item)
-      if (localPathPrefixes.some(prefix => buffer.includes(Buffer.from(prefix)))) personalPathFiles.push(item)
+function verifySnapshot(directory) {
+  const violations = []
+  const visit = current => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const item = join(current, entry.name)
+      const relative = item.slice(directory.length + 1)
+      const stat = lstatSync(item)
+      if (stat.isSymbolicLink()) {
+        const target = readlinkSync(item)
+        if (isAbsolute(target)) violations.push(`${relative}: absolute symlink`)
+      } else if (stat.isDirectory()) {
+        visit(item)
+      } else if (stat.isFile()) {
+        const buffer = readFileSync(item)
+        if (localPathPrefixes.some(prefix => buffer.includes(Buffer.from(prefix)))) {
+          violations.push(`${relative}: personal path`)
+        }
+      }
     }
   }
+  visit(directory)
+  if (violations.length > 0) throw new Error(`Profile privacy verification failed:\n${violations.join('\n')}`)
 }
-scanPersonalPaths(staging)
-if (personalPathFiles.length > 0) throw new Error(`Profile contains personal paths: ${personalPathFiles.join(', ')}`)
 
-rmSync(artifactDir, { recursive: true, force: true })
-mkdirSync(artifactDir, { recursive: true })
-const archive = join(artifactDir, 'profile.tar.gz')
-run('/usr/bin/tar', ['-czf', archive, '-C', staging, '.'])
-const profileId = createHash('sha256').update(readFileSync(archive)).digest('hex').slice(0, 16)
-writeFileSync(join(artifactDir, 'profile-id'), `${profileId}\n`)
-rmSync(staging, { recursive: true, force: true })
-console.log(`clean plugin profile prepared: ${String(bundles.length)} active bundles, ${basename(archive)}`)
+try {
+  const productProfile = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
+  validateProfileManifest(productProfile)
+
+  const pluginEntries = Object.entries(productProfile.productPlugins).map(([name, relativePath]) => {
+    const directory = resolve(suiteRoot, relativePath)
+    if (!directory.startsWith(`${suiteRoot}/`) || !existsSync(join(directory, 'package.json'))) {
+      throw new Error(`Product plugin source is missing: ${name}`)
+    }
+    const manifest = readManifest(directory)
+    if (manifest.name !== name) throw new Error(`Product plugin name mismatch: expected ${name}, found ${String(manifest.name)}`)
+    return { name, directory, manifest }
+  })
+  const pluginRoots = pluginEntries.map(entry => entry.directory)
+  const packed = new Map(pluginEntries.map(entry => [entry.name, packProduct(entry.name, entry.directory)]))
+  const workspaceByName = workspacePackages()
+
+  const dependencies = Object.fromEntries([...packed].map(([name, archive]) => [name, `file:${archive}`]))
+  const visitedWorkspacePackages = new Set()
+  const addWorkspaceClosure = name => {
+    const workspacePackage = workspaceByName.get(name)
+    if (workspacePackage === undefined) return false
+    if (visitedWorkspacePackages.has(name)) return true
+    visitedWorkspacePackages.add(name)
+    const archive = packed.get(name) ?? parsePackOutput(
+      run('pnpm', ['pack', '--json', '--pack-destination', packDir], workspacePackage.directory, true),
+      name,
+    )
+    packed.set(name, archive)
+    dependencies[name] = `file:${archive}`
+    for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const dependency of Object.keys(workspacePackage.manifest[section] ?? {})) addWorkspaceClosure(dependency)
+    }
+    return true
+  }
+  for (const entry of pluginEntries) {
+    for (const [name, range] of Object.entries(entry.manifest.peerDependencies ?? {})) {
+      if (dependencies[name] !== undefined) continue
+      if (!addWorkspaceClosure(name)) {
+        dependencies[name] = exactPeerVersion(name, String(range), pluginRoots)
+      }
+    }
+  }
+
+  writeFileSync(join(staging, 'package.json'), `${JSON.stringify({
+    name: 'dsh-profile-web-bootstrap',
+    version: '0.0.0',
+    private: true,
+    dependencies,
+  }, null, 2)}\n`)
+  run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=dev', '--legacy-peer-deps'], staging)
+
+  const runtimeDependencies = Object.fromEntries(
+    [...new Set([...productProfile.bundles, ...productProfile.packages, ...Object.keys(productProfile.productPlugins)])]
+      .sort()
+      .map(name => [name, '*']),
+  )
+  writeFileSync(join(staging, 'package.json'), `${JSON.stringify({
+    name: 'dsh-profile-web',
+    private: true,
+    dependencies: runtimeDependencies,
+    dsh: { profile: { bundles: productProfile.bundles } },
+  }, null, 2)}\n`)
+  writeFileSync(join(staging, 'cordis.yml'), '[]\n')
+  cpSync(join(distributionDir, 'cordis.patch.yml'), join(staging, 'cordis.patch.yml'))
+
+  scrubLocalPaths(staging)
+  verifySnapshot(staging)
+
+  rmSync(artifactDir, { recursive: true, force: true })
+  mkdirSync(artifactDir, { recursive: true })
+  const archive = join(artifactDir, 'profile.tar.gz')
+  run('/usr/bin/tar', ['-czf', archive, '-C', staging, '.'])
+  const profileId = createHash('sha256').update(readFileSync(archive)).digest('hex').slice(0, 16)
+  writeFileSync(join(artifactDir, 'profile-id'), `${profileId}\n`)
+  console.log(`clean plugin profile prepared from product manifest: ${String(productProfile.bundles.length)} bundles, ${basename(archive)}`)
+} finally {
+  rmSync(staging, { recursive: true, force: true })
+  rmSync(packDir, { recursive: true, force: true })
+}
