@@ -4,7 +4,7 @@
 
 ## 范围与保护约束
 
-- 权威源码：`/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`
+- 权威源码：`<legacy-root>/dsh-better-sidebar-fork`
 - 分支 / HEAD：`main` / `717df775b2414322a22f6a43017dc01e8784db8d`
 - 插件版本：`0.10.25`
 - 仓库已有大量阶段 1–5、Explorer、Browser、Preview、持久化和测试改动；全部按用户既有工作保护。
@@ -17,9 +17,9 @@
 - App：`/Applications/DeepSeek Harness.app`
 - App 版本 / build：`0.1.0-rc.5-local.4`
 - Electron：`43.4.0`
-- 当前运行时：`/Users/edy/Library/Application Support/DeepSeek Harness/runtimes/931a1181ce8c6c20`
-- Web Profile：`/Users/edy/Library/Application Support/DeepSeek Harness/harness/profiles/web`
-- Profile 依赖：`dsh-better-sidebar: link:/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`
+- 当前运行时：`<stable-user-data>/runtimes/<runtime-id>`
+- Web Profile：`<stable-user-data>/harness/profiles/web`
+- Profile 依赖：`dsh-better-sidebar: link:<legacy-root>/dsh-better-sidebar-fork`
 - Profile 中的实际软链接解析到上述权威源码，不是另一个插件副本。
 
 ## 当前 Preview / 媒体实现
@@ -36,7 +36,7 @@
 
 样本为 `ffmpeg` 生成的 2 秒测试图与正弦音，不含用户内容，保存在仓库外：
 
-`/Users/edy/Downloads/azg_ai/.local-test-fixtures/video-viewer-stage0`
+`<external-test-fixtures>/video-viewer-stage0`
 
 | 文件 | 大小 | 容器 / 轨道 | 目的 |
 | --- | ---: | --- | --- |
@@ -52,7 +52,7 @@
 
 另有工作区边界样本：
 
-- `/Users/edy/Downloads/azg_ai/.local-test-fixtures/video-viewer-stage0-workspace/inside-workspace.mp4`
+- `<external-test-fixtures>/video-viewer-stage0-workspace/inside-workspace.mp4`
 - 同目录的 `escape-to-external.mp4` 是指向工作区外样本的软链接，用于验证拒绝逃逸。
 
 当前缺口：未创建或发现 1GB+、接近 2GB 的 MP4。大型样本不会进入 Git，待流式接口完成后再用稀疏/受控本机样本进行性能验收。上述小样本目前也未加入 Git。

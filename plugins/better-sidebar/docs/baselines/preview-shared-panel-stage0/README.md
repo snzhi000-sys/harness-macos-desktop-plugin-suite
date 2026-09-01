@@ -15,16 +15,16 @@ this directory.
 
 ## Versions and running composition
 
-- Source repository: `/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`
+- Source repository: `<legacy-root>/dsh-better-sidebar-fork`
 - Git branch: `main`
 - Git HEAD: `717df775b2414322a22f6a43017dc01e8784db8d`
 - Plugin version: `0.10.25`
 - Desktop App: `/Applications/DeepSeek Harness.app`
 - Desktop version/build: `0.1.0-rc.5-local.4`
-- Active DSH runtime: `/Users/edy/Library/Application Support/DeepSeek Harness/runtimes/931a1181ce8c6c20`
-- Active profile: `/Users/edy/Library/Application Support/DeepSeek Harness/harness/profiles/web`
-- Profile plugin entry: `link:/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`
-- Resolved profile plugin path: `/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`
+- Active DSH runtime: `<stable-user-data>/runtimes/<runtime-id>`
+- Active profile: `<stable-user-data>/harness/profiles/web`
+- Profile plugin entry: `link:<legacy-root>/dsh-better-sidebar-fork`
+- Resolved profile plugin path: `<legacy-root>/dsh-better-sidebar-fork`
 - Running process confirmed from `/Applications/DeepSeek Harness.app`.
 - App code signature verification passed.
 

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "harness": {
+    "head": "47f943859bef60e4160492346772ded9b24f765a",
+    "version": "0.1.0-rc.5",
+    "trackedChanges": 51,
+    "untrackedEntriesAtFreeze": 1283
+  },
+  "components": [
+    { "id": "desktop", "version": "0.1.0-rc.5-local.5", "sourceKind": "untracked-source-whitelist" },
+    { "id": "better-sidebar", "head": "717df775b2414322a22f6a43017dc01e8784db8d", "version": "0.10.26", "sourceKind": "git-plus-local-overlay" },
+    { "id": "file-edit", "version": "1.13.32-local", "sourceKind": "source-snapshot" },
+    { "id": "message-edit", "version": "0.2.1", "sourceKind": "runtime-snapshot", "reproducible": false },
+    { "id": "workspace-lineage", "version": "0.1.2", "sourceKind": "source-snapshot" },
+    { "id": "cowork", "head": "2ae5cf755c4294a1e988eebf3b12dd062425d84c", "version": "0.1.0", "sourceKind": "git" }
+  ]
+}

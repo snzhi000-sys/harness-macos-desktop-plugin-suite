@@ -1,6 +1,6 @@
 # Video Viewer — 阶段 5 编码兼容与错误兜底基线
 
-记录时间：2026-08-28（Asia/Shanghai）。权威源码为 `/Users/edy/Downloads/azg_ai/dsh-better-sidebar-fork`。
+记录时间：2026-08-28（Asia/Shanghai）。权威源码为 `<legacy-root>/dsh-better-sidebar-fork`。
 
 ## 检测与错误契约
 
@@ -14,7 +14,7 @@
 
 ## 本机样本确认
 
-样本位于仓库外的 `/Users/edy/Downloads/azg_ai/.local-test-fixtures/video-viewer-stage0`。本阶段以 `ffprobe` 再次确认容器与轨道；真实 Harness/Electron 解码结果需要部署后人工验收，未验证项不得写成已支持。
+样本位于仓库外的 `<external-test-fixtures>/video-viewer-stage0`。本阶段以 `ffprobe` 再次确认容器与轨道；真实 Harness/Electron 解码结果需要部署后人工验收，未验证项不得写成已支持。
 
 | 样本 | ffprobe 结果 | 路由/错误预期 | 当前状态 |
 | --- | --- | --- | --- |

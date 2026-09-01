@@ -44,7 +44,7 @@
     }
   },
   "scripts": {
-    "build": "node ../deepseek-harness/node_modules/typescript/bin/tsc -p tsconfig.json && ../deepseek-harness/node_modules/.bin/tsdown"
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json && ../../node_modules/.bin/tsdown"
   },
   "license": "MIT",
   "dependencies": {

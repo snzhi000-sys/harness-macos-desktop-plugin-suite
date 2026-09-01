@@ -19,7 +19,9 @@ let backendUrl
 let quitting = false
 const execFileAsync = promisify(execFile)
 
-app.setName('DeepSeek Harness')
+// Source development is isolated from the installed Stable app. Packaged apps
+// obtain their channel-specific name and userData directory from the builder.
+if (!app.isPackaged) app.setName(process.env.DSH_DESKTOP_APP_NAME ?? 'DeepSeek Harness Dev')
 
 async function runtimeDirectory() {
   if (!app.isPackaged) return join(import.meta.dirname, '..', '..', '.desktop-runtime')
