@@ -1,0 +1,9 @@
+# dsh-docker bundle layer: registers the typed, guarded docker/compose tools,
+# the approval gate + monotonic deny, the opt-in service-health context, and
+# the web status-table renderer into the profile that installs this bundle.
+#
+# All behavior is configurable from the profile patch (see README.md § Config):
+# composeFiles, approval globs, execReadOnly, timeoutMs, healthContext.
+- insert:
+    - id: docker
+      name: '@dsh-docker/bundle'

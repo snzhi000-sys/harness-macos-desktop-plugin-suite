@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test (unit + guard; live-daemon tests self-skip)
+        run: pnpm test
+
+      - name: Verify the packed tarball
+        run: |
+          pnpm pack
+          tar -tzf dsh-docker-bundle-0.1.0.tgz | grep -q 'package/cordis.patch.yml'
+          tar -tzf dsh-docker-bundle-0.1.0.tgz | grep -q 'package/lib/index.js'
+          tar -tzf dsh-docker-bundle-0.1.0.tgz | grep -q 'package/lib/client.js'
+          tar -tzf dsh-docker-bundle-0.1.0.tgz | grep -q 'package/README.md'
