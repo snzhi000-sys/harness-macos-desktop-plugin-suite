@@ -340,6 +340,19 @@ abstract load(id: SessionId): Promise<SessionInspection>
 abstract inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection>
 
 /**
+ * Read a validated logical tail for transcript first paint. The default
+ * preserves every backend's behavior by performing a full inspection;
+ * seek-capable implementations may return a previously validated tail and
+ * omit `inspection`. Callers must use {@link inspect} whenever they require
+ * the complete log for resume, fork, model reconstruction, or repair.
+ * @param id - persisted session to inspect.
+ * @param maxMessages - positive append-origin message limit.
+ * @param signal - optional cancellation for backend work.
+ * @returns one logical history cut, with the full inspection on fallback.
+ */
+async readHistoryTail( id: SessionId, maxMessages: number, signal?: AbortSignal, ): Promise<SessionHistoryTailInspection>
+
+/**
  * Read the stored events from `fromSeq` onward — the read-from-seq
  * primitive for read models that resume from a watermark (e.g. a persisted
  * projection cache folding only the tail past its checkpoint). Unlike
@@ -381,5 +394,5 @@ abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot
 
 Types: [SessionEvent](session.md) · [SessionId](core.md)
 
-Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
+Source: [`packages/session/session-persistence/src/index.ts:144`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -1057,6 +1057,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the validated header and current logical event log.',
       },
       {
+        signature: 'async readHistoryTail( id: SessionId, maxMessages: number, signal?: AbortSignal, ): Promise<SessionHistoryTailInspection>',
+        description: 'Read a validated logical tail for transcript first paint. The default preserves every backend\'s behavior by performing a full inspection; seek-capable implementations may return a previously validated tail and omit `inspection`. Callers must use inspect whenever they require the complete log for resume, fork, model reconstruction, or repair.',
+        parameters: [{ name: 'id', description: 'persisted session to inspect.' }, { name: 'maxMessages', description: 'positive append-origin message limit.' }, { name: 'signal', description: 'optional cancellation for backend work.' }],
+        returns: 'one logical history cut, with the full inspection on fallback.',
+      },
+      {
         signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>',
         description: 'Read the stored events from `fromSeq` onward — the read-from-seq primitive for read models that resume from a watermark (e.g. a persisted projection cache folding only the tail past its checkpoint). Unlike inspect, it is a detached physical suffix read: no preparation cache, torn-tail truncation, synthetic closers, or coordinator-state publication. Only events from the valid contiguous stored prefix are returned, so a torn fragment never reaches the caller. `fromSeq` at or beyond the stored prefix returns an empty event list (never an error). Backends whose medium can seek by seq (SQLite) read only the suffix; sequential media (JSONL, both encodings) still parse the whole artifact and skip forward — the primitive bounds what is RETURNED and refolded, not every backend\'s physical read.',
         parameters: [{ name: 'id', description: 'the persisted session to read.' }, { name: 'fromSeq', description: 'first event seq to include; a non-negative safe integer.' }, { name: 'signal', description: 'optional cancellation for queued and backend read work.' }],
@@ -3796,6 +3802,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionHeader',
     declaration: 'export interface SessionHeader {\n    readonly version: number;\n    readonly id: SessionId;\n    readonly createdAt: number;\n    readonly cwd?: string;\n    readonly parentSession?: SessionId;\n    readonly seedLength?: number;\n    readonly origin?: \'subagent\';\n    readonly delegationDepth?: number;\n    readonly agentPreset?: string;\n}',
+  },
+  {
+    name: 'SessionHistoryTailInspection',
+    declaration: 'export interface SessionHistoryTailInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n    readonly contextEvents: readonly SessionEvent[];\n    readonly hasMore: boolean;\n    readonly asOfSeq: number;\n    readonly inspection?: SessionInspection;\n}',
   },
   {
     name: 'SessionId',

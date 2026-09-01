@@ -6,7 +6,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import { SessionPreparation } from '@deepseek-ai/dsh-session'
+import { isAppendSurfaceEvent, SessionPreparation } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import type { SessionPersistenceRevision } from './revision.ts'
 
@@ -28,6 +28,66 @@ export interface SessionInspection {
   readonly meta: SessionHeader
   /** Validated contiguous logical event log. */
   readonly events: readonly SessionEvent[]
+}
+
+/** A validated logical history tail, optionally carrying its full slow-path inspection. */
+export interface SessionHistoryTailInspection {
+  /** Validated immutable session metadata. */
+  readonly meta: SessionHeader
+  /** Contiguous logical events beginning at one append-origin message boundary. */
+  readonly events: readonly SessionEvent[]
+  /** Reconstruction-only events omitted from the visible contiguous tail. */
+  readonly contextEvents: readonly SessionEvent[]
+  /** Whether committed logical events precede {@link events}. */
+  readonly hasMore: boolean
+  /** Last logical event seq represented by this cut, or -1 for an empty log. */
+  readonly asOfSeq: number
+  /** Full inspection when this read used the backend's validation fallback. */
+  readonly inspection?: SessionInspection
+}
+
+const HISTORY_MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
+const AGENT_PRESET_SELECTED_EVENT_TYPE: string = 'agent-preset/selected'
+
+/**
+ * Slice a validated inspection at append-origin message boundaries.
+ * `agent-preset/selected` is retained separately because transcript presenters
+ * need the latest selection even when it predates the visible page.
+ * @param inspection - fully validated logical session.
+ * @param maxMessages - positive maximum append-origin message count.
+ * @returns the immutable tail and its reconstruction context.
+ */
+export function historyTailOf(
+  inspection: SessionInspection,
+  maxMessages: number,
+): Omit<SessionHistoryTailInspection, 'inspection'> {
+  if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) {
+    throw new TypeError(`history tail maxMessages must be a positive safe integer, got ${String(maxMessages)}`)
+  }
+  const all = inspection.events
+  let count = 0
+  let cut = 0
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const event = all[index] as SessionEvent
+    if (!HISTORY_MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
+    count += 1
+    const sources = event.sourceEventSeqs
+    const groupStart = sources !== undefined && sources.length > 0
+      ? Math.min(event.seq, ...sources)
+      : event.seq
+    if (count >= maxMessages) {
+      cut = groupStart
+      break
+    }
+  }
+  const preset = all.findLast(event => event.type === AGENT_PRESET_SELECTED_EVENT_TYPE)
+  return Object.freeze({
+    meta: inspection.meta,
+    events: Object.freeze(all.filter(event => event.seq >= cut)),
+    contextEvents: Object.freeze(preset === undefined || preset.seq >= cut ? [] : [preset]),
+    hasMore: cut > 0,
+    asOfSeq: all.at(-1)?.seq ?? -1,
+  })
 }
 
 /** A backend's own raw artifact text for one session, verbatim. */
@@ -198,6 +258,26 @@ export abstract class SessionPersistence extends Service {
    * @returns the validated header and current logical event log.
    */
   abstract inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection>
+
+  /**
+   * Read a validated logical tail for transcript first paint. The default
+   * preserves every backend's behavior by performing a full inspection;
+   * seek-capable implementations may return a previously validated tail and
+   * omit `inspection`. Callers must use {@link inspect} whenever they require
+   * the complete log for resume, fork, model reconstruction, or repair.
+   * @param id - persisted session to inspect.
+   * @param maxMessages - positive append-origin message limit.
+   * @param signal - optional cancellation for backend work.
+   * @returns one logical history cut, with the full inspection on fallback.
+   */
+  async readHistoryTail(
+    id: SessionId,
+    maxMessages: number,
+    signal?: AbortSignal,
+  ): Promise<SessionHistoryTailInspection> {
+    const inspection = await this.inspect(id, signal)
+    return { ...historyTailOf(inspection, maxMessages), inspection }
+  }
 
   /**
    * Read the stored events from `fromSeq` onward — the read-from-seq

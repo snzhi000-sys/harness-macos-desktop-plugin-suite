@@ -10,7 +10,7 @@
 
 别的插件可以经 `ctx.conversation.blocks` 让某个会话的编辑器变为惰性：它设置一个携带自己本地化理由的 block，输入栏就渲染同一个禁用的 textarea，并把该理由作为 placeholder——复用无 Workspace 时的那套姿态。推送方向是约束而非偏好：知道某会话发不出消息的插件（ui-model-selection，在没有适配器服务其路由时）本就依赖本包，因此本包读不到它们。模型 seat 是 block 唯一保留可用的控件——这份约定里的每个 block 都靠选模型来解除，把它一起锁上会让编辑器索要它自己拦下的那件事。block 只是提示性设计；无论客户端禁用了什么，宿主都会拒绝一个它无法路由的提示词。两者同时成立时以无 Workspace 姿态为准，因为选 Workspace 是更靠前的前提。
 
-视图环是一个 slot：严格会话主体注册在 `children` 表中声明会话作用域的 `'conversation.view'` 列表，并通过自身的 renderSlot share 渲染活跃配置项（`only: <active id>`）；视图标签页则从注册选项（`id`／`order`／`label`）投影而来。聊天视图是该包自身的配置项；ui-trajectory 等插件通过 `ctx.slots.register` 贡献标签页，每个视图负责自己的 chrome。
+视图环是一个 slot：严格会话主体注册在 `children` 表中声明会话作用域的 `'conversation.view'` 列表，并通过自身的 renderSlot share 渲染活跃配置项（`only: <active id>`）；视图标签页则从注册选项（`id`／`order`／`label`）投影而来。聊天视图是该包自身的配置项；ui-trajectory 等插件通过 `ctx.slots.register` 贡献标签页，每个视图负责自己的 chrome。插件通过按 scope 寻址的 `ctx.conversation.activateView(viewId)` 控制器激活自身视图，不再查找已渲染的标签 DOM。严格会话 store 尚未挂载时发出的请求会排队，并在绑定时完成对齐。空白会话只在选中 Chat 时保留居中的 Hero；选中外部视图会显示普通标题栏、该视图与底部编辑器，但不会创建消息，也不会改变 Host 的 blank 语义。
 
 Chat 业务行是彼此独立的注册表贡献，不是封闭的内建联合。Client 插件通过 declaration merging 增加类型化 `ChatNodeDataMap` key，在 `ctx.conversationEvents` 上注册 `ConversationNodeDefinition`，再向 `conversation.chat.node` 注册匹配的 keyed renderer；它无须修改会话 fold 或中央 renderer switch。稳定事件 id、append/prepend 回放、Location data 与 renderer 约束见 [Conversation Node 实操手册](../../../docs/cookbook/adding-a-conversation-node.md)。
 
@@ -33,6 +33,8 @@ Think 行默认保持折叠，并在不展开思维链的情况下暴露实时�
 Host 带 placement 的 `session/queue` 快照也会携带待处理 steering。QueueDock 会将其过滤掉，ChatView 则把它投影为会话流末尾带复制操作的用户样式气泡；非用户来源的 next-step 项（注入上下文）改以 `context` placement 广播，领取前不在任何界面渲染。与所有用户样式气泡一样，这里不显示 fork。Host 会等携带该 steering 的持久 `user/message` 进入 mux 流之后再退役 steering。客户端运行时接纳该实时事件时，会在发布快照前退役第一个匹配的当前 steering 单次入队项；历史事件无法隐藏后来复用同一 `MessageId` 的单次入队项。气泡交接时因而不会产生空档或重复，会立即从持久节点恢复复制操作与时钟——steering 气泡与 user 气泡一样不带分支操作（[决策](../../../.agents/notes/implemented/simplification/2026-08-06-user-bubbles-drop-the-branch-action.md)）——并能在重连后从同一权威恢复。
 
 键盘消息提交会根据所寻址会话的运行状态和 steering 能力解析投递方式。空闲时，Enter 和 Cmd/Ctrl+Enter 都执行普通 Queue 发送。主会话运行期间，由 Host settings 支撑的 `ui-conversation.busyEnter` General Settings 偏好会把普通 Enter 分配为 `Queue`（默认值）或 `Steer`，Cmd/Ctrl+Enter 则执行另一种行为；本地 settings 提供方将其存入 `$DSH_HOME/settings.yaml`，因此该选择会跟随同一个用户 home 跨越 Web 端口。Shift+Enter 仍然换行。草稿为空时，Cmd/Ctrl+Enter 改为按 FIFO 顺序把仍在排队的消息全部插话进运行中的轮次（把 dock 的逐条严格 steer 操作应用于整个队列）；空草稿 + 普通 Enter 仍是无操作。这个整队列手势可用时，文本框 placeholder 会提示该手势；owner 提供的 placeholder 仍然优先。已寻址 subagent 即使正在运行，也会让这两个手势都使用其仅支持 Queue 的继续执行传输。该偏好只影响支持 steering 的繁忙态手势对，发送按钮与非键盘提交操作仍使用 Queue。Composer Steer 复用现有尽力而为的 `session.prompt(mode: 'steer')` 约定：如果当前 next-step 窗口在接纳前关闭，AgentLoop 会把消息接纳为下一条唤醒 Queue 轮次，不显示失败，也不会丢失草稿事务。该持久化边界由[Host settings 支撑的偏好决策](../../../.agents/notes/implemented/bug-fix/2026-08-06-host-backed-web-preferences.md)拥有。
+
+由 occurrence 支撑的引用气泡保持在 textarea 文本流内。每个 occurrence 只占一个保留的单代码单元占位字符；`chipWidthEm` 以 0.125em 步进选择 3–23em 的私用区字形，同时保留旧整数宽度字形以恢复已有草稿。textarea、backdrop 与高度 mirror 共用同一占位字体，因此光标位置、换行、选区、原生删除、IME 与撤销在任意宽度下均保持对齐。剪贴板与提交投影通过 occurrence 表替换占位字符，保留字形不会离开输入状态机。
 
 逐会话 UI 状态中的选择与活跃视图位于已声明的聊天 store（`stores.ts` `createChatStore`）中；InputHub 拥有输入区状态机，并将草稿镜像到该 store 以便持久化。apply 将同一个 store handle 传给严格限定于会话的子树、聊天视图和详情注册，因此每个会话内共享一个实例，框架拥有其生命周期。组件保持纯粹：框架标准工具包提供 `useSession`／`sessionId`、全局 `useSessions`／`useWorkspaces`，以及输入状态机的 `useInput`／`inputActions`；store 表层与 inject factory 提供其余状态和回调。
 

@@ -41,10 +41,10 @@ Status: implemented
 
 occurrence 表与 chip 三投影：
 
-- 每颗引用在 draft 中占一个 `U+FFFC`；表项 `{occurrenceId, source, ref, offset, label, clipboardText, invalid?}`；同名 chip 因 occurrenceId 独立。
+- 每颗引用在 draft 中占一个单代码单元占位字符；表项 `{occurrenceId, source, ref, offset, label, clipboardText, invalid?}`；同名 chip 因 occurrenceId 独立。通用占位字符为 `U+FFFC`；可选的 `ReferenceInsert.chipWidthEm` 会以 0.125em 步进把 3–23em 请求映射到保留的 `U+E100`–`U+E1A0` 单元格。旧的 `U+E000`–`U+E014` 单元格保留原整数 em advance，用于恢复已有草稿。
 - 一切编辑同 transaction 更新 draft 与表：区间平移；与占位符相交的删除/替换作用于整颗。
 - 单字符占位使键盘原子性大半原生成立（caret 无内部位；Backspace/方向键/Shift 扩选原生即整颗）；鼠标点 chip 由 backdrop 命中 → 整颗 setSelectionRange。
-- 视觉投影 = label：backdrop 在占位符 offset 渲染 chip（textarea 字形不可见），invalid 走失效样式。
+- 视觉投影 = label：backdrop 在 chip 的 offset 中渲染 draft 内完全相同的占位字符（textarea 字形不可见），composer 三层共用占位字体。因此可变宽单元格的换行和光标位置严格一致，且 chip 仍留在文本流中；invalid 走失效样式。
 - 剪贴板/持久化投影 = clipboardText：copy/cut 把选区内占位符展开；draft 持久化 mirror 写同一投影（chat store 里永远是普通文本，刷新 seed 语义 = 全选复制→重开→粘贴，chip 跨刷新降级为文本）。
 - 模型投影 = submit 时经 source `codec.serialize` 逐颗生成（归 submit attempt 的 signal 与陈旧守卫；owner 缺失/失败/取消则不发送，不降级为 `/name`）。
 
@@ -116,7 +116,7 @@ skill/@subagent 引用不走占位符 + occurrence 身份链——纯文本引�
 | ActiveCommand 中间态 / registerMode 模式注册表 / 从 draft 推导命令态 | claim 由 pick 路径显式建立——无表、无推导 |
 | bindTarget/bindDraft 对象直连 | 反向耦合 + root 单例跨会话误配；scoped bail 事件保依赖倒置且路由结构性正确 |
 | 统一 slash/input-apply 或全事件化 | 三个独立 payload 覆盖跨插件改写；异步链路保持基于注册表的显式调用 |
-| contenteditable / 富文本树 | 兼容性差；textarea + U+FFFC + occurrence 表覆盖全部交互约定 |
+| contenteditable / 富文本树 | 兼容性差；textarea + 单代码单元宽度占位符 + occurrence 表覆盖全部交互约定 |
 | draft 双持久化 {text, occurrences} | mirror 写剪贴板投影零新概念；chip 跨刷新降级可接受 |
 | 原生 textarea undo 栈 | 受控 + 程序化写入下不可靠；粘贴两段 undo 语义只能自管 |
 | InputBar 收 16 员 wiring 回调包 | 消费矩阵实证 11 员 InputBar 独占、1 员死成员；标准件通道让组件自取，键盘面包内私递 |
@@ -125,7 +125,7 @@ skill/@subagent 引用不走占位符 + occurrence 身份链——纯文本引�
 | 占位 select 常驻工具行 | 具名 slot 在注册前保持为空；占位件与真实现冲突时是两个真源 |
 | 始终可见的 Plan 开／关切换 | 入口已归共享 Command source 所有；第二个入口会把状态 seat 变成冗余的 mode chrome |
 | 第二套加号菜单组件／controller，或在 Command 上方增加 Add/File 分组 | 这会重复异步候选、键盘高亮、焦点保留与 pick 状态；加号控件只是既有 MenuView 按 source 过滤的 launcher，且此 scope 没有文件能力 |
-| 引用一律走 U+FFFC chip（纯文本引用决策所取代的旧线） | 纯文本 + 派生装饰零身份状态；原文即模型投影，undo/剪贴板免特判；chip 链保留给需要不可分原子性的场景 |
+| 引用一律走带身份的 chip（纯文本引用决策所取代的旧线） | 纯文本 + 派生装饰零身份状态；原文即模型投影，undo/剪贴板免特判；chip 链保留给需要不可分原子性的场景 |
 
 ## 后果
 

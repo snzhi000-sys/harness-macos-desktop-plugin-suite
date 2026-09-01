@@ -59,14 +59,18 @@ desktop/.artifacts/
 *.zip
 
 # Personal runtime/profile data must never enter the source repository
-profile/
-profiles/
-runtime/
-runtimes/
-state/
-logs/
-credentials/
-quarantine/
+/profile/
+/profiles/
+/runtime/
+/runtimes/
+/state/
+/logs/
+/credentials/
+/quarantine/
+/.dev-data/
+/.local-data/
+desktop/.dev-user-data/
+distribution/.generated/
 **/dsh-file-edit-state/
 *.jsonl
 *.sqlite

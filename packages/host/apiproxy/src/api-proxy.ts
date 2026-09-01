@@ -836,7 +836,13 @@ function historyPage(
  */
 type HistorySource =
   | { readonly kind: 'attached'; readonly session: Session }
-  | { readonly kind: 'detached'; readonly header: SessionHeader; readonly events: SessionEvent[] }
+  | {
+    readonly kind: 'detached'
+    readonly header: SessionHeader
+    readonly events: SessionEvent[]
+    readonly contextEvents?: SessionEvent[]
+    readonly projections?: SessionProjectionsBlock
+  }
 
 function projectionsFor(ctx: Context, session: Session): SessionProjectionsBlock | undefined {
   const registry = ctx.get('sessionProjections')
@@ -1530,9 +1536,44 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    * @returns the attached session, or the inspected detached header and events.
    * @throws {@link ApiRemoteSessionNotFound} when no project-backed session has that identity.
    */
-  async function historySourceFor(sessionId: SessionId): Promise<HistorySource> {
+  async function historySourceFor(
+    sessionId: SessionId,
+    beforeSeq: number | undefined,
+    maxMessages: number | undefined,
+  ): Promise<HistorySource> {
     const attached = ctx.sessions.get(sessionId)
     if (attached !== undefined) return { kind: 'attached', session: attached }
+
+    const persistence = ctx.get('sessionPersistence')
+    const readHistoryTail = persistence === undefined ? undefined : Reflect.get(persistence, 'readHistoryTail')
+    if (beforeSeq === undefined && persistence !== undefined && typeof readHistoryTail === 'function') {
+      const meta = (await persistence.list()).find(candidate => candidate.id === sessionId)
+      if (meta === undefined || meta.cwd === undefined) {
+        throw new SessionNotFound(`session "${sessionId}" not found`)
+      }
+      const tail = await readHistoryTail.call(persistence, sessionId, maxMessages ?? DEFAULT_MAX_MESSAGES)
+      if (tail.meta.cwd === undefined) throw new SessionNotFound(`session "${sessionId}" not found`)
+      if (tail.inspection !== undefined) {
+        return { kind: 'detached', header: tail.meta, events: [...tail.inspection.events] }
+      }
+
+      const registry = ctx.get('sessionProjections')
+      const projections = registry === undefined
+        ? undefined
+        : ctx.get('sessionProjectionCache')?.cachedSnapshot(tail.meta)
+      if (registry === undefined || projections?.asOfSeq === tail.asOfSeq) {
+        return {
+          kind: 'detached',
+          header: tail.meta,
+          events: [...tail.events],
+          contextEvents: [...tail.contextEvents],
+          ...projections === undefined ? {} : { projections },
+        }
+      }
+      // A stale or absent projection checkpoint cannot describe the tail's
+      // log position. Fall back to the established complete inspection so the
+      // response still carries one coherent event/projection cut.
+    }
     const inspected = await inspectServable(sessionId)
     return { kind: 'detached', header: inspected.meta, events: inspected.events }
   }
@@ -1544,7 +1585,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    * @returns that session's creation header and its events.
    */
   function sourceSession(source: HistorySource): PresetBearingSession {
-    if (source.kind === 'detached') return { header: source.header, events: source.events }
+    if (source.kind === 'detached') {
+      return { header: source.header, events: [...(source.contextEvents ?? []), ...source.events] }
+    }
     return { header: source.session.header, events: source.session.events }
   }
 
@@ -1565,7 +1608,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     includeProjections: boolean,
   ): { events: SessionEvent[]; projections?: SessionProjectionsBlock } {
     if (source.kind === 'detached') {
-      const projections = includeProjections ? detachedProjectionsFor(ctx, source.events) : undefined
+      const projections = includeProjections
+        ? source.projections ?? detachedProjectionsFor(ctx, source.events)
+        : undefined
       return { events: source.events, ...projections === undefined ? {} : { projections } }
     }
     const events = [...source.session.events]
@@ -2242,7 +2287,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       async history(request) {
         const { sessionId, beforeSeq, maxMessages } = request.payload
         try {
-          const source = await historySourceFor(sessionId)
+          const source = await historySourceFor(sessionId, beforeSeq, maxMessages)
           // Both awaits happen BEFORE the cut. Ensuring the recorded
           // composition's standing mount is what registers its projection
           // units, so a first cold read would otherwise serve a baseline

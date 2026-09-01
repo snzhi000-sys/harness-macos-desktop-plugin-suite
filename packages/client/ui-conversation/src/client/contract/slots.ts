@@ -421,7 +421,11 @@ export interface ConversationInjected {
    * plugin raised one; the reason is the blocker's own localized copy, which
    * the root renders as the inert composer's placeholder.
    */
-  hooks: { composerBlock: ObservableSnapshot<ComposerBlock | undefined> }
+  hooks: {
+    composerBlock: ObservableSnapshot<ComposerBlock | undefined>
+    /** Active view mirrored independently of the strict Session body. */
+    activeView: ObservableSnapshot<string>
+  }
 }
 
 /** Business callbacks injected into the strict Session body seat. */
@@ -436,6 +440,10 @@ export interface ConversationSessionInjected {
   releaseSessionImages: (sessionId: SessionId) => void
   /** Bind the input machine's draft persistence mirror to the session store. */
   bindDraftMirror: (write: (text: string) => void) => () => void
+  /** Connect the rendered session store to scope-addressed view activation. */
+  bindViewActivation: (selectedView: string | null, setView: (viewId: string) => void) => () => void
+  /** Mirror subsequent user tab selections into the resident shell. */
+  syncActiveView: (selectedView: string | null) => void
 }
 
 /** Business callbacks injected into the strict session header seat. */

@@ -15,12 +15,15 @@ import type { ConversationSnapshot } from './sessions/conversation.ts'
 import type { UseProjection } from './sessions/projection-store.ts'
 import { ConversationEventRegistry } from './conversation/event-registry.ts'
 import { ConversationViewRegistry } from './conversation/view-registry.ts'
+import { StartupTaskScheduler } from './startup-tasks.ts'
 
 export { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 
 export { SlotRegistry } from './slots.ts'
 export { ConversationEventRegistry } from './conversation/event-registry.ts'
 export { ConversationViewRegistry } from './conversation/view-registry.ts'
+export { StartupTaskScheduler } from './startup-tasks.ts'
+export type { StartupTask, StartupTaskClock } from './startup-tasks.ts'
 export { ConversationNodeAssembler } from './sessions/conversation-assembler.ts'
 export { ConversationLocationIndex } from './sessions/conversation-location-index.ts'
 export { conversationContextKey } from './contract/conversation.ts'
@@ -176,6 +179,8 @@ declare module '@deepseek-ai/cordis' {
     sessions: import('./contract/sessions.ts').ISessions
     /** The outward face only; the concrete service stays inside the runtime. */
     workspaces: import('./contract/workspaces.ts').IWorkspaces
+    /** Serial post-paint lane for abortable, non-critical startup I/O. */
+    startupTasks: import('./startup-tasks.ts').StartupTaskScheduler
   }
 }
 
@@ -187,6 +192,9 @@ export const inject = ['connection', 'typert', 'remote', 'remote.commands']
  */
 export function apply(ctx: Context): void {
   ctx.plugin(SlotRegistry)
+  const startupTasks = new StartupTaskScheduler()
+  ctx.reflect.provide('startupTasks', startupTasks, undefined)
+  ctx.effect(() => () => { startupTasks.dispose() }, 'runtime: post-paint startup task scheduler')
   const conversation = {
     events: new ConversationEventRegistry(ctx),
     views: new ConversationViewRegistry(ctx),

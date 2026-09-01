@@ -149,7 +149,7 @@ export interface EditRange extends EditSelection {
 }
 
 /**
- * One reference chip occurrence, backing exactly one U+FFFC placeholder in
+ * One reference chip occurrence, backing exactly one atomic placeholder in
  * the draft. Identity is occurrenceId — same-named
  * references stay independently addressable. label/clipboardText are the
  * owner's insert-time projections, cached so the chip survives owner loss
@@ -215,7 +215,7 @@ export interface InputState {
   readonly phase: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
   /** Present exactly while claimed/submitting (claim snapshot during flight; submit closure withheld). */
   readonly claim?: { readonly token: string; readonly hint?: string }
-  /** Chip occurrence table, sorted by offset (one U+FFFC per entry). */
+  /** Chip occurrence table, sorted by offset (one atomic placeholder per entry). */
   readonly occurrences: readonly Occurrence[]
   /** Live paste-match attempt (absent when no paste is matchable). */
   readonly paste?: PasteAttemptState
@@ -248,7 +248,7 @@ export type InputEvent =
   /** Full next draft from the textarea; editRange narrows the occurrence math (absent → diff scan). */
   | { readonly type: 'draft-changed'; readonly draft: string; readonly editRange?: EditRange }
   | { readonly type: 'begin-command'; readonly claim: CommandClaim; readonly span: TokenSpan }
-  /** Place one U+FFFC at the span and mint the occurrence (scoped insert-reference event payload). */
+  /** Place one atomic placeholder at the span and mint the occurrence (scoped insert-reference event payload). */
   | { readonly type: 'insert-ref'; readonly reference: ReferenceInsert; readonly span: TokenSpan }
   /** Delete a settled command token; success is observable as a draftRev advance. */
   | { readonly type: 'consume-token'; readonly guard: ConsumeTokenGuard }

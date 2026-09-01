@@ -21,6 +21,7 @@ import { createChatStore } from './stores.ts'
 import { ConversationController, UnsupportedImageMediaTypeError } from './service.ts'
 import type { IConversation } from './service.ts'
 import { ComposerBlockRegistry } from './input/blocks.ts'
+import { ConversationViewActivation } from './view-activation.ts'
 import type { ComposerBlock } from './input/blocks.ts'
 import { InputHub } from './input/hub.ts'
 import { ComposerSubmissionPolicy } from './input/submission-policy.ts'
@@ -63,6 +64,10 @@ const ABSENT_NOTICES = {
 /** No session, therefore nothing to block; same one-identity rule as above. */
 const ABSENT_BLOCK = {
   getSnapshot: (): ComposerBlock | undefined => undefined,
+  subscribe: () => () => {},
+}
+const CHAT_VIEW = {
+  getSnapshot: (): string => 'chat',
   subscribe: () => () => {},
 }
 const EMPTY_LEXICON: ReadonlyMap<'/' | '@', readonly string[]> = new Map()
@@ -174,6 +179,7 @@ export function apply(ctx: Context): void {
   // here, and the bar reads its own session's store. It cannot flow the other
   // way: this package must not import the plugins that would know.
   const composerBlocks = new ComposerBlockRegistry()
+  const viewActivation = new ConversationViewActivation()
 
   // The input machine feeds every session-scope slot
   // component through the standard provide channel — the 'input' hook plus
@@ -210,7 +216,10 @@ export function apply(ctx: Context): void {
       'conversation.hero.agentPreset': { kind: 'single', scope: 'root' },
     },
     inject: (sessionId: SessionId | undefined): ConversationInjected => ({
-      hooks: { composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId) },
+      hooks: {
+        composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId),
+        activeView: sessionId === undefined ? CHAT_VIEW : viewActivation.storeFor(sessionId),
+      },
       selectWorkspace: async (workspaceId) => {
         const nextId = await workspaces.connectWorkspace(workspaceId)
         if (sessionId !== undefined && nextId !== sessionId) {
@@ -248,6 +257,8 @@ export function apply(ctx: Context): void {
         views,
         releaseSessionImages: (id) => { conversation.releaseSessionImages(id) },
         bindDraftMirror: write => inputHub.shell(sessionId).bindMirror(write),
+        bindViewActivation: (selectedView, setView) => viewActivation.bind(sessionId, selectedView, setView),
+        syncActiveView: selectedView => { viewActivation.sync(sessionId, selectedView) },
       }
     },
   }, ConversationSession)
@@ -432,7 +443,7 @@ export function apply(ctx: Context): void {
   // registers itself as `conversation` and lives on its own child fiber.
   // Presentation registrants depend directly on their slot declarations;
   // this service remains only where conversation actions are required.
-  ctx.plugin(ConversationController, { input: inputHub, blocks: composerBlocks })
+  ctx.plugin(ConversationController, { input: inputHub, blocks: composerBlocks, viewActivation })
 
   // The plan strip rides the input dock above the queue rows (same posture).
   ctx.plugin(todoDockEntry)

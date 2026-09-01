@@ -13,7 +13,7 @@ import css from './ConversationRoot.module.css'
 export type ConversationRootProps = ConversationSlotProps
 
 export function ConversationRoot({
-  sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
+  sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock, useActiveView,
   renderSlot, renderSlotChain, selectWorkspace, t,
 }: ConversationRootProps) {
   const openState = useSession(s => s.openState)
@@ -27,6 +27,7 @@ export function ConversationRoot({
   // A plugin this package cannot import (ui-model-selection) says this session cannot
   // send; its reason is already localized by whoever raised it.
   const composerBlock = useComposerBlock(block => block)
+  const activeView = useActiveView(view => view)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<WorkspaceId | undefined>()
@@ -77,7 +78,9 @@ export function ConversationRoot({
   const settling = sessionId !== undefined && composerPhase === 'blank' && openState === 'loading'
     && summaryBlank !== true
   const hero = sessionId === undefined
-    || (composerPhase === 'blank' && (openState === 'open' || summaryBlank === true))
+    || (activeView === 'chat'
+      && composerPhase === 'blank'
+      && (openState === 'open' || summaryBlank === true))
   const zone: InputZone | undefined =
     session === undefined || inputState === undefined ? undefined : { session, input: inputState }
 

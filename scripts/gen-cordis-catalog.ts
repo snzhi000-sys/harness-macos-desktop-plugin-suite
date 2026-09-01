@@ -151,6 +151,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   inputTriggers: 'client-side interface-typed browser service — packages/client/ui-input-trigger/README.md owns the API',
   timer: 'client-side dynamic-package timer service — packages/extensions/cordis-client-runner/README.md owns the API',
   slots: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
+  startupTasks: 'client-side post-paint startup scheduler — packages/client/runtime/README.md owns the API',
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
 }
@@ -334,6 +335,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   CreateSessionOptions: 'persistence.md',
   PrepareSessionOptions: 'persistence.md',
   SessionHeader: 'persistence.md',
+  SessionHistoryTailInspection: 'persistence.md',
   SessionInspection: 'persistence.md',
   SessionLocation: 'persistence.md',
   SessionPreparation: 'persistence.md',

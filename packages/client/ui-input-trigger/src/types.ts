@@ -58,7 +58,7 @@ export interface CommandClaim {
 }
 
 /**
- * Inline reference insertion. The draft holds one U+FFFC placeholder per
+ * Inline reference insertion. The draft holds one atomic placeholder per
  * occurrence; the owner supplies both user-facing projections at insert time
  * (the model representation is serialized on submit via the source codec).
  */
@@ -67,6 +67,8 @@ export interface ReferenceInsert {
   readonly ref: string
   /** Chip display label (fallback-cached on the occurrence). */
   readonly label: string
+  /** Optional total inline chip width in composer em units, clamped to 3–23. */
+  readonly chipWidthEm?: number
   /** Clipboard / persistence projection, e.g. `/name` (never the model form). */
   readonly clipboardText: string
 }

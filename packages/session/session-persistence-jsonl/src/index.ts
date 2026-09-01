@@ -9,18 +9,20 @@
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { readdirSync } from 'node:fs'
-import { open, mkdir, readFile, readdir, realpath, link, rm, stat, truncate } from 'node:fs/promises'
+import { open, mkdir, readFile, readdir, realpath, link, rename, rm, stat, truncate, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { scheduler } from 'node:timers/promises'
 import { randomBytes } from 'node:crypto'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
-  SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator, SessionFormatUnsupportedError,
+  historyTailOf, SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator, SessionFormatUnsupportedError,
   type PersistenceBackend, type SessionLocation, type SessionPersistenceSnapshot,
-  type SessionInspection, type SessionPersistenceRevision as PersistenceRevision, type SessionRawArtifact,
+  type SessionHistoryTailInspection, type SessionInspection,
+  type SessionPersistenceRevision as PersistenceRevision, type SessionRawArtifact,
   type StoredPrefix,
 } from '@deepseek-ai/dsh-session-persistence'
+import { KNOWN_SESSION_EVENT_TYPES, snapshotSessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId, SessionHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import {
   encodeSegment, eventLines, logPath, logSuffix, parseHeaderMeta, projectDir, scanLog, sessionDir,
@@ -36,6 +38,10 @@ export type { JsonlCompression } from './format.ts'
 
 const DEFAULT_PACK_CHUNKS = true
 const DEFAULT_COMPRESSION: JsonlCompression = 'zstd'
+const HISTORY_TAIL_CACHE_VERSION = 1
+const HISTORY_TAIL_CACHE_MESSAGES = 50
+const HISTORY_TAIL_EVENT_TYPES = [...KNOWN_SESSION_EVENT_TYPES].sort()
+const AGENT_PRESET_SELECTED_EVENT_TYPE: string = 'agent-preset/selected'
 /**
  * Internal scheduling constant, not deployment configuration: balance
  * frame-boundary event-loop yields against `setImmediate` overhead. One frame
@@ -95,6 +101,19 @@ interface FileRevisionIdentity {
   readonly mtimeNs: bigint
   readonly ctimeNs: bigint
 }
+
+interface HistoryTailCacheRecord {
+  readonly version: typeof HISTORY_TAIL_CACHE_VERSION
+  readonly revision: string
+  readonly supportedEventTypes: string[]
+  readonly meta: ReturnType<typeof toHeaderLine>
+  readonly events: SessionEvent[]
+  readonly contextEvents: SessionEvent[]
+  readonly hasMore: boolean
+  readonly asOfSeq: number
+}
+
+type ValidatedHistoryTailCacheRecord = Omit<HistoryTailCacheRecord, 'meta'> & { readonly meta: SessionHeader }
 
 /** Build the source-qualified revision shared by full and lightweight reads. */
 function fileRevision(identity: FileRevisionIdentity): PersistenceRevision {
@@ -191,6 +210,36 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
 
   inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection> {
     return this.coordinator.inspect(id, signal)
+  }
+
+  /** Serve the standard first page from an exact-revision validated cache. */
+  override async readHistoryTail(
+    id: SessionId,
+    maxMessages: number,
+    signal?: AbortSignal,
+  ): Promise<SessionHistoryTailInspection> {
+    if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) {
+      throw new TypeError(`history tail maxMessages must be a positive safe integer, got ${String(maxMessages)}`)
+    }
+    signal?.throwIfAborted()
+    if (maxMessages <= HISTORY_TAIL_CACHE_MESSAGES && this.ctx.sessions.get(id) === undefined) {
+      const cached = await this.readHistoryTailCache(id, signal)
+      if (cached !== undefined) {
+        if (maxMessages === HISTORY_TAIL_CACHE_MESSAGES) return cached
+        const sliced = historyTailOf({ meta: cached.meta, events: cached.events }, maxMessages)
+        return {
+          ...sliced,
+          contextEvents: cached.contextEvents,
+          hasMore: cached.hasMore || sliced.hasMore,
+        }
+      }
+    }
+
+    const inspection = await this.coordinator.inspect(id, signal)
+    signal?.throwIfAborted()
+    const tail = historyTailOf(inspection, maxMessages)
+    if (this.ctx.sessions.get(id) === undefined) await this.writeHistoryTailCacheSoft(id, inspection, signal)
+    return { ...tail, inspection }
   }
 
   // JSONL is sequential media: no loadStoredFrom hook, so the coordinator
@@ -301,6 +350,161 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       const after = fileRevision(await stat(path, { bigint: true }))
       if (before === after) return { buffer, revision: after }
     }
+  }
+
+  /** Read an exact-log-revision tail cache; every mismatch degrades to a full inspection. */
+  private async readHistoryTailCache(
+    id: SessionId,
+    signal?: AbortSignal,
+  ): Promise<SessionHistoryTailInspection | undefined> {
+    const path = await this.findLog(id, signal)
+    if (path === undefined) return undefined
+    let revision: PersistenceRevision
+    try {
+      revision = fileRevision(await stat(path, { bigint: true }))
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      if (isENOENT(error)) return undefined
+      throw error
+    }
+    signal?.throwIfAborted()
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await readFile(this.historyTailCachePath(path), 'utf8'))
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      if (isENOENT(error) || error instanceof SyntaxError) return undefined
+      throw error
+    }
+    signal?.throwIfAborted()
+    const record = this.adoptHistoryTailCache(parsed, id, String(revision))
+    if (record === undefined) return undefined
+    const current = await stat(path, { bigint: true })
+    signal?.throwIfAborted()
+    if (String(fileRevision(current)) !== record.revision) return undefined
+    return Object.freeze({
+      meta: record.meta,
+      events: Object.freeze(record.events),
+      contextEvents: Object.freeze(record.contextEvents),
+      hasMore: record.hasMore,
+      asOfSeq: record.asOfSeq,
+    })
+  }
+
+  /** Validate and freeze the rebuildable cache's durable JSON input. */
+  private adoptHistoryTailCache(
+    value: unknown,
+    id: SessionId,
+    revision: string,
+  ): ValidatedHistoryTailCacheRecord | undefined {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const record = value as Record<string, unknown>
+    const storedRevision = record['revision']
+    const asOfSeq = record['asOfSeq']
+    const hasMore = record['hasMore']
+    if (record['version'] !== HISTORY_TAIL_CACHE_VERSION || storedRevision !== revision) return undefined
+    const supportedEventTypes = record['supportedEventTypes']
+    if (!Array.isArray(supportedEventTypes)
+      || supportedEventTypes.length !== HISTORY_TAIL_EVENT_TYPES.length
+      || supportedEventTypes.some((type, index) => type !== HISTORY_TAIL_EVENT_TYPES[index])) return undefined
+    const metaValue = record['meta']
+    const meta = metaValue === undefined ? undefined : parseHeaderMeta(JSON.stringify(metaValue))
+    if (meta === undefined || meta.id !== id) return undefined
+    const storedEvents = record['events']
+    const storedContextEvents = record['contextEvents']
+    if (!Array.isArray(storedEvents) || !Array.isArray(storedContextEvents)) return undefined
+    if (typeof hasMore !== 'boolean' || typeof asOfSeq !== 'number' || !Number.isSafeInteger(asOfSeq)) return undefined
+    const adopt = (events: unknown[]): SessionEvent[] | undefined => {
+      const adopted: SessionEvent[] = []
+      for (const candidate of events) {
+        if (candidate === null || typeof candidate !== 'object') return undefined
+        const fields = candidate as Record<string, unknown>
+        if (typeof fields['type'] !== 'string' || typeof fields['seq'] !== 'number'
+          || !Number.isSafeInteger(fields['seq']) || fields['seq'] < 0
+          || typeof fields['time'] !== 'number' || !Number.isFinite(fields['time'])
+          || fields['data'] === undefined) return undefined
+        try {
+          adopted.push(snapshotSessionEvent(candidate as SessionEvent))
+        } catch {
+          return undefined
+        }
+      }
+      return adopted
+    }
+    const events = adopt(storedEvents)
+    const contextEvents = adopt(storedContextEvents)
+    if (events === undefined || contextEvents === undefined) return undefined
+    for (let index = 1; index < events.length; index += 1) {
+      if ((events[index] as SessionEvent).seq !== (events[index - 1] as SessionEvent).seq + 1) return undefined
+    }
+    if ((events.at(-1)?.seq ?? -1) !== asOfSeq) return undefined
+    const normalized = historyTailOf({ meta, events }, HISTORY_TAIL_CACHE_MESSAGES)
+    if (normalized.events.length !== events.length
+      || normalized.events.at(0)?.seq !== events.at(0)?.seq
+      || normalized.hasMore !== hasMore) return undefined
+    if (contextEvents.length > 1 || contextEvents.some((event) => {
+      const data = event.data as { agentPreset?: unknown }
+      return event.type !== AGENT_PRESET_SELECTED_EVENT_TYPE
+        || typeof data.agentPreset !== 'string'
+        || event.seq >= (events.at(0)?.seq ?? 0)
+    })) return undefined
+    return {
+      version: HISTORY_TAIL_CACHE_VERSION,
+      revision: storedRevision,
+      supportedEventTypes: [...HISTORY_TAIL_EVENT_TYPES],
+      meta,
+      events,
+      contextEvents,
+      hasMore,
+      asOfSeq,
+    }
+  }
+
+  /** Persist one validated standard tail without making cache failure user-visible. */
+  private async writeHistoryTailCacheSoft(
+    id: SessionId,
+    inspection: SessionInspection,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let temporary: string | undefined
+    try {
+      const path = await this.findLog(id, signal)
+      if (path === undefined) return
+      const before = fileRevision(await stat(path, { bigint: true }))
+      const tail = historyTailOf(inspection, HISTORY_TAIL_CACHE_MESSAGES)
+      const record: HistoryTailCacheRecord = {
+        version: HISTORY_TAIL_CACHE_VERSION,
+        revision: String(before),
+        supportedEventTypes: HISTORY_TAIL_EVENT_TYPES,
+        meta: toHeaderLine(inspection.meta),
+        events: [...tail.events],
+        contextEvents: [...tail.contextEvents],
+        hasMore: tail.hasMore,
+        asOfSeq: tail.asOfSeq,
+      }
+      const cachePath = this.historyTailCachePath(path)
+      temporary = `${cachePath}.${randomBytes(6).toString('hex')}.tmp`
+      await writeFile(temporary, JSON.stringify(record), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      const after = fileRevision(await stat(path, { bigint: true }))
+      if (before !== after) {
+        await rm(temporary, { force: true })
+        temporary = undefined
+        return
+      }
+      /* v8 ignore next -- POSIX rename replaces atomically; Windows requires removing the rebuildable cache first. */
+      if (process.platform === 'win32') await rm(cachePath, { force: true })
+      await rename(temporary, cachePath)
+      temporary = undefined
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      this.ctx.logger.warn(`session history tail cache for "${id}" was not written: ${String(error)}`)
+    } finally {
+      if (temporary !== undefined) await rm(temporary, { force: true })
+    }
+  }
+
+  private historyTailCachePath(path: string): string {
+    return `${path}.history-tail-v${HISTORY_TAIL_CACHE_VERSION}.json`
   }
 
   /**

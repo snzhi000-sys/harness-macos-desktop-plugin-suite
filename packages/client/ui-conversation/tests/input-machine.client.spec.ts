@@ -504,6 +504,36 @@ describe('input-machine: paste plane', () => {
     expect(m.state.occurrences).toEqual([])
   })
 
+  it('width-specific placeholders stay one code unit and pasted reserved cells are sanitized', () => {
+    const m = new InputMachine()
+    const reference = { ...refOf('wide'), chipWidthEm: 12 }
+    m.dispatch({ type: 'insert-ref', reference, span: spanOf(m, 0, 0) })
+    expect(m.state.draft).toHaveLength(2)
+    expect(m.state.draft.charCodeAt(0)).toBe(0xE148)
+    expect(projectClipboard(m.state)).toBe('/wide ')
+
+    const reserved = m.state.draft[0]!
+    const pasted = new InputMachine()
+    pasted.dispatch({ type: 'paste-begin', text: `x${reserved}\uE009y`, selection: { start: 0, end: 0 } })
+    expect(pasted.state.draft).toBe('xy')
+    expect(pasted.state.occurrences).toEqual([])
+  })
+
+  it('quantizes measured chip widths in 0.125em steps without changing atomic length', () => {
+    const narrow = new InputMachine()
+    narrow.dispatch({
+      type: 'insert-ref', reference: { ...refOf('narrow'), chipWidthEm: 6.01 }, span: spanOf(narrow, 0, 0),
+    })
+    const wider = new InputMachine()
+    wider.dispatch({
+      type: 'insert-ref', reference: { ...refOf('wider'), chipWidthEm: 6.12 }, span: spanOf(wider, 0, 0),
+    })
+    expect(narrow.state.draft.charCodeAt(0)).toBe(0xE118)
+    expect(wider.state.draft.charCodeAt(0)).toBe(0xE119)
+    expect(narrow.state.draft).toHaveLength(2)
+    expect(wider.state.draft).toHaveLength(2)
+  })
+
   it('sync hot-snapshot components mint inside the SAME transaction: one undo returns to pre-paste', () => {
     const m = new InputMachine()
     m.dispatch({ type: 'draft-changed', draft: 'hi ' })

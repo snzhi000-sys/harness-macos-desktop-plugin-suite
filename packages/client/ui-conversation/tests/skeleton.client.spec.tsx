@@ -99,6 +99,8 @@ function mount(
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
     viewTabs?: ViewTab[]
+    /** Resident-shell view selection, independent of blank chat content. */
+    activeView?: string
   } = {},
 ) {
   const root = sid('root')
@@ -119,6 +121,8 @@ function mount(
   const session = createSnapshotStore<ConversationSnapshot>(snapshot)
   const useSession = bindSnapshotSelector(session)
   const chat = createChatStore().create()
+  const activeView = createSnapshotStore(options.activeView ?? 'chat')
+  if (options.activeView !== undefined) chat.actions.setView(options.activeView)
   chat.actions.setDraft('ordinary draft')
   const { wiring, sink } = fakeWiring()
   const useInput = bindSnapshotSelector(wiring.state)
@@ -181,6 +185,8 @@ function mount(
           views={views}
           releaseSessionImages={vi.fn()}
           bindDraftMirror={write => wiring.bindMirror(write)}
+          bindViewActivation={() => () => {}}
+          syncActiveView={() => {}}
         />
       )
     }
@@ -242,6 +248,7 @@ function mount(
     useWorkspaces: bindSnapshotSelector(workspaces),
     useProjection: (() => undefined),
     useComposerBlock: select => select(options.composerBlock),
+    useActiveView: bindSnapshotSelector(activeView),
     useInput,
     inputActions,
     renderSlot,
@@ -413,6 +420,20 @@ describe('ConversationRoot resident composer', () => {
     expect(root?.getAttribute('data-phase')).toBe('hero')
     expect(b.view.getByText('探索未至之境')).toBeTruthy()
     expect(b.view.getByRole('textbox')).toBeTruthy()
+  })
+
+  it('renders an external view and docked composer in a blank session', () => {
+    const b = mount(
+      conversationSnapshot({ composerPhase: 'blank', blank: true }),
+      undefined,
+      undefined,
+      { summaryBlank: true, activeView: 'trajectory' },
+    )
+    expect(b.view.container.querySelector('[data-phase]')?.getAttribute('data-phase')).toBe('active')
+    expect(b.view.getByTestId('view-trajectory')).toBeTruthy()
+    expect(b.view.queryByText('探索未至之境')).toBeNull()
+    expect(b.view.getByRole('tab', { name: 'Trajectory' }).getAttribute('aria-selected')).toBe('true')
+    expect(b.view.container.querySelector('header')?.getAttribute('aria-hidden')).toBeNull()
   })
 
   it('same textarea DOM node survives the hero → active flip into the sticky scrollport', () => {

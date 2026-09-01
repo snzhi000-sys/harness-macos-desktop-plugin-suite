@@ -19,6 +19,7 @@ import type { QueueAction, QueueItemId } from './contract/queue.ts'
 import type { ComposerBlocks } from './input/blocks.ts'
 import type { DraftAttachmentId, SessionInputResolver } from './input/contract.ts'
 import type { InputSubmitMode } from './contract/composer-submission.ts'
+import type { ConversationViewActivation } from './view-activation.ts'
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -33,6 +34,8 @@ export interface IConversation {
    * cannot import makes a session's input inert with its own reason.
    */
   readonly blocks: ComposerBlocks
+  /** Activate one registered conversation view in the caller's session. */
+  activateView(viewId: string): void
   /**
    * Send a prompt into the caller scope's session (queued turn).
    * @param text - prompt text, sent verbatim as one text block.
@@ -93,6 +96,7 @@ export class ConversationController extends Service implements IConversation {
   readonly input: SessionInputResolver
   /** The per-session composer-block registry. */
   readonly blocks: ComposerBlocks
+  private readonly viewActivation: ConversationViewActivation
   private readonly draftAttachments = new Map<DraftAttachmentId, ComposerAttachment>()
   private readonly imageUrls = new Map<string, ImageUrlEntry>()
   private readonly imageGenerations = new Map<SessionId, number>()
@@ -106,10 +110,15 @@ export class ConversationController extends Service implements IConversation {
    * constructed by the plugin apply (the same instances the slot inject
    * factories close over).
    */
-  constructor(ctx: Context, config: { input: SessionInputResolver; blocks: ComposerBlocks }) {
+  constructor(ctx: Context, config: {
+    input: SessionInputResolver
+    blocks: ComposerBlocks
+    viewActivation: ConversationViewActivation
+  }) {
     super(ctx, 'conversation')
     this.input = config.input
     this.blocks = config.blocks
+    this.viewActivation = config.viewActivation
     ctx.effect(() => () => {
       this.disposed = true
       for (const url of this.createdImageUrls) revokePreview(url)
@@ -117,7 +126,13 @@ export class ConversationController extends Service implements IConversation {
       this.draftAttachments.clear()
       this.imageUrls.clear()
       this.imageGenerations.clear()
+      this.viewActivation.dispose()
     }, 'conversation attachment URL cache')
+  }
+
+  /** Activate a registered view without depending on rendered tab DOM. */
+  activateView(viewId: string): void {
+    this.viewActivation.activate(this.scopeId('activateView'), viewId)
   }
 
   /**

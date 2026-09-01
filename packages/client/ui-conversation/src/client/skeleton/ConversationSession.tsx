@@ -69,7 +69,7 @@ export function ConversationSessionHeader({
   const ancestry = useSessions(s => deriveAncestry(s, sessionId), equalBreadcrumbs)
   const composerPhase = useSession(s => s.composerPhase)
   const blank = useSession(s => s.blank)
-  const hideChrome = blank && composerPhase === 'blank'
+  const hideChrome = blank && composerPhase === 'blank' && active?.id === DEFAULT_VIEW_ID
 
   return (
     <header
@@ -137,7 +137,7 @@ export function ConversationSessionHeader({
  */
 export function ConversationSession({
   sessionId, useSession, useInput, inputActions, useStore, actions,
-  renderSlot, views, bindDraftMirror, releaseSessionImages,
+  renderSlot, views, bindDraftMirror, bindViewActivation, syncActiveView, releaseSessionImages,
 }: ConversationSessionProps) {
   useSyncExternalStore(views.subscribe, views.version)
   const tabs = views.list()
@@ -162,7 +162,13 @@ export function ConversationSession({
     releaseSessionImages(sessionId)
   }, [releaseSessionImages, sessionId])
 
-  if (blank && composerPhase === 'blank') return null
+  useEffect(() => bindViewActivation(selectedId, actions.setView), [bindViewActivation, actions.setView])
+
+  useEffect(() => {
+    syncActiveView(selectedId)
+  }, [selectedId, syncActiveView])
+
+  if (blank && composerPhase === 'blank' && active?.id === DEFAULT_VIEW_ID) return null
   return (
     <div className={css.viewArea}>
       {active !== undefined && renderSlot('conversation.view', {

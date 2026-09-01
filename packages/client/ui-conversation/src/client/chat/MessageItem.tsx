@@ -14,6 +14,7 @@ import { ImageGallery, type ImageLoader } from '@deepseek-ai/dsh-client-ui-attac
 import { messageImageLabels } from '../image-labels.ts'
 import { CompactionItem } from './CompactionItem.tsx'
 import { ContextInjectionRow } from './ContextInjectionRow.tsx'
+import { FileReferenceChip, parseFileReferenceRuns } from './FileReferenceProjection.tsx'
 import { MessageIconActions } from './MessageIconActions.tsx'
 import css from './MessageItem.module.css'
 
@@ -154,7 +155,7 @@ function TurnMaxTokensItem({ t }: {
  * scan as the composer, minus the lexicon: sent tokens were validated at
  * compose time, so shape alone decorates).
  */
-function projectUserText(text: string): ReactNode {
+function projectPlainUserText(text: string): ReactNode {
   const re = /(^|\s)([/@][\w-]+)(?=\s|$)/g
   const parts: ReactNode[] = []
   let cursor = 0
@@ -173,6 +174,14 @@ function projectUserText(text: string): ReactNode {
   if (parts.length === 0) return <MessageText text={text} />
   if (cursor < text.length) parts.push(<MessageText key={cursor} text={text.slice(cursor)} />)
   return <>{parts}</>
+}
+
+function projectUserText(text: string): ReactNode {
+  const runs = parseFileReferenceRuns(text)
+  if (!runs.some(run => run.kind === 'reference')) return projectPlainUserText(text)
+  return <>{runs.map((run, index) => run.kind === 'reference'
+    ? <FileReferenceChip key={`file-ref-${index}`} reference={run.reference} />
+    : <span key={`text-${index}`}>{projectPlainUserText(run.text)}</span>)}</>
 }
 
 /** Right-aligned bubble shared by user and steering rows. */

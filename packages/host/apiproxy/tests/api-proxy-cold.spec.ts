@@ -265,6 +265,48 @@ describe('attached updatedAt tracks human prompts', () => {
 })
 
 describe('cold history recovery view', () => {
+  it('serves a validated cold tail without calling full inspection', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    const sessionId = sid('session-tail-cache')
+    const meta = header(sessionId, 1000)
+    const inspect = vi.fn()
+    const readHistoryTail = vi.fn(() => Promise.resolve({
+      meta,
+      events: [
+        {
+          type: 'user/message', seq: 10, time: 10,
+          data: createUserMessage({
+            content: [{ type: 'text', text: 'tail' }],
+            source: { kind: 'user' },
+          }),
+          surfaceOp: 'append',
+        },
+        { type: 'turn/end', seq: 11, time: 11, data: { turn: 2, reason: { kind: 'completed' } } },
+      ] as SessionEvent[],
+      contextEvents: [],
+      hasMore: true,
+      asOfSeq: 11,
+    }))
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      inspect,
+      readHistoryTail,
+      locate: () => undefined,
+    } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const history = await api.sessions.history(request({ sessionId, maxMessages: 1 }))
+
+    if (!history.result.ok) throw new Error('history failed')
+    expect(history.result.value.events.map(entry => entry.event.seq)).toEqual([10, 11])
+    expect(history.result.value.hasMore).toBe(true)
+    expect(readHistoryTail).toHaveBeenCalledWith(sessionId, 1)
+    expect(inspect).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
   it('shows in-memory interruption repair without activating the session', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

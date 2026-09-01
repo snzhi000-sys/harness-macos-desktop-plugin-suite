@@ -4,7 +4,7 @@
  * clock. Package-private — the SessionInput shell is the only caller and the
  * sole executor of the returned effects.
  *
- * Draft truth: the draft string holds one U+FFFC placeholder per chip; the
+ * Draft truth: the draft string holds one single-code-unit placeholder per chip; the
  * occurrence table carries identity and the owner's cached projections. Every
  * draft mutation is one transaction — draft edit, occurrence reconciliation,
  * and undo-log push are atomic inside dispatch() — and bumps draftRev, which
@@ -20,8 +20,35 @@ import type {
   InputState, Occurrence, PasteAttemptState, PasteComponent, SubmitAttempt,
 } from './contract.ts'
 
-/** The object-replacement character backing every chip occurrence in the draft. */
+/** The default object-replacement character backing fixed-width chip occurrences. */
 export const PLACEHOLDER = '￼'
+
+const LEGACY_VARIABLE_PLACEHOLDER_START = 0xE000
+const LEGACY_VARIABLE_PLACEHOLDER_END = 0xE014
+const VARIABLE_PLACEHOLDER_START = 0xE100
+const MIN_CHIP_WIDTH_EM = 3
+const MAX_CHIP_WIDTH_EM = 23
+const CHIP_WIDTH_STEP_EM = 0.125
+const VARIABLE_PLACEHOLDER_COUNT = Math.round((MAX_CHIP_WIDTH_EM - MIN_CHIP_WIDTH_EM) / CHIP_WIDTH_STEP_EM) + 1
+
+/** Resolve an optional presentation width to one reserved single-code-unit placeholder. */
+function placeholderFor(reference: ReferenceInsert): string {
+  if (reference.chipWidthEm === undefined) return PLACEHOLDER
+  const width = Math.max(MIN_CHIP_WIDTH_EM, Math.min(MAX_CHIP_WIDTH_EM, reference.chipWidthEm))
+  const step = Math.round((width - MIN_CHIP_WIDTH_EM) / CHIP_WIDTH_STEP_EM)
+  return String.fromCharCode(VARIABLE_PLACEHOLDER_START + step)
+}
+
+/** Strip pasted machine placeholders so clipboard text cannot mint unowned chips. */
+function stripPlaceholders(text: string): string {
+  const end = VARIABLE_PLACEHOLDER_START + VARIABLE_PLACEHOLDER_COUNT - 1
+  return [...text].filter(char => {
+    const code = char.charCodeAt(0)
+    const legacy = code >= LEGACY_VARIABLE_PLACEHOLDER_START && code <= LEGACY_VARIABLE_PLACEHOLDER_END
+    const current = code >= VARIABLE_PLACEHOLDER_START && code <= end
+    return char !== PLACEHOLDER && !legacy && !current
+  }).join('')
+}
 
 /** The machine never writes the queue; the wiring layer overlays the queue store's projection. */
 const EMPTY_QUEUE: InputState['queue'] = []
@@ -295,7 +322,7 @@ export class InputMachine {
     this.typingRun = undefined
     const tail = this.draft.slice(span.end)
     const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
-    const inserted = PLACEHOLDER + gap
+    const inserted = placeholderFor(reference) + gap
     this.reconcile({ start: span.start, end: span.end, insertedLength: inserted.length })
     this.withMinted([this.mint(reference, span.start)])
     this.adopt(this.draft.slice(0, span.start) + inserted + tail)
@@ -384,7 +411,7 @@ export class InputMachine {
   // ---- paste plane ----
 
   /**
-   * Paste as one transaction: the text (U+FFFC-sanitized) replaces the
+   * Paste as one transaction: machine placeholders are stripped before the text replaces the
    * selection; hot-snapshot sync matches componentize inside the SAME
    * transaction (one undo returns to pre-paste); a match attempt opens for
    * the async remainder while the phase still accepts reference mutations.
@@ -395,7 +422,7 @@ export class InputMachine {
   ): InputEffect[] {
     const { start, end } = selection
     if (start < 0 || start > end || end > this.draft.length) return []
-    const text = rawText.split(PLACEHOLDER).join('')
+    const text = stripPlaceholders(rawText)
     this.pushTxn(selection)
     this.typingRun = undefined
     // Componentize: replace each matched token range (paste-text coordinates,
@@ -407,7 +434,7 @@ export class InputMachine {
     for (const c of sorted) {
       inserted += text.slice(cursor, c.start)
       minted.push(this.mint(c.reference, start + inserted.length))
-      inserted += PLACEHOLDER
+      inserted += placeholderFor(c.reference)
       cursor = c.end
     }
     inserted += text.slice(cursor)

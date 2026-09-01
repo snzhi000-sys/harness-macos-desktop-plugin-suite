@@ -819,6 +819,23 @@ describe('ChatView', () => {
     expect(view.container.querySelectorAll('h1')).toHaveLength(2)
   })
 
+  it('projects logged file-reference model forms as compact read-only chips', () => {
+    const raw = [
+      '查看 ',
+      '<file-reference version="2" kind="folder" mode="path" path="src"/> ',
+      '<file-reference version="2" kind="file" mode="lines" path="revision-demo.py" start="5" end="12">',
+      '<![CDATA[\n5| hidden injected body\n]]>',
+      '</file-reference>',
+    ].join('')
+    const h = makeHarness({ nodes: [user(1, raw)] })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.container.querySelectorAll('[data-file-reference-chip]')).toHaveLength(2)
+    expect(view.container.querySelector('[data-file-reference-kind="folder"]')).toBeTruthy()
+    expect(view.getByText('5–12')).toBeTruthy()
+    expect(view.queryByText(/hidden injected body/)).toBeNull()
+    expect(view.container.querySelector('[data-file-reference-chip] button')).toBeNull()
+  })
+
   it('streaming partial frames update the tail without replacing a sibling Tool row', () => {
     const h = makeHarness({
       nodes: [user(1, 'q'), assistant(2, 'old answer'), toolResult(3, 'a')],

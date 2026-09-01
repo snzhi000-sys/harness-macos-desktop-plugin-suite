@@ -41,10 +41,10 @@ The effect surface (executed by the shell): `adjudicate` (calls InputTriggerCont
 
 The occurrence table and the chip's three projections:
 
-- Each reference occupies one `U+FFFC` in the draft; a table entry is `{occurrenceId, source, ref, offset, label, clipboardText, invalid?}`; same-named chips stay independent through occurrenceId.
+- Each reference occupies one single-code-unit placeholder in the draft; a table entry is `{occurrenceId, source, ref, offset, label, clipboardText, invalid?}`; same-named chips stay independent through occurrenceId. The generic placeholder is `U+FFFC`; an optional `ReferenceInsert.chipWidthEm` maps 3–23em requests in 0.125em steps to reserved `U+E100`–`U+E1A0` cells. Legacy `U+E000`–`U+E014` cells retain their original integer-em advances for restored drafts.
 - Every edit updates the draft and the table in one transaction: ranges shift; a deletion/replacement intersecting a placeholder acts on the whole chip.
 - The single-character placeholder makes keyboard atomicity mostly hold natively (the caret has no interior position; Backspace / arrow keys / Shift extension natively take the whole chip); a mouse click on a chip goes backdrop hit → whole-chip setSelectionRange.
-- The visual projection = label: the backdrop renders the chip at the placeholder offset (the textarea glyph is invisible), with invalid taking the invalid style.
+- The visual projection = label: the backdrop renders the exact draft placeholder inside the chip at its offset (the textarea glyph is invisible), and all three composer layers share the placeholder font. Width-specific cells therefore wrap and position the caret identically without moving the chip out of the text flow; invalid takes the invalid style.
 - The clipboard/persistence projection = clipboardText: copy/cut expands placeholders inside the selection; the draft-persistence mirror writes the same projection (the chat store always holds plain text; the refresh seed semantics = select-all copy → reopen → paste, with chips degrading to text across a refresh).
 - The model projection = generated per chip at submit through the source's `codec.serialize` (owned by the submit attempt's signal and stale guard; a missing owner / failure / cancel means no send, never a downgrade to `/name`).
 
@@ -116,7 +116,7 @@ The state machine's entire behavior is covered by pure-JS unit tests (event sequ
 | An ActiveCommand intermediate state / a registerMode mode registry / deriving command mode from the draft | Claims are established explicitly by the pick paths — no table, no derivation |
 | Direct bindTarget/bindDraft object wiring | Reverse coupling plus root-singleton cross-session mispairing; scoped bail events preserve dependency inversion with structurally correct routing |
 | A unified slash/input-apply, or eventing everything | Three independent payloads cover the cross-plugin rewrites; asynchronous paths stay registry-based explicit calls |
-| contenteditable / a rich-text tree | Poor compatibility; textarea + U+FFFC + the occurrence table covers the full interaction contract |
+| contenteditable / a rich-text tree | Poor compatibility; textarea + one-code-unit width cells + the occurrence table cover the full interaction contract |
 | Dual draft persistence {text, occurrences} | The mirror writing the clipboard projection adds zero new concepts; chip degradation across refresh is acceptable |
 | The native textarea undo stack | Unreliable under controlled + programmatic writes; the paste two-step undo semantics can only be self-managed |
 | The InputBar receiving a 16-member wiring-callback bundle | The consumption matrix proved 11 members InputBar-exclusive and 1 a dead member; the standard-kit channel lets components fetch their own, with the keyboard surface passed privately in-package |
@@ -125,7 +125,7 @@ The state machine's entire behavior is covered by pure-JS unit tests (event sequ
 | A placeholder select resident in the tool row | Named seats stay empty until registration; a placeholder clashing with the real implementation is two sources of truth |
 | An always-visible Plan on/off toggle | The shared Command source already owns entry; a second entry point turns a status seat into redundant mode chrome |
 | A second plus-menu component/controller, or an Add/File group above Command | It would duplicate async candidates, keyboard highlight, focus retention, and pick state; the plus control is only a source-filtered launcher for the existing MenuView, and this scope has no file capability |
-| All references through U+FFFC chips (the line the plain-text-reference decision replaced) | Plain text + derived decoration carries zero identity state; the literal text IS the model projection, sparing undo/clipboard any special cases; the chip chain is kept for scenarios needing indivisible atomicity |
+| All references through identity chips (the line the plain-text-reference decision replaced) | Plain text + derived decoration carries zero identity state; the literal text IS the model projection, sparing undo/clipboard any special cases; the chip chain is kept for scenarios needing indivisible atomicity |
 
 ## Consequences
 

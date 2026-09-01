@@ -352,7 +352,7 @@ export function InputBar({
   // ---- chip atomicity (DOM layer; the machine sees only transactions) ----
   // Placeholders occupy exactly one char, so caret positions are always
   // BETWEEN them — what needs normalizing is deletion (whole chip per
-  // Backspace/Delete via native single-char semantics, which U+FFFC already
+  // Backspace/Delete via native single-char semantics, which each placeholder already
   // gives us) and selection endpoints: Shift-extension snapping is native
   // too (one char = one step). Mouse selection of a chip is handled in the
   // backdrop click handler below. Undo/redo must NOT reach the browser: the
@@ -562,7 +562,7 @@ export function InputBar({
     : <PermissionSelect key={sessionId} value={permissions} locked={locked} command={command} t={t} />
 
   // Mirror-layer decorations: a visible backdrop with transparent text. The
-  // claim token highlights through behind the textarea glyphs; each U+FFFC
+  // claim token highlights through behind the textarea glyphs; each placeholder
   // placeholder renders as a chip (the textarea's own glyph is invisible, the
   // backdrop chip supplies the visual); the claim hint is ghost text.
   const deco = input === undefined ? INERT_DECORATIONS : deriveDecorations(input, lexicon)
@@ -598,9 +598,9 @@ export function InputBar({
       if (b.kind === 'chip') {
         const chip = b.chip
         backdrop.push(
-          // The cell's ::before renders U+FFFC itself so its advance equals the
-          // textarea's placeholder exactly (same char, same font); the label is
-          // a clipped overlay that never affects layout.
+          // The cell renders the draft's exact placeholder so its advance equals
+          // the textarea and mirror (same char, same font). The overlaid label
+          // never changes layout.
           <span
             key={`chip-${chip.occurrenceId}`}
             className={clsx(css.chip, chip.invalid && css.chipInvalid)}
@@ -609,6 +609,7 @@ export function InputBar({
             data-invalid={chip.invalid || undefined}
             title={chip.label}
           >
+            <span className={css.chipCell}>{draft[chip.offset]}</span>
             <span className={css.chipLabel}>{chip.label}</span>
           </span>,
         )

@@ -307,6 +307,26 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     expect(await ctx.sessionPersistence.readRaw(m.id)).toBeUndefined()
   })
 
+  it('reuses an exact-revision validated history tail and rebuilds a corrupt cache', async () => {
+    const m = meta('history-tail-cache', '/work')
+    await ctx.sessionPersistence.create(m)
+    await ctx.sessionPersistence.append(m.id, oneTurnLog())
+
+    const first = await ctx.sessionPersistence.readHistoryTail(m.id, 50)
+    expect(first.inspection).toBeDefined()
+    expect(first.events).toEqual(oneTurnLog())
+
+    const cached = await ctx.sessionPersistence.readHistoryTail(m.id, 50)
+    expect(cached.inspection).toBeUndefined()
+    expect(cached.events).toEqual(first.events)
+
+    const log = rawLogPath(root, '/work', m.id)
+    await writeFile(`${log}.history-tail-v1.json`, '{broken')
+    const rebuilt = await ctx.sessionPersistence.readHistoryTail(m.id, 50)
+    expect(rebuilt.inspection).toBeDefined()
+    expect(rebuilt.events).toEqual(first.events)
+  })
+
   it('readRaw rejects a corrupt header line instead of exporting it', async () => {
     const m = meta('raw-corrupt', '/work')
     await ctx.sessionPersistence.create(m)

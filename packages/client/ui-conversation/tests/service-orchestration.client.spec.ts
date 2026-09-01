@@ -11,6 +11,7 @@ import type { QueuedMessage, SessionFace } from '@deepseek-ai/dsh-client-runtime
 import { ComposerBlockRegistry } from '../src/client/input/blocks.ts'
 import { InputHub } from '../src/client/input/hub.ts'
 import { ConversationController, UnsupportedImageMediaTypeError } from '../src/client/service.ts'
+import { ConversationViewActivation } from '../src/client/view-activation.ts'
 import { zh } from '../src/client/locales.ts'
 
 async function bench(readAttachment?: SessionFace['readAttachment']) {
@@ -29,6 +30,7 @@ async function bench(readAttachment?: SessionFace['readAttachment']) {
   const fiber = runtime.ctx.plugin(ConversationController, {
     input: hub,
     blocks: new ComposerBlockRegistry(),
+    viewActivation: new ConversationViewActivation(),
   })
   await fiber.await()
   const root = runtime.ctx.get('conversation') as ConversationController
@@ -140,6 +142,7 @@ describe('ConversationController', () => {
     await bare.plugin(ConversationController, {
       input: new InputHub(bare, makeTranslate(zh, {})),
       blocks: new ComposerBlockRegistry(),
+      viewActivation: new ConversationViewActivation(),
     }).await()
     const orphan = bare.get('conversation') as ConversationController
     await expect(orphan.send('x')).rejects.toThrow(/sessions service unavailable/)

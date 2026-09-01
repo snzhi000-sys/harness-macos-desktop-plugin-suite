@@ -1077,10 +1077,40 @@ describe('decorations', () => {
       )
     })
     const chip = view.container.querySelector('[data-decoration="chip"]')
-    expect(chip?.textContent).toBe('@w1')
+    expect(chip?.lastElementChild?.textContent).toBe('@w1')
+    expect(chip?.firstElementChild?.textContent).toBe('\uFFFC')
     expect(shell.snapshot.occurrences).toHaveLength(1)
     // The draft carries exactly one placeholder char where the token was.
     expect(shell.snapshot.draft).toBe('参考 \uFFFC 内容')
+  })
+
+  it('a variable-width reference renders its exact atomic placeholder in the backdrop', () => {
+    const { view, shell } = bench()
+    act(() => {
+      shell.insertReference(
+        { source: 'dsh-file-edit-ref', ref: 'long.md', label: 'long.md', chipWidthEm: 18, clipboardText: '@long.md' },
+        { start: 0, end: 0, draftRev: shell.snapshot.draftRev },
+      )
+    })
+    const chip = view.container.querySelector('[data-decoration="chip"]')
+    expect(shell.snapshot.draft.charCodeAt(0)).toBe(0xE178)
+    expect(chip?.firstElementChild?.textContent).toBe(shell.snapshot.draft[0])
+    expect(chip?.lastElementChild?.textContent).toBe('long.md')
+  })
+
+  it('the first Shift+Enter after inserting a reference remains a native newline', () => {
+    const { textarea, shell } = bench()
+    act(() => {
+      shell.insertReference(
+        { source: 'dsh-file-edit-ref', ref: '/work/note.md', label: 'note.md', clipboardText: '@/work/note.md' },
+        { start: 0, end: 0, draftRev: shell.snapshot.draftRev },
+      )
+    })
+    textarea.setSelectionRange(2, 2)
+    expect(fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })).toBe(true)
+    fireEvent.change(textarea, { target: { value: '\uFFFC \n' } })
+    expect(shell.snapshot.draft).toBe('\uFFFC \n')
+    expect(shell.snapshot.occurrences).toHaveLength(1)
   })
 
   it('a lexicon-matched plain token renders the text-ref mark', () => {
