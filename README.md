@@ -12,7 +12,7 @@
   <br><br>
   <a href="#设计理念">设计理念</a> ·
   <a href="#产品特色">产品特色</a> ·
-  <a href="#本地开发">本地开发</a> ·
+  <a href="#终端快速体验">快速体验</a> ·
   <a href="#当前公开发行状态">发行边界</a>
   <br><br>
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple&logoColor=white">
@@ -174,6 +174,21 @@ docs/          架构、开发、迁移和维护资料
 统一工程把 `src/` 与可维护源码归为源码面（source plane），把 `lib/`、`dist/`、`.artifacts/`、Profile、Runtime 和 `.app` 归为产物面（artifact plane）；开发只改前者，不从已安装 App 或用户 Profile 反向覆盖源码。
 
 <a id="run"></a><a id="run-from-source"></a>
+
+## 终端快速体验
+
+当前暂未提供已签名、公证的公开安装包。使用 macOS Apple Silicon 的用户可以在终端下载源码、构建并打开独立的 Dev App：
+
+```bash
+git clone --depth 1 https://github.com/snzhi000-sys/harness-macos-desktop-plugin-suite.git
+cd harness-macos-desktop-plugin-suite
+corepack enable
+pnpm install
+npm run product:dist:dev
+open "desktop/dist/dev/mac-arm64/DeepSeek Harness Dev.app"
+```
+
+首次构建需要下载依赖并生成 Runtime 与产品 Profile，所需时间取决于网络和机器性能。Dev App 使用独立数据目录，不会覆盖已安装的 Stable App。
 
 ## 本地开发
 
