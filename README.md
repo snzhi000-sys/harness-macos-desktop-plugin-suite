@@ -1,5 +1,7 @@
 # Harness macOS Desktop & Plugin Suite
 
+主文档 | [中文镜像](README.zh.md)
+
 基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 二次开发的 macOS 桌面 App 与产品插件套件。本项目保留 Harness 的 Cordis 插件架构和 Agent 能力，在统一工程中维护 Electron 桌面封装、必要的 Harness Web 定制、五个产品插件以及可复现的 Dev/Stable 打包流程。
 
 > 本项目是社区第三方项目，并非 DeepSeek 官方产品。当前 `release/open-source-v1` 是公开审查候选分支，不是已签名、公证或可直接发行的正式版本；上游 Harness 仍处于开发者预览阶段，后续更新可能包含兼容性破坏性变更。
@@ -151,7 +153,7 @@ npm run product:dist:dev
 desktop/dist/dev/mac-arm64/DeepSeek Harness Dev.app
 ```
 
-Dev 使用独立的 Bundle ID 和 `DeepSeek Harness Dev` userData。首次干净验收应使用临时 `--user-data-dir`；日常重打同一 Dev 通道时会继续使用 Dev 自己的 Key、设置和工作区偏好，不会读取或覆盖 Stable 数据。每次打包都会递增 App 版本并写入构建时间与 `dev` 通道。
+Dev 使用独立的 Bundle ID 和 `DeepSeek Harness Dev` userData。产品打包脚本会重建全部产品插件，在固定 `.candidate-dev` 目录生成候选，核验 Dev 身份、版本、构建时间、包内功能标记、签名和隐私，再以 `--user-data-dir=<临时绝对路径>` 自动完成不迁移凭据的干净启动；全部通过后才覆盖固定 `dist/dev` 输出。日常启动发布后的 Dev 会继续使用 Dev 自己的 Key、设置和工作区偏好，不会读取或覆盖 Stable 数据。
 
 ### 构建 Stable 候选
 
@@ -167,7 +169,7 @@ npm run product:dist:stable
 desktop/dist/stable/mac-arm64/DeepSeek Harness.app
 ```
 
-Stable 打包同样执行桌面测试、源码隐私检查、Runtime/Profile 构建、五插件运行装配验证和发行包解包扫描，并写入新的版本、构建时间与 `stable` 通道。构建候选不会安装或替换 `/Applications/DeepSeek Harness.app`。
+Stable 复用同一产品打包脚本并使用固定 `.candidate-stable` 暂存目录，执行插件重建、桌面测试、源码隐私检查、Runtime/Profile 构建、五插件运行装配、包身份与功能标记、隔离启动及发行包解包扫描，并写入新的版本、构建时间与 `stable` 通道。全部通过后只覆盖固定 `dist/stable`；构建候选不会安装或替换 `/Applications/DeepSeek Harness.app`。
 
 本地维护者需要安装 Stable 候选时，必须先确认没有正在运行的 Agent 任务，保留回滚点，再显式运行桌面安装流程。安装器会优先把现有 App 保存为 `DeepSeek Harness.previous.app`，但不会复制、清空或迁移 Stable userData，因此模型 Key、会话、审核账本、Explorer 状态和其他用户配置仍保留在 App 外部。
 

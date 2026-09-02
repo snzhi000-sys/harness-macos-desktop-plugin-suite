@@ -2,5 +2,6 @@
 .title { color:var(--dsw-alias-label-primary); font-size:15px; font-weight:600; }
 .row { display:flex; justify-content:space-between; gap:16px; font-size:13px; }
 .row strong { color:var(--dsw-alias-label-primary); font-weight:500; }
+.link { color:var(--dsw-alias-accent, #2563eb); overflow-wrap:anywhere; text-align:right; }
 .test { color:var(--dsw-alias-warning, #c88a00) !important; }
 .stable { color:var(--dsw-alias-success, #299764) !important; }

@@ -64,9 +64,9 @@ export interface WireAssistantMessage {
   role: 'assistant'
   content: string | null
   /**
-   * CoT passback. REQUIRED on assistant turns that carried tool calls
-   * (thinking mode); ignored on tool-call-free turns (we omit it there to
-   * save tokens). See guides/thinking_mode.mdx § Tool Calls.
+   * CoT passback. Every assistant history entry in a thinking-mode request
+   * carries this field; messages without recorded reasoning use an empty
+   * string. Thinking-disabled requests omit it.
    */
   reasoning_content?: string
   tool_calls?: WireToolCall[]

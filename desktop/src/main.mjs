@@ -1,12 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen, shell } from 'electron'
 import { executablePath, readyUrl } from './runtime-paths.mjs'
 import { readWindowBounds, writeWindowBounds } from './window-state.mjs'
 import { readAppearanceScheme, writeAppearanceScheme } from './appearance-state.mjs'
-import { fadeStartupDocument, startupDocument } from './startup-document.mjs'
+import { fadeStartupDocument, startupDocument, updateStartupDocument } from './startup-document.mjs'
 import { installBundledProfile } from './profile-bootstrap.mjs'
 import { migrateLegacyDevData } from './dev-data-migration.mjs'
 
@@ -30,9 +30,10 @@ const packagedChannel = app.isPackaged
 const desktopChannel = packagedChannel === 'stable' ? 'stable' : 'dev'
 app.setName(desktopChannel === 'stable' ? 'DeepSeek Harness' : 'DeepSeek Harness Dev')
 const legacyDevUserData = join(app.getPath('appData'), '@deepseek-ai', 'dsh-desktop-builder')
+const defaultChannelUserData = join(app.getPath('appData'), app.getName())
 const releaseInfo = JSON.parse(readFileSync(join(app.getAppPath(), 'release-info.json'), 'utf8'))
 
-async function runtimeDirectory() {
+async function runtimeDirectory(onExtractStart) {
   if (!app.isPackaged) return join(import.meta.dirname, '..', '..', '.desktop-runtime')
 
   const bootstrap = join(process.resourcesPath, 'runtime-bootstrap')
@@ -47,6 +48,7 @@ async function runtimeDirectory() {
   mkdirSync(runtimes, { recursive: true })
   rmSync(staging, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
+  await onExtractStart?.()
   log(`extracting packaged runtime ${runtimeId}`)
   try {
     await execFileAsync('/usr/bin/tar', ['-xzf', join(bootstrap, 'runtime.tar.gz'), '-C', staging])
@@ -157,19 +159,27 @@ function createWindow() {
   return window
 }
 
-async function startBackend() {
+async function startBackend(window) {
+  const showStartupPhase = message => updateStartupDocument(window.webContents, message)
   const userData = app.getPath('userData')
-  if (migrateLegacyDevData({ channel: desktopChannel, userData, legacyUserData: legacyDevUserData })) {
+  if (resolve(userData) === resolve(defaultChannelUserData) && migrateLegacyDevData({ channel: desktopChannel, userData, legacyUserData: legacyDevUserData })) {
     log('migrated legacy Dev settings into channel-specific userData')
   }
-  const runtimeDir = await runtimeDirectory()
+  const runtimeDir = await runtimeDirectory(() => showStartupPhase('正在解压 Runtime'))
   const node = join(runtimeDir, 'bin', 'node')
   const cli = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
   const dshHome = join(userData, 'harness')
   mkdirSync(dshHome, { recursive: true })
-  if (await installBundledProfile({ channel: desktopChannel, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, userData })) {
+  if (await installBundledProfile({
+    channel: desktopChannel,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    userData,
+    onInstallStart: () => showStartupPhase('正在安装/替换插件 Profile'),
+  })) {
     log('installed or upgraded bundled clean plugin profile')
   }
+  await showStartupPhase('正在启动 Harness Web 后端')
   const child = spawn(node, [cli, 'web', '--host', '127.0.0.1', '--port', '0'], {
     cwd: dshHome,
     env: {
@@ -239,7 +249,7 @@ async function boot() {
   const window = createWindow()
   await window.loadURL(startupDocument())
   try {
-    backendUrl = await startBackend()
+    backendUrl = await startBackend(window)
     log(`backend ready at ${backendUrl}`)
     await fadeStartupDocument(window.webContents)
     await window.loadURL(backendUrl)

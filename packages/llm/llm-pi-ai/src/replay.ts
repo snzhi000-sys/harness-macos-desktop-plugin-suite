@@ -94,6 +94,23 @@ function invalidReplay(message: string): never {
   throw new LlmError(`invalid pi-ai replay state: ${message}`, 'INVALID_REPLAY_STATE')
 }
 
+/** Preserve metadata for durable blocks that remain an ordered subsequence of the native response. */
+function alignReplayBlocks(
+  content: Message['content'],
+  blocks: readonly PiAiReplayBlock[],
+): PiAiReplayBlock[] | undefined {
+  const aligned: PiAiReplayBlock[] = []
+  let offset = 0
+  for (const block of content) {
+    const index = blocks.findIndex((candidate, candidateIndex) =>
+      candidateIndex >= offset && candidate.type === block.type)
+    if (index < 0) return undefined
+    aligned.push(blocks[index] as PiAiReplayBlock)
+    offset = index + 1
+  }
+  return aligned
+}
+
 /** Validate the adapter-private state before it reaches pi-ai. */
 function readReplayState(value: unknown): PiAiReplayState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return invalidReplay('expected an object')
@@ -161,10 +178,15 @@ function replayedAssistant(message: Message, source: ModelMessageSource, rawStat
   const state = readReplayState(rawState)
   if (state.provider !== source.provider) return invalidReplay('provider does not match assistant source')
   if (state.model !== source.model) return invalidReplay('model does not match assistant source')
-  if (state.blocks.length !== message.content.length) return invalidReplay('block count does not match assistant content')
+  const aligned = alignReplayBlocks(message.content, state.blocks)
+  // A terminal native response can mention a partial block that the Harness
+  // stream never finalized. Preserve metadata for an ordered durable subset;
+  // otherwise replay the durable content without provider-private metadata so
+  // one stale response cannot make every later turn fail locally.
+  if (aligned === undefined) return foreignAssistant(message)
   const content: AssistantMessage['content'] = message.content.map((block, index) => {
-    const replay = state.blocks[index]
-    if (replay === undefined || replay.type !== block.type) return invalidReplay(`block ${index} does not match assistant content`)
+    const replay = aligned[index]
+    if (replay === undefined || replay.type !== block.type) return invalidReplay(`aligned block ${index} does not match assistant content`)
     switch (block.type) {
       case 'text': return {
         type: 'text',

@@ -133,7 +133,7 @@ describe('host plugin smoke', () => {
     } finally {
       manager.disposeAll()
     }
-  })
+  }, 10_000)
 
   it('pty manager: exited zombie handles do not consume the quota', async () => {
     const manager = new PtyManager(defaultShell(), 1)

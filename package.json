@@ -24,6 +24,8 @@
     "product:verify:profile-runtime": "npm --prefix desktop run verify:profile-runtime",
     "product:dist:dev": "npm --prefix desktop run dist:dev",
     "product:dist:stable": "npm --prefix desktop run dist:stable",
+    "product:publish:candidate:dev": "npm --prefix desktop run publish:candidate:dev",
+    "product:publish:candidate:stable": "npm --prefix desktop run publish:candidate:stable",
     "build": "npm run build:lib && npm run build:web",
     "build:lib": "npm run build:lib:host && npm run build:lib:client",
     "build:lib:host": "tsc -b tsconfig.host.json && tsdown --env.DSH_BUILD_FACE host",

@@ -58,7 +58,7 @@ Dev 启动使用独立临时数据目录。首次界面只显示空白产品状�
 构建产物不进入 Git：
 
 - Dev：`desktop/dist/dev/mac-arm64/DeepSeek Harness Dev.app`
-- Dev 隐私候选：`desktop/dist/dev-privacy-candidate/mac-arm64/DeepSeek Harness Dev.app`
+- Dev 固定暂存候选：`desktop/dist/.candidate-dev/mac-arm64/DeepSeek Harness Dev.app`；验证通过后原子发布到固定 Dev 路径
 - Stable 候选：`desktop/dist/stable/mac-arm64/DeepSeek Harness.app`
 - Runtime bootstrap：`desktop/.artifacts/runtime/`
 - Profile bootstrap：`desktop/.artifacts/profile/`

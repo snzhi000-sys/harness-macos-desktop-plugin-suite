@@ -35,8 +35,19 @@ async function install(paths, { channel = 'dev', name = 'clean-profile', profile
 
 test('installs a clean bundled profile for a first launch', async () => {
   const paths = fixture()
-  const installed = await install(paths)
+  let installStarted = false
+  const installed = await installBundledProfile({
+    channel: 'dev',
+    isPackaged: true,
+    ...paths,
+    onInstallStart: async () => { installStarted = true },
+    extractArchive: async (_archive, destination) => {
+      mkdirSync(join(destination, 'node_modules'), { recursive: true })
+      writeFileSync(join(destination, 'package.json'), '{"name":"clean-profile"}\n')
+    },
+  })
   assert.equal(installed, true)
+  assert.equal(installStarted, true)
   assert.equal(JSON.parse(readFileSync(join(paths.userData, 'harness', 'profiles', 'web', 'package.json'), 'utf8')).name, 'clean-profile')
   assert.equal(readFileSync(join(paths.userData, 'harness', 'profiles', '.web-bundled-profile-id'), 'utf8').trim(), '0123456789abcdef')
 })
@@ -45,9 +56,11 @@ test('does not extract a Dev profile when its bundled identifier matches', async
   const paths = fixture()
   await install(paths)
   let extracted = false
-  const installed = await installBundledProfile({ channel: 'dev', isPackaged: true, ...paths, extractArchive: async () => { extracted = true } })
+  let installStarted = false
+  const installed = await installBundledProfile({ channel: 'dev', isPackaged: true, ...paths, onInstallStart: () => { installStarted = true }, extractArchive: async () => { extracted = true } })
   assert.equal(installed, false)
   assert.equal(extracted, false)
+  assert.equal(installStarted, false)
 })
 
 test('upgrades an existing Dev profile when its bundled identifier is absent', async () => {

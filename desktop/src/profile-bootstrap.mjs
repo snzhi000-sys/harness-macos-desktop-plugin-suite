@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 
 /** Installs product plugins, replacing Dev profiles and merging into Stable user profiles. */
-export async function installBundledProfile({ channel, isPackaged, resourcesPath, userData, extractArchive = defaultExtractArchive }) {
+export async function installBundledProfile({ channel, isPackaged, resourcesPath, userData, extractArchive = defaultExtractArchive, onInstallStart }) {
   if (!isPackaged) return false
   const bootstrap = join(resourcesPath, 'profile-bootstrap')
   const profileId = readFileSync(join(bootstrap, 'profile-id'), 'utf8').trim()
@@ -28,6 +28,7 @@ export async function installBundledProfile({ channel, isPackaged, resourcesPath
   rmSync(merged, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
   try {
+    await onInstallStart?.()
     await extractArchive(join(bootstrap, 'profile.tar.gz'), staging)
     if (!existsSync(join(staging, 'package.json')) || !existsSync(join(staging, 'node_modules'))) {
       throw new Error('Packaged profile is incomplete')

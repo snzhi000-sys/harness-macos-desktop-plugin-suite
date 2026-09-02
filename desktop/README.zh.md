@@ -18,14 +18,16 @@ Renderer 会通过沙箱化的 preload 桥接，把最终解析出的浅色/深�
 
 ## 构建和安装
 
-在 Apple Silicon Mac 上进入本目录后运行：
+在统一工程根目录构建 Dev 或 Stable：
 
 ```sh
-npm install
-npm run install:mac
+npm run product:dist:dev
+npm run product:dist:stable
 ```
 
-该命令会创建采用临时签名的应用，并将其复制到 `/Applications/DeepSeek Harness.app`。如果已有安装且 `/Applications/DeepSeek Harness.previous.app` 尚未占用，就使用该路径保留旧 App；后续安装改用带时间戳的 `DeepSeek Harness.backup-*.app`，不会覆盖更早备份。复制失败时，安装器会恢复本轮刚移动的旧 App。
+两个命令都通过 `scripts/build-product-app.mjs` 先重建产品插件，在固定通道暂存目录生成候选，使用本机已校验的 Electron 缓存，校验 App 标识、版本、构建时间、包内功能标记、签名和隐私，并以 `--user-data-dir=<临时绝对路径>` 做无凭据迁移的隔离启动。全部通过后才分别覆盖 `dist/dev` 或 `dist/stable`；目标通道 App 正在运行时拒绝发布并保留唯一暂存候选。
+
+Stable 候选不会自动安装。明确执行 `npm run install:stable` 时，安装器才会复制到 `/Applications/DeepSeek Harness.app`。如果已有安装且 `/Applications/DeepSeek Harness.previous.app` 尚未占用，就使用该路径保留旧 App；后续安装改用带时间戳的 `DeepSeek Harness.backup-*.app`，不会覆盖更早备份。复制失败时，安装器会恢复本轮刚移动的旧 App。
 
 本机构建不需要 Apple 开发者证书。通过互联网分发仍然需要 Developer ID Application 证书、Hardened Runtime、Apple 公证和已装订的公证票据。
 

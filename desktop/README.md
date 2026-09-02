@@ -18,14 +18,16 @@ The application stores the last normal window position and size in `~/Library/Ap
 
 ## Build and install
 
-Run from this directory on an Apple Silicon Mac:
+Build Dev or Stable from the unified repository root:
 
 ```sh
-npm install
-npm run install:mac
+npm run product:dist:dev
+npm run product:dist:stable
 ```
 
-The command creates an ad-hoc-signed application and copies it to `/Applications/DeepSeek Harness.app`. An existing installation is preserved as `/Applications/DeepSeek Harness.previous.app` when that path is free; later installations use a timestamped `DeepSeek Harness.backup-*.app` path and never overwrite an earlier backup. A failed copy restores the installation it just moved.
+Both commands run `scripts/build-product-app.mjs`: rebuild product plugins, create a candidate in the fixed channel staging directory, use the verified local Electron cache, verify application identity, version, build time, packaged feature markers, signing, and privacy, then launch with `--user-data-dir=<absolute-temporary-path>` without credential migration. Only a fully verified candidate replaces `dist/dev` or `dist/stable`; publishing refuses to replace a running channel application and retains the single staging candidate.
+
+A Stable candidate is not installed automatically. Only an explicit `npm run install:stable` copies it to `/Applications/DeepSeek Harness.app`. An existing installation is preserved as `/Applications/DeepSeek Harness.previous.app` when that path is free; later installations use a timestamped `DeepSeek Harness.backup-*.app` path and never overwrite an earlier backup. A failed copy restores the installation it just moved.
 
 The local build does not require an Apple Developer certificate. Internet distribution still requires a Developer ID Application certificate, Hardened Runtime, Apple notarization, and a stapled ticket.
 

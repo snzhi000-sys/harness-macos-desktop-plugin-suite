@@ -1,8 +1,8 @@
 /**
  * Serialize harness messages into DeepSeek chat completions. User text is joined; assistant text
  * becomes `content`, tool calls become `tool_calls`, and tool results become separate tool messages.
- * Assistant reasoning is replayed as `reasoning_content` only on tool-call turns, as required by
- * thinking-mode passback. Core image blocks are rejected explicitly because this wire route is text-only;
+ * Thinking-mode requests replay `reasoning_content` on every assistant history message, including
+ * an empty string when that message recorded no reasoning. Core image blocks are rejected explicitly because this wire route is text-only;
  * unknown declaration-merged block types retain the adapter's documented extension fallback.
  * @module dsh-llm-deepseek/serialize
  */
@@ -68,7 +68,7 @@ function assertTextOnly(blocks: readonly ContentBlock[]): void {
 }
 
 /** Serialize one assistant message (text + reasoning + tool calls). */
-function serializeAssistant(message: Message): WireMessage {
+function serializeAssistant(message: Message, thinkingEnabled: boolean): WireMessage {
   const text = flattenText(message.content)
   const reasoning = message.content
     .filter(block => block.type === 'reasoning')
@@ -93,10 +93,10 @@ function serializeAssistant(message: Message): WireMessage {
     // the message sits durably in the session log, a null here bricks every
     // later turn of that session.
     content: text,
-    // Official passback rule (guides/thinking_mode.mdx): reasoning_content
-    // must return on tool-call turns; it is ignored on plain turns, so we
-    // drop it there to save tokens.
-    ...toolCalls.length > 0 && reasoning.length > 0 ? { reasoning_content: reasoning } : {},
+    // DeepSeek validates every assistant history entry in a thinking-mode
+    // request, not only the entry that initiated a tool call. The empty value
+    // is required when a recorded assistant message carried no reasoning.
+    ...thinkingEnabled ? { reasoning_content: reasoning } : {},
     ...toolCalls.length > 0 ? { tool_calls: toolCalls } : {},
   }
 }
@@ -107,9 +107,10 @@ function serializeAssistant(message: Message): WireMessage {
  * user-role message, so a mixed user message contributes its text first and
  * its tool results as separate wire messages after.
  * @param messages - the harness conversation, in order.
+ * @param thinkingEnabled - whether every assistant history message must include reasoning passback.
  * @returns the wire messages; order preserved, each tool result expanded into its own entry.
  */
-export function serializeMessages(messages: Message[]): WireMessage[] {
+export function serializeMessages(messages: Message[], thinkingEnabled = false): WireMessage[] {
   const wire: WireMessage[] = []
   for (const message of messages) {
     assertTextOnly(message.content)
@@ -118,7 +119,7 @@ export function serializeMessages(messages: Message[]): WireMessage[] {
       continue
     }
     if (message.role === 'assistant') {
-      wire.push(serializeAssistant(message))
+      wire.push(serializeAssistant(message, thinkingEnabled))
       continue
     }
     // user role: tool results ride in user messages in the harness
@@ -152,11 +153,14 @@ export function serializeRequest(
   options: GenerateOptions,
   defaults: RequestDefaults = {},
 ): WireRequest {
+  // A short title budget must produce visible text; conversation and
+  // compaction calls continue to inherit the adapter's thinking defaults.
+  const resolvedThinking = resolveThinking(options, defaults)
   const messages: WireMessage[] = []
   if (options.system !== undefined) {
     messages.push({ role: 'system', content: options.system })
   }
-  messages.push(...serializeMessages(options.messages))
+  messages.push(...serializeMessages(options.messages, resolvedThinking.thinking === 'enabled'))
 
   const tools: WireTool[] | undefined = options.tools?.map(tool => ({
     type: 'function',
@@ -166,10 +170,6 @@ export function serializeRequest(
       parameters: tool.parameters,
     },
   }))
-  // A short title budget must produce visible text; conversation and
-  // compaction calls continue to inherit the adapter's thinking defaults.
-  const resolvedThinking = resolveThinking(options, defaults)
-
   return {
     model: options.model,
     messages,
