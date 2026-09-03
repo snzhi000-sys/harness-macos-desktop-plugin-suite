@@ -69,7 +69,7 @@ DeepSeek request identity is separate from app attribution. After credential res
 - Streaming only (`stream_options.include_usage` always on). `usage` may arrive attached to the finish chunk or as a trailing usage-only chunk — the translator defers both to `[DONE]`, so `usage` always precedes `finish` and nothing follows `finish`.
 - The adapter-owned `off` effort maps to `thinking: {type: 'disabled'}` and never crosses the wire as `reasoning_effort: 'off'`.
 - The first thinking-mode chunk carries `reasoning_content: ""` — handled (no spurious reasoning block).
-- **Reasoning passback rule**: on assistant turns that carried tool calls, `reasoning_content` is serialized back in history (required by the API in thinking mode); on tool-call-free turns it is dropped (ignored anyway — saves tokens).
+- **Reasoning passback rule**: every assistant history message in a thinking-mode request carries `reasoning_content`; recorded reasoning is replayed verbatim and a message without reasoning carries an empty string. Thinking-disabled requests omit the field.
 - Cache accounting: `cacheReadTokens` ← `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`; DeepSeek reports no cache-write metric.
 
 ## Errors
@@ -82,11 +82,11 @@ Non-2xx responses throw `LlmError` with stable codes: `AUTH` (401/403), `QUOTA` 
 
 #### What the model sees
 
-The selected DeepSeek model receives the harness system prompt, message history, tool schemas, stop sequences, and call config without adapter-authored prompt prose. On a prior assistant turn with tool calls, its reasoning content is passed back as required; reasoning from tool-call-free turns is omitted.
+The selected DeepSeek model receives the harness system prompt, message history, tool schemas, stop sequences, and call config without adapter-authored prompt prose. Thinking-mode history includes each prior assistant message's recorded reasoning, or an empty `reasoning_content` marker when none was recorded, because the API validates the complete assistant history.
 
 #### Token effect
 
-Provider tokenization governs exact input. Conditional reasoning passback increases tool-round-trip context, while dropping other reasoning avoids paying those tokens again; cache-read usage is reported when available.
+Provider tokenization governs exact input. Thinking-mode passback repeats recorded assistant reasoning and therefore increases later-request input; cache-read usage is reported when available.
 
 #### KV Cache effect
 

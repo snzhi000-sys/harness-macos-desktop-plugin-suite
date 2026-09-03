@@ -519,16 +519,25 @@ export class Session implements SessionFace {
    * @param running - the new running state.
    */
   handleRunning(running: boolean): void {
+    let changed = false
     // Turn-start conversion: a blank session never runs, so the first
     // running:true proves another side's first message landed.
     if (running && this.blankBit) {
       this.blankBit = false
-      this.notifier.markDirty()
+      changed = true
     }
     if (running) this.firstPromptPendingTurn = false
-    if (this.running === running) return
-    this.running = running
-    this.notifier.markDirty()
+    // A new run supersedes the unpositioned live error from the prior run.
+    // Durable turn/end errors remain in the conversation history.
+    if (running && this.lastAgentError !== null) {
+      this.lastAgentError = null
+      changed = true
+    }
+    if (this.running !== running) {
+      this.running = running
+      changed = true
+    }
+    if (changed) this.notifier.markDirty()
   }
 
   /**
@@ -582,6 +591,7 @@ export class Session implements SessionFace {
    * @param message - the stringified error.
    */
   handleAgentError(message: string): void {
+    if (this.lastAgentError === message) return
     this.lastAgentError = message
     this.notifier.markDirty()
   }

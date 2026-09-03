@@ -115,15 +115,18 @@ function ModelRetryItem({ node, active, t }: {
 }
 
 /** Persistent, turn-positioned feedback for a terminal failure. */
-function TurnErrorItem({ node, t }: {
+function TurnErrorItem({ node, recovered, t }: {
   node: TurnErrorNode
+  recovered: boolean
   t: ChatViewSlotProps['t']
 }) {
   return (
     <div className={css.turnErrorRow} role="status">
-      <StateDot state="error" className={css.turnErrorDot} />
+      <StateDot state={recovered ? 'done' : 'error'} className={css.turnErrorDot} />
       <div className={css.turnErrorCopy}>
-        <span className={css.turnErrorTitle}>{t('message.turnError')}</span>
+        <span className={recovered ? css.turnErrorRecoveredTitle : css.turnErrorTitle}>
+          {t(recovered ? 'message.turnErrorRecovered' : 'message.turnError')}
+        </span>
         <span className={css.turnErrorMessage}>{node.message}</span>
       </div>
       {node.code !== undefined && <code className={css.turnErrorCode}>{node.code}</code>}
@@ -292,8 +295,14 @@ export const RetryNodeView = memo(function RetryNodeView({ node, t }: ChatNodeVi
 })
 
 /** Terminal turn-error keyed Chat renderer. */
-export const TurnErrorNodeView = memo(function TurnErrorNodeView({ node, t }: ChatNodeViewProps<'turn-error'>) {
-  return <TurnErrorItem node={node.data} t={t} />
+export const TurnErrorNodeView = memo(function TurnErrorNodeView({ node, t, useSession }: ChatNodeViewProps<'turn-error'>) {
+  const data = node.data
+  const recovered = useSession(snapshot => snapshot.nodes.some(candidate =>
+    candidate.kind === 'assistant'
+    && candidate.turn > data.turn
+    && candidate.interrupted !== true
+    && candidate.blocks.some(block => block.kind === 'text' && block.text.trim().length > 0)))
+  return <TurnErrorItem node={data} recovered={recovered} t={t} />
 })
 
 /** Max-tokens turn-end notice keyed Chat renderer. */

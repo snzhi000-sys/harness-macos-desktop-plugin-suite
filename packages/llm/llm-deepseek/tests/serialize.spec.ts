@@ -29,7 +29,7 @@ describe('serializeMessages', () => {
     expect(wire).toEqual([{ role: 'system', content: 'be brief' }])
   })
 
-  it('maps plain assistant text without reasoning_content', () => {
+  it('omits reasoning_content from a thinking-disabled assistant message', () => {
     const wire = serializeMessages([
       createMessage({
         role: 'assistant',
@@ -40,8 +40,29 @@ describe('serializeMessages', () => {
         source: { kind: 'plugin', plugin: 'test' },
       }),
     ])
-    // Tool-call-free turn: reasoning is dropped (ignored by the API anyway).
     expect(wire).toEqual([{ role: 'assistant', content: 'answer' }])
+  })
+
+  it('passes reasoning_content back on every thinking-mode assistant message', () => {
+    const wire = serializeMessages([
+      createMessage({
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'thinking…' },
+          { type: 'text', text: 'answer' },
+        ],
+        source: { kind: 'plugin', plugin: 'test' },
+      }),
+      createMessage({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'answer without reasoning' }],
+        source: { kind: 'plugin', plugin: 'test' },
+      }),
+    ], true)
+    expect(wire).toEqual([
+      { role: 'assistant', content: 'answer', reasoning_content: 'thinking…' },
+      { role: 'assistant', content: 'answer without reasoning', reasoning_content: '' },
+    ])
   })
 
   it('passes reasoning_content back on tool-call turns (official passback rule)', () => {
@@ -54,7 +75,7 @@ describe('serializeMessages', () => {
         ],
         source: { kind: 'plugin', plugin: 'test' },
       }),
-    ])
+    ], true)
     expect(wire).toEqual([{
       role: 'assistant',
       // "" (not null) on tool-call turns — mirrors the official samples'
@@ -282,16 +303,15 @@ describe('review fixes: assistant content shapes', () => {
     expect(wire).toEqual([{ role: 'assistant', content: '' }])
   })
 
-  it('serializes a reasoning-ONLY assistant message as "" content with the reasoning dropped', () => {
-    // The model can answer entirely in the reasoning channel (a v4-flash
-    // greeting did, live). The passback rule keeps reasoning_content off
-    // plain turns, and content must still be SET — a null here poisoned the
-    // session log and bricked every later turn of that session.
-    const wire = serializeMessages([createMessage({
+  it('serializes a reasoning-only assistant message for both thinking modes', () => {
+    const message = createMessage({
       role: 'assistant', content: [{ type: 'reasoning', text: '你好！有什么我可以帮你的吗？' }],
       source: { kind: 'plugin', plugin: 'test' },
-    })])
-    expect(wire).toEqual([{ role: 'assistant', content: '' }])
+    })
+    expect(serializeMessages([message])).toEqual([{ role: 'assistant', content: '' }])
+    expect(serializeMessages([message], true)).toEqual([{
+      role: 'assistant', content: '', reasoning_content: '你好！有什么我可以帮你的吗？',
+    }])
   })
 
   it('serializes tool-call turns with empty string content, not null', () => {

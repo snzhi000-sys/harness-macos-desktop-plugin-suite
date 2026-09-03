@@ -69,7 +69,7 @@ DeepSeek 请求身份独立于应用归因。凭据解析成功后，每个提�
 - 只支持流式输出（`stream_options.include_usage` 始终开启）。`usage` 可能附着在 finish 分片上，也可能作为尾随的纯 usage 分片到达；转换器会将两者都延迟到 `[DONE]`，因此 `usage` 始终位于 `finish` 之前，`finish` 之后不会出现任何内容。
 - 适配器持有的 `off` 推理强度映射为 `thinking: {type: 'disabled'}`，绝不会以 `reasoning_effort: 'off'` 通过协议发送。
 - 第一个思考模式分片携带 `reasoning_content: ""`，系统会处理它（不会产生多余 reasoning 块）。
-- **推理回传规则**：对携带工具调用的 assistant 轮次，会将 `reasoning_content` 序列化回历史（思考模式 API 必需）；对不含工具调用的轮次，它会被丢弃（不会使用，可节省 token）。
+- **推理回传规则**：思考模式请求中的每条 assistant 历史消息都携带 `reasoning_content`；已记录的推理会原样回传，没有推理的消息携带空字符串。关闭思考模式的请求会省略该字段。
 - Cache 计量：`cacheReadTokens` ← `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`；DeepSeek 不报告 cache-write 指标。
 
 ## 错误
@@ -82,11 +82,11 @@ DeepSeek 请求身份独立于应用归因。凭据解析成功后，每个提�
 
 #### 模型看到的内容
 
-所选 DeepSeek 模型会收到 harness 系统提示词、消息历史、工具 schema、stop sequence 和调用配置，不含适配器撰写的提示词文本。当之前的 assistant 轮次包含工具调用时，会按要求回传其推理内容；不含工具调用的轮次会省略推理。
+所选 DeepSeek 模型会收到 harness 系统提示词、消息历史、工具 schema、stop sequence 和调用配置，不含适配器撰写的提示词文本。思考模式历史会包含每条既有 assistant 消息记录的推理；未记录推理时会携带空的 `reasoning_content` 标记，因为 API 会校验完整的 assistant 历史。
 
 #### Token 影响
 
-精确输入取决于提供方 tokenization。有条件推理回传会增加工具往返上下文，丢弃其他推理则避免再次支付这些 token；可用时会报告 cache-read 用量。
+精确输入取决于提供方 tokenization。思考模式回传会重复既有 assistant 推理，因此增加后续请求的输入；可用时会报告 cache-read 用量。
 
 #### KV Cache 影响
 

@@ -441,9 +441,9 @@ describe('toPiContext', () => {
     }
   })
 
-  it('rejects replay metadata whose blocks do not match the durable content', () => {
+  it('drops provider-private metadata when replay blocks cannot align with durable content', () => {
     const state = toPiReplayState(assistant({ content: [{ type: 'text', text: 'done' }] }))
-    expect(() => toPiContext({
+    const context = toPiContext({
       provider: 'deepseek',
       model: 'm',
       messages: [createMessage({
@@ -454,12 +454,51 @@ describe('toPiContext', () => {
           ...{ provider: 'deepseek', model: 'deepseek-v4-flash', replayState: state },
         },
       })],
-    })).toThrow(/block 0 does not match assistant content/)
+    })
+    expect(context.messages[0]).toMatchObject({
+      role: 'assistant',
+      api: 'dsh-foreign',
+      content: [{ type: 'thinking', thinking: 'done' }],
+    })
   })
 
-  it('rejects replay metadata whose block count differs from durable content', () => {
+  it('keeps signatures when durable content is an ordered subset of replay blocks', () => {
+    const state = toPiReplayState(assistant({
+      stopReason: 'length',
+      content: [
+        { type: 'thinking', thinking: 'reasoning', thinkingSignature: 'reasoning_content' },
+        { type: 'toolCall', id: 'partial', name: 'f', arguments: {} },
+        { type: 'text', text: 'visible', textSignature: 'text-signature' },
+      ],
+    }))
+    const context = toPiContext({
+      provider: 'deepseek',
+      model: 'm',
+      messages: [createMessage({
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'reasoning' },
+          { type: 'text', text: 'visible' },
+        ],
+        source: {
+          kind: 'model',
+          ...{ provider: 'deepseek', model: 'deepseek-v4-flash', replayState: state },
+        },
+      })],
+    })
+    expect(context.messages[0]).toMatchObject({
+      role: 'assistant',
+      stopReason: 'length',
+      content: [
+        { type: 'thinking', thinking: 'reasoning', thinkingSignature: 'reasoning_content' },
+        { type: 'text', text: 'visible', textSignature: 'text-signature' },
+      ],
+    })
+  })
+
+  it('drops provider-private metadata when durable content has a block missing from replay', () => {
     const state = toPiReplayState(assistant())
-    expect(() => toPiContext({
+    const context = toPiContext({
       provider: 'deepseek',
       model: 'm',
       messages: [createMessage({
@@ -470,7 +509,10 @@ describe('toPiContext', () => {
           ...{ provider: 'deepseek', model: 'deepseek-v4-flash', replayState: state },
         },
       })],
-    })).toThrow(/block count does not match assistant content/)
+    })
+    expect(context.messages[0]).toMatchObject({
+      role: 'assistant', api: 'dsh-foreign', content: [{ type: 'text', text: 'done' }],
+    })
   })
 
   const validReplay = {

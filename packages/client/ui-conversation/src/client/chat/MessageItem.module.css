@@ -235,6 +235,12 @@
   font-weight: 600;
 }
 
+.turnErrorRecoveredTitle {
+  margin-right: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+}
+
 .turnErrorMessage {
   color: var(--dsw-alias-label-secondary);
 }

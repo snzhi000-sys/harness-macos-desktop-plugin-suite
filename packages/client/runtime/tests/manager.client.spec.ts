@@ -322,6 +322,9 @@ describe('host frame routing', () => {
     manager.handleHostEnvelope({ rpcId: 'h4' as never, payload: { type: 'host/agent-error', sessionId: S1, message: '炸了' } })
     expect(session.getSnapshot().lastAgentError).toBe('炸了')
 
+    manager.handleHostEnvelope({ rpcId: 'h4-restart' as never, payload: { type: 'host/session-status', sessionId: S1, running: true } })
+    expect(session.getSnapshot().lastAgentError).toBeNull()
+
     manager.handleHostEnvelope({ rpcId: 'h5' as never, payload: { type: 'host/session-removed', sessionId: S1 } })
     expect(manager.getListSnapshot().items).toHaveLength(0)
     expect(session.getSnapshot().removed).toBe(true)

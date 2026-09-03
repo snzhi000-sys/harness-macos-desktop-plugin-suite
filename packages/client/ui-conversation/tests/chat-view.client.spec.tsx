@@ -590,6 +590,14 @@ describe('ChatView', () => {
     ])
   })
 
+  it('marks an earlier terminal failure recovered after a later complete text answer', () => {
+    const h = makeHarness({ nodes: [user(1, 'try'), turnError(2, 'AUTH'), assistant(3, 'recovered', 2)] })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getByRole('status').textContent).toBe(
+      '此前运行失败，后续已恢复API key is invalidAUTH',
+    )
+  })
+
   it('renders the max-tokens notice with localized guidance, distinct from turn errors', () => {
     const h = makeHarness({ nodes: [user(1, 'try'), assistant(2, 'truncated'), turnMaxTokens(3)] })
     const view = render(<h.ChatView {...h.props} />)
