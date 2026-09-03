@@ -59,6 +59,8 @@ export interface IConversation {
    * @returns completion of the page pull.
    */
   loadOlder(): Promise<void>
+  /** Page history backwards until it covers a target event sequence. */
+  loadThrough(seq: number): Promise<void>
 }
 
 /** Create one browser-only draft descriptor; only its id enters input state. */
@@ -300,6 +302,11 @@ export class ConversationController extends Service implements IConversation {
   /** Pull one older history page for the scoped Session. */
   async loadOlder(): Promise<void> {
     await this.scopedSession('loadOlder').loadOlder()
+  }
+
+  /** Page backwards through the turn boundary used by whole-log navigation. */
+  async loadThrough(seq: number): Promise<void> {
+    await this.scopedSession('loadThrough').loadThrough(seq)
   }
 
   /** Resolve the caller scope's session face or throw on root contexts. */

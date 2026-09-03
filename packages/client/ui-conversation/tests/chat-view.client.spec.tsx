@@ -154,6 +154,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
   const openDetails = vi.fn<(t: SelectionTarget) => void>()
   const openFile = vi.fn<(path: string) => void>()
   const loadOlder = vi.fn()
+  const loadThrough = vi.fn<(seq: number) => Promise<void>>(() => Promise.resolve())
   const inspectCall = vi.fn<(callId: string) => void>()
   // In-memory scroll memory matching the apply.ts per-session map contract.
   let savedScroll: ReturnType<ChatViewSlotProps['chatScroll']['read']> = null
@@ -283,6 +284,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     openDetails,
     openFile,
     loadOlder,
+    loadThrough,
     loadImage: vi.fn(() => Promise.reject(new Error('not used'))),
     inspectCall,
     chatScroll,
@@ -294,7 +296,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
   }
   const setSelection = (next: SelectionTarget | null): void => { chat.actions.select(next) }
   return {
-    set, ChatView, props, openDetails, openFile, loadOlder, inspectCall,
+    set, ChatView, props, openDetails, openFile, loadOlder, loadThrough, inspectCall,
     chatScroll, forkAt, setSelection, toolOwners,
   }
 }
@@ -377,6 +379,27 @@ describe('Chat node rendering', () => {
 })
 
 describe('ChatView', () => {
+  it('keeps an old-turn jump pending until a reader-owned page releases loading', async () => {
+    const h = makeHarness({
+      nodes: [assistant(10, 'latest', 2)],
+      hasMore: true,
+      loadingOlder: true,
+    })
+    h.props.useProjection = (() => ({ turns: [
+      { turn: 1, seq: 0, prompt: 'old question', response: 'old answer', status: 'closed' },
+      { turn: 2, seq: 8, prompt: 'latest question', response: 'latest answer', status: 'closed' },
+    ] }))
+    const view = render(<h.ChatView {...h.props} />)
+
+    fireEvent.click(view.getByRole('button', { name: '加载并跳转到第 1 轮' }))
+    expect(h.loadThrough).not.toHaveBeenCalled()
+    expect(view.getByRole('button', { name: '加载并跳转到第 1 轮' }).getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => { h.set({ loadingOlder: false }) })
+    expect(h.loadThrough).toHaveBeenCalledTimes(1)
+    expect(h.loadThrough).toHaveBeenLastCalledWith(0)
+  })
+
   it('hands a windowless tool result to the Tool seat with an empty tool name', () => {
     const h = makeHarness({
       nodes: [{ ...toolResult(3, 'w1'), call: null }],

@@ -258,7 +258,7 @@ export function apply(ctx: Context): void {
         releaseSessionImages: (id) => { conversation.releaseSessionImages(id) },
         bindDraftMirror: write => inputHub.shell(sessionId).bindMirror(write),
         bindViewActivation: (selectedView, setView) => viewActivation.bind(sessionId, selectedView, setView),
-        syncActiveView: selectedView => { viewActivation.sync(sessionId, selectedView) },
+        syncActiveView: (selectedView) => { viewActivation.sync(sessionId, selectedView) },
       }
     },
   }, ConversationSession)
@@ -411,6 +411,7 @@ export function apply(ctx: Context): void {
           })
         },
         loadOlder: () => { void scoped.loadOlder() },
+        loadThrough: seq => scoped.loadThrough(seq),
         loadImage: attachment => conversation.resolveImage(sessionId, attachment),
         // Unregistered 'trajectory' id is safe: the tab ring falls back to
         // the first view, and the untouched inspect target stays inert.

@@ -1,0 +1,88 @@
+.slot {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: 0;
+  pointer-events: none;
+}
+
+.rail {
+  position: absolute;
+  top: 24px;
+  right: calc(12px - (var(--dsh-composer-side-clearance) + 16px));
+  width: 28px;
+  height: min(420px, calc(var(--dsh-conversation-viewport-height, 100dvh) - var(--dsh-composer-height, 152px) - 64px));
+  pointer-events: auto;
+}
+
+.mark {
+  position: absolute;
+  top: var(--turn-position);
+  right: 0;
+  width: 20px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.mark::before {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l4);
+  content: '';
+}
+
+.unloaded::before { width: 8px; opacity: 0.6; }
+.mark:hover::before { width: 18px; background: var(--dsw-alias-label-tertiary); }
+.active::before { width: 20px; background: var(--dsw-alias-label-primary); }
+.busy::before { animation: turn-busy 1s ease-in-out infinite; }
+
+.mark:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.preview {
+  position: absolute;
+  top: clamp(0px, var(--turn-position), calc(100% - 100px));
+  right: 38px;
+  display: flex;
+  box-sizing: border-box;
+  width: min(300px, calc(100cqw - 120px));
+  max-height: 100px;
+  overflow: hidden;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-shadow-lv2);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.preview strong,
+.preview span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+
+.preview strong { font: var(--dsw-font-xs-strong-13); -webkit-line-clamp: 1; }
+.preview span { color: var(--dsw-alias-label-caption); font: var(--dsw-font-xxs-12); -webkit-line-clamp: 3; }
+
+@keyframes turn-busy { 50% { opacity: 0.35; } }
+
+@media (max-width: 900px) { .slot { display: none; } }
+
+@media (prefers-reduced-motion: reduce) { .busy::before { animation: none; } }

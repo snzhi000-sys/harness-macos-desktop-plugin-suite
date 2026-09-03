@@ -474,6 +474,42 @@ describe('paging', () => {
     await Promise.all([first, second])
     expect(api.callsOf('session.history')).toHaveLength(2) // open + one page, not two
   })
+
+  it('loads through an old turn sequence in bounded contiguous pages', async () => {
+    const pages = [
+      plainTurn(12, 2, '最新', '回答'),
+      plainTurn(6, 1, '中间', '回答'),
+      plainTurn(0, 0, '目标', '回答'),
+    ]
+    const { api, session } = makeSession()
+    api.onHistory = (payload) => {
+      if (payload.beforeSeq === undefined) return histResponse(pages[0]!, true)
+      if (payload.beforeSeq === 12) return histResponse(pages[1]!, true)
+      return histResponse(pages[2]!, false)
+    }
+    await session.open()
+    await session.loadThrough(0)
+    expect(api.callsOf('session.history')).toMatchObject([
+      { sessionId: SID },
+      { sessionId: SID, beforeSeq: 12, maxMessages: 250 },
+      { sessionId: SID, beforeSeq: 6, maxMessages: 250 },
+    ])
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([1, 3, 7, 9, 13, 15])
+    expect(session.getSnapshot()).toMatchObject({ hasMore: false, loadingOlder: false })
+  })
+
+  it('refuses a jump while a reader-owned page pull is in flight', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(6, 1, '新', '回答'), true)
+    await session.open()
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const pull = session.loadOlder()
+    await session.loadThrough(0)
+    expect(api.callsOf('session.history')).toHaveLength(2)
+    gate.resolve(ok({ events: entries(plainTurn(0, 0, '旧', '回答')) as never[], hasMore: false }))
+    await pull
+  })
 })
 
 describe('prompt and cancel errors', () => {

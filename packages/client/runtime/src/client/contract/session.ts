@@ -73,6 +73,14 @@ export interface ISession {
    */
   loadOlder(): Promise<void>
   /**
+   * Extend the history window backwards until it covers an event sequence.
+   * Concurrent callers share one loop and lower its target; a plain page
+   * already in flight is never duplicated.
+   * @param seq - target `turn/start` event sequence.
+   * @returns completion after the target is covered or paging stops.
+   */
+  loadThrough(seq: number): Promise<void>
+  /**
    * Execute one slash-command line against this session's agent — pure
    * admission semantics (the host executor durably logs the lifecycle).
    * @param line - the full command line, leading slash included.

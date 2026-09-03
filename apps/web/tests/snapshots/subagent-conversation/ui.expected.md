@@ -14,6 +14,9 @@
   - tablist:
     - tab "Chat" [selected]
     - tab "Trajectory"
+- navigation "Turn navigation":
+  - button "Jump to turn 1"
+  - button "Jump to turn 2"
 - text: Explain event sourcing in one sentence. {{clock}}
 - button "Copy":
   - img

@@ -31,6 +31,9 @@ import { SessionQueueMirror } from './queue-mirror.ts'
 /** Messages requested per history page. */
 export const PAGE_MESSAGES = 50
 
+/** Larger pages amortize round trips for an explicit old-turn jump. */
+export const JUMP_PAGE_MESSAGES = 250
+
 /** Manager-owned observers of a Session object's local state edges. */
 export interface SessionOptions {
   /** Catalog-discovered address selecting non-activating subagent transport. */
@@ -78,6 +81,8 @@ export class Session implements SessionFace {
    *  passes drop all writes once the generation moves on. */
   private openGeneration = 0
   private loadingOlder = false
+  private jumpTargetSeq: number | null = null
+  private jumpPromise: Promise<void> | null = null
   private pending = new Map<string, PendingInteraction>()
   private pendingRev = 0
   private pendingCache: { rev: number; value: PendingInteraction[] } | null = null
@@ -413,6 +418,61 @@ export class Session implements SessionFace {
     }
   }
 
+  /** Jump loader: page backwards until the current contiguous window covers seq. */
+  loadThrough(seq: number): Promise<void> {
+    if (!Number.isSafeInteger(seq) || seq < 0) return Promise.resolve()
+    if (this.openState !== 'open' || !this.hasMore || this.baseSeq <= seq) return Promise.resolve()
+    if (this.jumpPromise !== null) {
+      this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq)
+      return this.jumpPromise
+    }
+    // A reader-owned one-page pull keeps ownership. The navigator retries
+    // after that pull settles instead of issuing a competing request.
+    if (this.loadingOlder) return Promise.resolve()
+    this.jumpTargetSeq = seq
+    this.loadingOlder = true
+    this.notifier.markDirty()
+    const generation = this.openGeneration
+    this.jumpPromise = (async () => {
+      try {
+        while (generation === this.openGeneration
+          && this.hasMore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
+          const before = this.baseSeq
+          const { result } = await this.history({ beforeSeq: before, maxMessages: JUMP_PAGE_MESSAGES })
+          if (generation !== this.openGeneration || !result.ok) return
+          const older = result.value.events
+          if (older.length === 0) {
+            this.hasMore = result.value.hasMore
+            this.conversation.prepend([], this.hasMore)
+            return
+          }
+          const tail = older.at(-1)
+          if (tail === undefined || tail.event.seq + 1 !== before) {
+            console.error(`[web-runtime] history jump page discontinuous: tail seq ${tail?.event.seq} vs baseSeq ${before}`)
+            this.hasMore = false
+            this.conversation.prepend([], false)
+            return
+          }
+          this.events = [...older.map(entry => entry.event), ...this.events]
+          this.views = [...older.map(entry => entry.view), ...this.views]
+          this.baseSeq = older[0]?.event.seq ?? before
+          this.hasMore = result.value.hasMore
+          this.conversation.prepend(older.map(conversationInput), this.hasMore)
+          this.notifier.markDirty()
+          if (this.baseSeq >= before) return
+        }
+      } catch (error) {
+        console.error('[web-runtime] loadThrough failed:', error)
+      } finally {
+        this.jumpTargetSeq = null
+        this.jumpPromise = null
+        this.loadingOlder = false
+        this.notifier.markDirty()
+      }
+    })()
+    return this.jumpPromise
+  }
+
   /** Reconnect rebuild for an opened instance. The last committed window stays
    *  visible while the replacement history is loading; installation remains atomic. */
   async resync(): Promise<void> {
@@ -432,6 +492,7 @@ export class Session implements SessionFace {
     this.pendingRev++
     this.subscribedLastSeq = null
     this.liveBuffer = []
+    this.jumpTargetSeq = null
     await this.open()
   }
 

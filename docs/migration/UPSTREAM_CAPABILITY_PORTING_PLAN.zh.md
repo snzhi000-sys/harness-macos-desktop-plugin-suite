@@ -241,6 +241,22 @@ Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动�
 
 移植后的最低门槛是：所有场景不得比阶段 0 基线显著退化；10,000 条记录会话可以打开、发送、流式回答、向前翻页和跳转；离屏代码块不得持续重复高亮；本地消息即时显示行为保持不变。
 
+### 8.4 阶段 3 执行记录
+
+阶段 3 于 2026-09-03 按 3A、3B、3C 的兼容边界完成实现，最终交付仍只构建 Dev 包。
+
+3A 没有直接移植上游 packed journal。官方实现依赖本地尚未采用的 handle-based journal persistence、ranged journal 和新的 Session Controller；若只搬传输层，会绕过阶段 1 要求的 JSONL 完整冷检查，并改变既有 `session.history` 与插件消费接口。本地继续使用 `HistoryEntry` 内部适配、50 条消息安全尾页、按 `seq` 连续分页和 keyed Conversation snapshot。现有 `ChatSnapshot.order` 只在节点进入、离开或移动时变更，每个 `ChatNodeSeat` 只订阅自己的稳定 key；流式内容不会重建整个节点数组。
+
+3B 沿用现有动画帧发布、流式 Markdown 增量解析、keyed Chat 节点订阅与滚动所有权：用户离开底部后不会因流式增量重新吸附，分页使用语义节点 key 保持锚点。组装浏览器滚动契约测得固定 intrinsic height 的 `content-visibility` 实验会让恢复锚点偏移 834 px，因此没有保留该方案；重新挂载的离屏行没有精确历史高度。在具备 Session 所有的精确行高缓存前，Better Sidebar turn-tail、File Edit 审核、文件跳转和 Cowork 工具卡所需的真实 DOM 行与稳定 slot 继续保持挂载。
+
+3C 新增 Host `turnOutline` 全日志投影。每个回合只保存回合号、`turn/start` 序号、open/closed 状态和最长 160 字的用户问题、已结算回答预览；工具输出、附件正文和文件内容不进入投影。Chat 回合导航将已加载回合映射到稳定节点 key，未加载回合映射到 `turn/start seq`。点击旧回合后，Session 使用每页最多 250 条消息的只读循环向前分页，保持当前阅读锚点，在真实目标行提交后再定位；普通“加载更早”正在执行时不会启动竞争分页，重连 generation 变化会终止旧跳转。
+
+可重复数据面基线由 `npm run benchmark:stage3` 生成。本机最终复跑记录如下：1,000 条记录序列化 0.553 ms、解析 1.183 ms、outline fold 1.991 ms；10,000 条记录序列化 5.424 ms、解析 8.170 ms、fold 23.052 ms。含约 41.7 MiB 大工具输出的 1,000 条记录，源数据序列化和解析分别为 52.716 ms 与 32.012 ms，而 outline 仍为 64,511 bytes、fold 0.525 ms，证明导航投影不随工具正文膨胀。堆增量受同进程垃圾回收时机影响，只作为诊断样本，不设机器无关阈值。浏览器侧继续由 `apps/web/tests/complex-history.perf.ts` 记录冷启动、首屏、分页、持续流式输出、切换会话、主线程任务与内存；它是无固定耗时阈值的人工性能 lane，结构断言防止 fixture 被意外缩小。
+
+验证覆盖 projection schema、非用户消息、重复边界、大工具正文不泄露、10,000 条记录 benchmark、连续多页 `loadThrough`、普通分页互斥、现有即时消息显示、动画帧合并和滚动锚点。阶段 3 定向测试 8 个文件、133 项通过；全量 GUI 277 个文件、3,788 项通过、1 项跳过；Web replay 75 个文件通过、1 个文件跳过，253 项通过、15 项跳过。Client typecheck、阶段文件 lint、包路径、包不变量、Cordis 配置、README 和配置目录门禁均通过。全目录 lint 仍只报告 `ui-conversation` 中本阶段未修改的旧行。
+
+标准 `npm run product:dist:dev` 链路重新构建 Host/Client、五个产品插件、Runtime 与 Profile，并通过 Desktop 29 项测试、源码和包内隐私检查、Profile Runtime 五插件装配、产品身份/功能标记、ad-hoc 签名及空临时 userData 隔离启动。最终 Dev 为 `v1.00.25 (dev)`，构建时间 `2026-09-03T12:39:49.051Z`，Runtime ID `9d1639b0be921c11`，Profile ID `8810735fb59c0bc6`，固定路径为 `desktop/dist/dev/mac-arm64/DeepSeek Harness Dev.app`。包内 Runtime 已确认包含 `@deepseek-ai/dsh-session-turn-outline`。本阶段没有构建或安装 Stable；用户可见的回合导航点击仍待人工 UI 验收。
+
 ## 9. 阶段 4：WebFetch SSRF 防护
 
 ### 9.1 当前边界
