@@ -184,6 +184,23 @@ Verification evidence:
 - User messages already shown during a disconnect remain visible; recovery does not duplicate messages, forks, review actions, or file operations.
 - A Dev App with temporary userData completes a real backend interruption and recovery test.
 
+### 7.5 Stage 2 execution record
+
+Stage 2 completed Dev-candidate verification on 2026-09-03 without building or installing a Stable package.
+
+The implementation preserves the separate mux and Host WebSockets and adds configurable idle Ping/Pong on the Host. The Client Controller now owns generation identity, backoff, immediate reconnect, and the shared `connecting`, `connected`, `stalled`, and `reconnecting` states. Request tokens reject late responses from old generations for Session, Subagent catalog, and Workspace authoritative reads. Session resync retains visible messages until current-generation history arrives. The settings rail displays shared connection state, and immediate reconnect neither refreshes the page nor replays non-idempotent writes.
+
+The packaged rehearsal exposed an additional Desktop gap: an exited backend navigated the Renderer to an error page. The shell now restarts the backend a bounded number of times on the same loopback port and shows the error page only after recovery is exhausted. In the temporary-userData rehearsal, the backend PID changed from `98599` to `98762` while port `56732` stayed fixed. The Electron main process and Renderer PID `98641` stayed alive, three connections were re-established, and release-info continued to report `v1.00.23 (dev)`.
+
+Verification evidence:
+
+- Eight Stage 2 automation files passed 195 tests; the final review reran six critical files with 178 passes and added three Desktop recovery-policy tests.
+- Client/Host typecheck, Stage 2 scoped lint, Client/config catalogs, bilingual pairing, and the Harness maintenance skill validation passed.
+- The complete GUI suite passed 3,781 tests across 275 files with one skip. Web replay passed 253 tests across 75 files, with one file and 15 tests skipped.
+- The standard `npm run product:dist:dev` chain passed all five product plugins, 29 Desktop tests, privacy checks, Profile Runtime assembly, and empty-userData launch. It produced `v1.00.23 (dev)` and replaced the fixed Dev output path.
+
+The first Web E2E attempt could not launch because Playwright 1.61.1 revision 1228 was absent. After the official 171 MiB download remained too slow, the local test cache temporarily reused installed revision 1223; the complete replay then passed. Corpus-wide lint and export-JSDoc gates still report pre-existing issues in the ui-conversation working tree, outside Stage 2 files.
+
 ## 8. Stage 3: Long-conversation performance and Turn navigation
 
 ### 8.1 Substage order

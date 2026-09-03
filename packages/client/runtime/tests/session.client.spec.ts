@@ -948,6 +948,23 @@ describe('remaining branches', () => {
 })
 
 describe('resync', () => {
+  it('keeps the committed conversation visible while replacement history loads', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(0, 0, 'visible user', 'visible answer'))
+    await session.open()
+    const before = session.getSnapshot().nodes.map(node => node.seq)
+    const replacement = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => replacement.promise
+
+    const resync = session.resync()
+    expect(session.getSnapshot()).toMatchObject({ openState: 'loading' })
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual(before)
+
+    replacement.resolve(await histResponse([...plainTurn(0, 0, 'visible user', 'visible answer'), ...plainTurn(6, 1, 'next', 'done')]))
+    await resync
+    expect(session.getSnapshot().nodes).toHaveLength(4)
+  })
+
   it('rebuilds the window and clears pending; cold instances no-op', async () => {
     const { api, session } = makeSession()
     api.onHistory = () => histResponse(plainTurn(0, 0, 'a', 'b'))

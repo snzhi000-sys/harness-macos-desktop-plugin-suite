@@ -49,6 +49,36 @@ export interface HostDescriptionSource {
   subscribe(listener: () => void): () => void
 }
 
+/** Identity and Host facts for one established connection generation. */
+export interface ConnectionGeneration {
+  /** Monotone identifier within this page runtime. */
+  readonly id: number
+  /** Host description captured by this generation's readiness handshake. */
+  readonly description: HostDescription
+}
+
+/** Observable active generation; absent while no generation is ready. */
+export interface ConnectionGenerationSource {
+  /** @returns The ready generation, or undefined while connecting. */
+  getSnapshot(): ConnectionGeneration | undefined
+  /**
+   * @param listener - Called whenever the ready generation changes.
+   * @returns An unsubscribe callback.
+   */
+  subscribe(listener: () => void): () => void
+}
+
+/** Observable shared connection lifecycle. */
+export interface ConnectionStateSource {
+  /** @returns The current lifecycle state, or undefined before start and after stop. */
+  getSnapshot(): ConnectionState | undefined
+  /**
+   * @param listener - Called whenever the lifecycle state changes.
+   * @returns An unsubscribe callback.
+   */
+  subscribe(listener: () => void): () => void
+}
+
 /** Required services (none — this is the wire root). */
 export const inject: string[] = []
 
@@ -64,8 +94,14 @@ export interface ConnectionHandle {
   readonly isLoopback: boolean
   /** Generation-scoped Host facts, including native path-open capability. */
   readonly hostDescription: HostDescriptionSource
+  /** Active connection generation and its monotone identity. */
+  readonly generation: ConnectionGenerationSource
+  /** Shared lifecycle state for UI and plugin consumers. */
+  readonly state: ConnectionStateSource
   /** Generic logical RPC channels over the same Connection transport. */
   readonly rpc: ClientConnectionRpc
+  /** Replace the current generation or retry delay immediately. */
+  reconnect(): void
   /**
    * Start the connect/pump/reconnect loop with the consumer's frame sinks.
    * One consumer owns the streams (the runtime object layer); a second call
@@ -88,18 +124,37 @@ export function apply(ctx: Context): void {
   const api: IApiClient = fixtureClient ?? new WebApiClient()
   const rpc = fixtureClient?.rpc ?? createWebConnectionRpc()
   let started = false
+  let controller: ConnectionController | undefined
   let description: HostDescription | undefined
+  let generation: ConnectionGeneration | undefined
+  let generationId = 0
+  let state: ConnectionState | undefined
   const descriptionListeners = new Set<() => void>()
-  const publishDescription = (next: HostDescription | undefined): void => {
-    if (Object.is(description, next)) return
-    description = next
-    for (const listener of [...descriptionListeners]) {
+  const generationListeners = new Set<() => void>()
+  const stateListeners = new Set<() => void>()
+  const publish = (listeners: Set<() => void>, label: string): void => {
+    for (const listener of [...listeners]) {
       try {
         listener()
       } catch (error) {
-        console.error('[web-runtime] host-description listener threw:', error)
+        console.error(`[web-runtime] ${label} listener threw:`, error)
       }
     }
+  }
+  const publishDescription = (next: HostDescription | undefined): void => {
+    if (Object.is(description, next)) return
+    description = next
+    publish(descriptionListeners, 'host-description')
+  }
+  const publishGeneration = (next: ConnectionGeneration | undefined): void => {
+    if (Object.is(generation, next)) return
+    generation = next
+    publish(generationListeners, 'generation')
+  }
+  const publishState = (next: ConnectionState | undefined): void => {
+    if (state === next) return
+    state = next
+    publish(stateListeners, 'connection-state')
   }
   const handle: ConnectionHandle = {
     api,
@@ -111,31 +166,58 @@ export function apply(ctx: Context): void {
         return () => { descriptionListeners.delete(listener) }
       },
     },
+    generation: {
+      getSnapshot: () => generation,
+      subscribe: (listener) => {
+        generationListeners.add(listener)
+        return () => { generationListeners.delete(listener) }
+      },
+    },
+    state: {
+      getSnapshot: () => state,
+      subscribe: (listener) => {
+        stateListeners.add(listener)
+        return () => { stateListeners.delete(listener) }
+      },
+    },
     rpc,
+    reconnect() {
+      controller?.reconnect()
+    },
     start(sinks, config) {
       if (started) throw new Error('connection: the stream loop is already owned by another consumer')
       started = true
-      const controller = new ConnectionController(api, {
+      const current = new ConnectionController(api, {
         ...sinks,
         onConnected: (next) => {
+          const nextGeneration = { id: ++generationId, description: next }
           publishDescription(next)
+          publishGeneration(nextGeneration)
           // A description subscriber may synchronously stop the loop. In that
           // case publishDescription(undefined) has already retracted this
           // generation, so do not leak its stale connected notification to
           // the consumer sink afterward.
-          if (!Object.is(description, next)) return
-          sinks.onConnected?.(next)
+          if (!Object.is(description, next) || !Object.is(generation, nextGeneration)) return
+          sinks.onConnected?.(next, nextGeneration.id)
         },
         onStateChange: (state) => {
-          if (state === 'reconnecting') publishDescription(undefined)
+          if (state !== 'connected') {
+            publishDescription(undefined)
+            publishGeneration(undefined)
+          }
+          publishState(state)
           sinks.onStateChange?.(state)
         },
       }, config ?? {})
-      controller.start()
+      controller = current
+      current.start()
       return {
         stop: () => {
-          controller.stop()
+          current.stop()
+          if (controller === current) controller = undefined
           publishDescription(undefined)
+          publishGeneration(undefined)
+          publishState(undefined)
         },
       }
     },

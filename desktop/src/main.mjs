@@ -8,14 +8,17 @@ import { readWindowBounds, writeWindowBounds } from './window-state.mjs'
 import { readAppearanceScheme, writeAppearanceScheme } from './appearance-state.mjs'
 import { fadeStartupDocument, startupDocument } from './startup-document.mjs'
 import { installBundledProfile } from './profile-bootstrap.mjs'
+import { backendPort, backendRecoveryDelay } from './backend-recovery.mjs'
 
 const STARTUP_TIMEOUT_MS = 60_000
 const SHUTDOWN_TIMEOUT_MS = 8_000
+const BACKEND_RECOVERY_ATTEMPTS = 5
 const WINDOW_STATE_WRITE_DELAY_MS = 250
 
 let mainWindow
 let backend
 let backendUrl
+let backendRecovery
 let quitting = false
 const execFileAsync = promisify(execFile)
 
@@ -148,7 +151,39 @@ function createWindow() {
   return window
 }
 
-async function startBackend() {
+const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds))
+
+async function recoverBackend(window, previousUrl) {
+  if (backendRecovery !== undefined || quitting) return
+  const port = backendPort(previousUrl)
+  const operation = (async () => {
+    for (let attempt = 1; attempt <= BACKEND_RECOVERY_ATTEMPTS && !quitting; attempt += 1) {
+      if (attempt > 1) await delay(backendRecoveryDelay(attempt - 1))
+      try {
+        const recoveredUrl = await startBackend(window, port)
+        backendUrl = recoveredUrl
+        log(`backend recovered at ${recoveredUrl} after attempt ${String(attempt)}`)
+        return
+      } catch (error) {
+        log(`backend recovery attempt ${String(attempt)} failed: ${String(error)}`)
+        await stopBackend()
+      }
+    }
+    if (quitting) return
+    await window.loadURL(statusDocument(
+      'DeepSeek Harness 已停止',
+      `后端进程意外退出且自动恢复失败。\n\n日志：${desktopLogPath()}`,
+    ))
+  })()
+  backendRecovery = operation
+  try {
+    await operation
+  } finally {
+    if (backendRecovery === operation) backendRecovery = undefined
+  }
+}
+
+async function startBackend(window, port = 0) {
   const runtimeDir = await runtimeDirectory()
   const node = join(runtimeDir, 'bin', 'node')
   const cli = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
@@ -157,7 +192,7 @@ async function startBackend() {
   if (await installBundledProfile({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, userData: app.getPath('userData') })) {
     log('installed bundled clean plugin profile')
   }
-  const child = spawn(node, [cli, 'web', '--host', '127.0.0.1', '--port', '0'], {
+  const child = spawn(node, [cli, 'web', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: dshHome,
     env: {
       ...process.env,
@@ -179,12 +214,18 @@ async function startBackend() {
     }
     child.once('error', error => settle(() => reject(error)))
     child.once('exit', (code, signal) => {
-      if (backend === child) backend = undefined
+      const owned = backend === child
+      if (owned) backend = undefined
+      if (!owned) return
       if (backendUrl === undefined) {
         settle(() => reject(new Error(`Harness exited before startup (code ${String(code)}, signal ${String(signal)})`)))
       } else if (!quitting) {
+        const previousUrl = backendUrl
+        backendUrl = undefined
         log(`backend exited unexpectedly: code=${String(code)} signal=${String(signal)}`)
-        mainWindow?.loadURL(statusDocument('DeepSeek Harness 已停止', `后端进程意外退出。\n\n日志：${desktopLogPath()}`)).catch(error => log(`failed to show exit page: ${String(error)}`))
+        void recoverBackend(mainWindow ?? window, previousUrl).catch(error => {
+          log(`backend recovery failed: ${String(error)}`)
+        })
       }
     })
     child.stdout.on('data', chunk => {
@@ -225,7 +266,7 @@ async function boot() {
   const window = createWindow()
   await window.loadURL(startupDocument())
   try {
-    backendUrl = await startBackend()
+    backendUrl = await startBackend(window)
     log(`backend ready at ${backendUrl}`)
     await fadeStartupDocument(window.webContents)
     await window.loadURL(backendUrl)

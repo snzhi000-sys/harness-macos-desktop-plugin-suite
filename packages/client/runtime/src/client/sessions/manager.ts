@@ -61,6 +61,7 @@ export interface SubagentCatalogSnapshot extends SubagentCatalog {
 }
 
 interface CatalogInflight {
+  readonly token: object
   readonly promise: Promise<void>
   readonly expandableRows: Set<SessionId>
   readonly activityRows: Map<SessionId, 'running' | 'inactive'>
@@ -133,8 +134,9 @@ export class SessionManager {
   private listPhase: SessionListPhase = 'pending'
   private listError: RpcError | null = null
   private listInflight: Promise<void> | null = null
+  private listRequestToken: object | undefined
   /** Mutations arriving after a list request starts are replayed over its response. */
-  private listMutations: SessionListMutation[] | null = null
+  private readonly listMutationCaptures = new Set<SessionListMutation[]>()
   private readonly addresses = new Map<SessionId, SubagentAddress>()
   private readonly catalogs = new Map<SessionId, SubagentCatalogSnapshot>()
   private readonly catalogInflight = new Map<SessionId, CatalogInflight>()
@@ -343,10 +345,12 @@ export class SessionManager {
   /**
    * Refresh one direct-child catalog, reusing its in-flight request.
    * @param parentSessionId - catalog owner.
+   * @param replace - supersede any request from an older connection generation.
    */
-  refreshSubagents(parentSessionId: SessionId): Promise<void> {
+  refreshSubagents(parentSessionId: SessionId, replace = false): Promise<void> {
     const existing = this.catalogInflight.get(parentSessionId)
-    if (existing !== undefined) return existing.promise
+    if (existing !== undefined && !replace) return existing.promise
+    const token = {}
     const previous = this.catalogs.get(parentSessionId)
     const expandableRows = new Set<SessionId>()
     const activityRows = new Map<SessionId, 'running' | 'inactive'>()
@@ -360,6 +364,7 @@ export class SessionManager {
     const operation = (async () => {
       try {
         const { result } = await this.api.subagents.list({ parentSessionId })
+        if (this.catalogInflight.get(parentSessionId)?.token !== token) return
         if (result.ok) {
           const parentAvailable = this.catalogInflight.get(parentSessionId)?.parentAvailableOverride
             ?? result.value.parentAvailable
@@ -386,6 +391,7 @@ export class SessionManager {
           })
         }
       } catch (error: unknown) {
+        if (this.catalogInflight.get(parentSessionId)?.token !== token) return
         const folded = transportError<never>(error)
         this.catalogs.set(parentSessionId, {
           entries: this.withCatalogMutations(
@@ -397,15 +403,18 @@ export class SessionManager {
           error: folded.ok ? null : folded.error,
         })
       } finally {
-        this.catalogInflight.delete(parentSessionId)
-        // Re-arm the trailing pull before the dirty notify: the response the
-        // caller observed predates the stale-marking change, so the follow-up
-        // refresh is the only carrier of that change.
-        if (this.catalogStale.delete(parentSessionId)) void this.refreshSubagents(parentSessionId)
-        this.notifier.markDirty()
+        if (this.catalogInflight.get(parentSessionId)?.token === token) {
+          this.catalogInflight.delete(parentSessionId)
+          // Re-arm the trailing pull before the dirty notify: the response the
+          // caller observed predates the stale-marking change, so the follow-up
+          // refresh is the only carrier of that change.
+          if (this.catalogStale.delete(parentSessionId)) void this.refreshSubagents(parentSessionId)
+          this.notifier.markDirty()
+        }
       }
     })()
     this.catalogInflight.set(parentSessionId, {
+      token,
       promise: operation,
       expandableRows,
       activityRows,
@@ -435,18 +444,24 @@ export class SessionManager {
 
   // ---- List API ----
 
-  /** Full refresh via session.list (single-flight: an in-flight call is reused). */
-  refreshList(): Promise<void> {
-    if (this.listInflight !== null) return this.listInflight
+  /**
+   * Full refresh via session.list.
+   * @param replace - supersede any request from an older connection generation; otherwise reuse it.
+   */
+  refreshList(replace = false): Promise<void> {
+    if (this.listInflight !== null && !replace) return this.listInflight
+    const token = {}
+    this.listRequestToken = token
     this.listState = 'loading'
     this.listError = null
     const established = this.summaries
     const mutations: SessionListMutation[] = []
-    this.listMutations = mutations
+    this.listMutationCaptures.add(mutations)
     this.notifier.markDirty()
     this.listInflight = (async () => {
       try {
         const { result } = await this.api.sessions.list({})
+        if (this.listRequestToken !== token) return
         if (result.ok) {
           const baseline = this.listPhase === 'pending'
             ? result.value.items
@@ -495,14 +510,18 @@ export class SessionManager {
           this.listError = result.error
         }
       } catch (error) {
+        if (this.listRequestToken !== token) return
         this.listState = 'error'
         const folded = transportError<never>(error)
         /* v8 ignore next -- the `? null` arm is unreachable: transportError always returns ok:false. */
         this.listError = folded.ok ? null : folded.error
       } finally {
-        this.listMutations = null
-        this.listInflight = null
-        this.notifier.markDirty()
+        this.listMutationCaptures.delete(mutations)
+        if (this.listRequestToken === token) {
+          this.listRequestToken = undefined
+          this.listInflight = null
+          this.notifier.markDirty()
+        }
       }
     })()
     return this.listInflight
@@ -625,7 +644,7 @@ export class SessionManager {
 
   /** Apply immediately and retain for replay when a list response is in flight. */
   private recordMutation(mutation: SessionListMutation): void {
-    this.listMutations?.push(mutation)
+    for (const capture of this.listMutationCaptures) capture.push(mutation)
     this.summaries = applyMutation(this.summaries, mutation)
     // Eager edge reconciliation — a snapshot-build-time pass would miss consecutive status frames.
     this.syncCompletedNotifications()
@@ -900,11 +919,12 @@ export class SessionManager {
 
   /** After each connection generation: refresh the session baseline and rebuild opened windows. */
   handleConnected(): void {
-    void this.refreshList()
+    void this.refreshList(true)
     const selectedAddress = this.selected === undefined ? undefined : this.addresses.get(this.selected)
-    if (selectedAddress !== undefined) void this.refreshSubagents(selectedAddress.parentSessionId)
-    if (this.selected !== undefined) void this.refreshSubagents(this.selected)
-    for (const parentSessionId of this.openCatalogs) void this.refreshSubagents(parentSessionId)
+    const catalogs = new Set(this.openCatalogs)
+    if (selectedAddress !== undefined) catalogs.add(selectedAddress.parentSessionId)
+    if (this.selected !== undefined) catalogs.add(this.selected)
+    for (const parentSessionId of catalogs) void this.refreshSubagents(parentSessionId, true)
     for (const session of this.sessions.values()) void session.resync()
   }
 

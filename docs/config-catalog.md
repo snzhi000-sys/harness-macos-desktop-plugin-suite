@@ -407,10 +407,12 @@ export interface ConnectionConfig {
   trustedHosts?: string[]
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
+  /** WebSocket Ping interval in milliseconds. */
+  websocketHeartbeatIntervalMs?: number
 }
 ```
 
-Source: [`packages/client/connection/src/index.ts:50`](../packages/client/connection/src/index.ts)
+Source: [`packages/client/connection/src/index.ts:52`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 

@@ -184,6 +184,23 @@
 - 断线期间已显示的用户消息不消失；连接恢复后不重复消息、Fork、审核动作或文件操作。
 - Dev App 在临时 userData 中完成真实后端中断与恢复测试。
 
+### 7.5 阶段 2 执行记录
+
+阶段 2 已于 2026-09-03 完成 Dev 候选验证，未构建或安装 Stable 包。
+
+实现保留 mux 与 Host 双 WebSocket，Host 使用可配置空闲 Ping/Pong；Client Controller 统一发布 `connecting`、`connected`、`stalled` 和 `reconnecting`，并持有 generation、退避及立即重连。Session、Subagent catalog 和 Workspace 的权威读取用请求 token 拒绝旧 generation 的迟到响应；Session resync 在新历史到达前保留当前可见消息。设置侧栏显示共享连接状态，立即重连不刷新页面，也不自动重放任何非幂等写操作。
+
+真实打包演练额外发现 Desktop 后端退出会导航到错误页，无法保持 Renderer。壳层现已在原 loopback 端口有限次重启后端，只有恢复耗尽才显示错误页。临时 userData 演练中，后端 PID 从 `98599` 变为 `98762`，端口保持 `56732`；Electron 主进程与 Renderer PID `98641` 未变化，恢复后重新建立三条连接，release-info 仍返回 `v1.00.23 (dev)`。
+
+验证证据如下：
+
+- 阶段 2 定向自动化 8 个文件、195 项通过；最终审查后复跑 6 个关键文件、178 项通过，并新增 Desktop 恢复策略 3 项测试。
+- Client/Host typecheck、阶段文件 lint、Client/config catalog、双语配对和 Harness 维护 skill 校验通过。
+- 全量 GUI：275 个文件、3781 项通过、1 项跳过；Web replay：75 个文件通过、1 个文件跳过，253 项通过、15 项跳过。
+- 标准 `npm run product:dist:dev` 完整链路通过五个产品插件、Desktop 29 项测试、隐私检查、Profile Runtime 装配和空 userData 启动，生成 `v1.00.23 (dev)` 并覆盖固定 Dev 路径。
+
+Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动；官方 171 MiB 下载过慢后，测试缓存临时复用已安装的 revision 1223，完整 replay 随后通过。全局 lint 及导出 JSDoc 门禁仍报告 ui-conversation 工作树中的既有问题，不属于阶段 2 文件。
+
 ## 8. 阶段 3：长会话性能与回合导航
 
 ### 8.1 拆分顺序

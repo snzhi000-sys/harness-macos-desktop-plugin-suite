@@ -10,6 +10,7 @@ import type {
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 
 type Frame = MuxFrame | HostFrame
+const MAX_MISSED_HEARTBEATS = 2
 
 function serverRequest(frame: RpcRequest<Frame>): ServerRequest {
   return {
@@ -51,9 +52,17 @@ function failureFrame(error: unknown): RpcRequest<Frame> {
 export class WebSocketDownlinks {
   private readonly server = new WebSocketServer({ noServer: true })
   private readonly pumps = new Set<Promise<void>>()
+  private readonly missedHeartbeats = new WeakMap<WebSocket, number>()
+  private heartbeatTimer: NodeJS.Timeout | undefined
 
-  /** @param api - host API supplying the typed event streams. */
-  constructor(private readonly api: ApiProxy) {}
+  /**
+   * @param api - host API supplying the typed event streams.
+   * @param heartbeatIntervalMs - delay between WebSocket Ping control frames.
+   */
+  constructor(
+    private readonly api: ApiProxy,
+    private readonly heartbeatIntervalMs = 30_000,
+  ) {}
 
   /**
    * Upgrade one socket and pump the mux stream until either side closes.
@@ -86,6 +95,8 @@ export class WebSocketDownlinks {
    * @returns A promise resolving after every socket and source iterator stops.
    */
   async close(): Promise<void> {
+    clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = undefined
     for (const socket of this.server.clients) socket.terminate()
     await new Promise<void>((resolve, reject) => {
       this.server.close((error) => {
@@ -103,6 +114,9 @@ export class WebSocketDownlinks {
     open: (signal: AbortSignal) => AsyncIterable<RpcRequest<F>>,
   ): void {
     this.server.handleUpgrade(req, socket, head, (websocket) => {
+      this.missedHeartbeats.set(websocket, 0)
+      websocket.on('pong', () => { this.missedHeartbeats.set(websocket, 0) })
+      this.startHeartbeat()
       const abort = new AbortController()
       websocket.once('close', () => { abort.abort() })
       websocket.once('error', () => { abort.abort() })
@@ -113,6 +127,26 @@ export class WebSocketDownlinks {
       this.pumps.add(pump)
       void pump.then(() => { this.pumps.delete(pump) })
     })
+  }
+
+  /** Start one unref'ed heartbeat timer for this acceptor. */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer !== undefined) return
+    this.heartbeatTimer = setInterval(() => {
+      for (const socket of this.server.clients) {
+        if (socket.readyState !== WebSocket.OPEN) continue
+        const missed = this.missedHeartbeats.get(socket) ?? 0
+        if (missed >= MAX_MISSED_HEARTBEATS) {
+          setImmediate(() => {
+            if ((this.missedHeartbeats.get(socket) ?? 0) >= MAX_MISSED_HEARTBEATS) socket.terminate()
+          })
+          continue
+        }
+        this.missedHeartbeats.set(socket, missed + 1)
+        socket.ping()
+      }
+    }, this.heartbeatIntervalMs)
+    this.heartbeatTimer.unref()
   }
 
   private async pump<F extends Frame>(

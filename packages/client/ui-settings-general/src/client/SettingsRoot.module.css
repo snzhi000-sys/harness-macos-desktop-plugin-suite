@@ -5,6 +5,17 @@
    54px header and the 24px-padded options area. */
 
 /* Trigger row: match the other wide sidebar controls' compact vertical rhythm. */
+.triggerRow {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.railRow {
+  align-items: center;
+}
+
 .trigger {
   flex: none;
   display: flex;

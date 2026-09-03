@@ -413,10 +413,8 @@ export class Session implements SessionFace {
     }
   }
 
-  /** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
-   *  reset the window and rerun open; pending waits for the baseline replay. Invalidates any
-   *  in-flight open first — its history request rode the dead connection and must not settle
-   *  the fresh generation into 'error'. */
+  /** Reconnect rebuild for an opened instance. The last committed window stays
+   *  visible while the replacement history is loading; installation remains atomic. */
   async resync(): Promise<void> {
     // The queue mirror is NOT cleared here: onConnected (which drives resync)
     // races the mux frames — the fresh generation's baseline may have landed
@@ -428,16 +426,12 @@ export class Session implements SessionFace {
     this.openPromise = null
     this.openState = 'cold'
     this.openError = null
-    this.events = []
-    this.views = []
-    this.baseSeq = 0
     // Superseded, not settled: the baseline replay re-sends still-pending requested frames verbatim
     // (same rpcId), re-minting fresh waits; a stale reference's respond() still reaches the host.
     this.pending.clear()
     this.pendingRev++
     this.subscribedLastSeq = null
     this.liveBuffer = []
-    this.notifier.markDirty()
     await this.open()
   }
 
