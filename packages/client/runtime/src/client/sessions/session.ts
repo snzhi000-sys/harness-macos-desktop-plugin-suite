@@ -101,7 +101,11 @@ export class Session implements SessionFace {
   private removed = false
   private promptError: PromptError | null = null
   private lastAgentError: string | null = null
-  /** Live events buffered during open/resync and stitched by sequence once history lands. */
+  /** Live events buffered during open/resync and stitched by sequence once history lands.
+   *  During the initial history load they are also projected immediately into
+   *  the conversation assembler: these are authoritative Host log events, not
+   *  optimistic client messages. installWindow replaces that temporary tail
+   *  projection atomically and then stitches the same buffered events by seq. */
   private liveBuffer: { event: SessionEvent; view: ToolEventView | undefined }[] = []
   /** Gap repair in flight; live events detour to the buffer until the tail page lands. */
   private stitching = false
@@ -692,7 +696,19 @@ export class Session implements SessionFace {
    *  raw range, which lets Conversation Definitions correlate every recorded event between its
    *  ends and lets a compaction checkpoint resolve its cited summary event. */
   private acceptLiveEvent(event: SessionEvent, view?: ToolEventView): void {
-    if (this.openState === 'loading' || this.stitching) {
+    if (this.openState === 'loading') {
+      this.liveBuffer.push({ event, view })
+      // Do not make a durably logged prompt wait behind a potentially slow
+      // tail-history request. The assembler is a disposable projection here:
+      // installWindow synchronously replaces it with the authoritative page
+      // and replays liveBuffer under the normal seq guard before publishing.
+      this.scheduleConversation(this.conversation.append({ event, view }))
+      return
+    }
+    if (this.stitching) {
+      // Gap repair must preserve the contiguous-window invariant. Unlike the
+      // initial load, an unknown range exists between the visible tail and
+      // this event, so wait for the repair page before projecting it.
       this.liveBuffer.push({ event, view })
       return
     }

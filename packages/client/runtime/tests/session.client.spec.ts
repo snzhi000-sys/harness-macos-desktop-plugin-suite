@@ -246,6 +246,37 @@ describe('open', () => {
     // Overlapping seq-15 frame (== page tail turn/end) was dropped; 16 appended once.
     expect(seqs).toEqual([11, 13, 16])
   })
+
+  it('projects an authoritative user message immediately while long history is still pending', async () => {
+    const { api, session } = makeSession()
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const opening = session.open()
+    const published: number[][] = []
+    session.subscribe(() => { published.push(chatSeqs(session.getSnapshot())) })
+
+    session.handleMuxEnvelope('turn' as never, {
+      type: 'session/event', sessionId: SID, event: ev.turnStart(150, 25),
+    })
+    session.handleMuxEnvelope('user' as never, {
+      type: 'session/event', sessionId: SID, event: ev.user(151, '立即显示的新消息'),
+    })
+    await Promise.resolve()
+
+    expect(session.getSnapshot().openState).toBe('loading')
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([151])
+    expect(published.at(-1)).toContain(151)
+
+    gate.resolve(ok({
+      events: entries(plainTurn(144, 24, '上一问', '上一答')) as never[],
+      hasMore: true,
+      modelSelection: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+    }))
+    await opening
+
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([145, 147, 151])
+    expect(session.getSnapshot().nodes.filter(node => node.seq === 151)).toHaveLength(1)
+  })
 })
 
 
