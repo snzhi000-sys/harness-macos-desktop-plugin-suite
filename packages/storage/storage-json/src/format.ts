@@ -16,6 +16,35 @@ export interface UnitState {
 }
 
 /**
+ * Serialize one per-record document with its owning unit version.
+ * @param version - Current unit version stamped on the document.
+ * @param value - Opaque JSON-compatible record value.
+ * @returns the pretty-printed record document with a trailing newline.
+ */
+export function serializeRecord(version: number, value: unknown): string {
+  return `${JSON.stringify({ version, record: value }, null, 2)}\n`
+}
+
+/**
+ * Parse one per-record document.
+ * @param text - Raw document content.
+ * @param versions - Accepted current and compatible version stamps.
+ * @returns the stored value, or `undefined` when the document is foreign.
+ */
+export function parseRecord(text: string, versions: readonly number[]): unknown {
+  let document: unknown
+  try {
+    document = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof document !== 'object' || document === null) return undefined
+  const { version, record } = document as Record<string, unknown>
+  if (typeof version !== 'number' || !versions.includes(version)) return undefined
+  return record
+}
+
+/**
  * Serialize a unit state to file content.
  * @param name - Unit name, stamped into the header.
  * @param state - Authoritative in-memory state.

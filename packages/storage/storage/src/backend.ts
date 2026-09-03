@@ -52,6 +52,16 @@ export interface KvUnitDescriptor {
   readonly tables: readonly string[]
   /** Whether this unit carries the global singleton slot. */
   readonly hasGlobal: boolean
+  /**
+   * Medium layout. `single` (the default) keeps the whole unit in one
+   * document; `per-record` keeps each table record in its own document.
+   */
+  readonly layout?: 'single' | 'per-record'
+  /**
+   * Older versions accepted by a `per-record` reader. Writes always stamp
+   * the current {@link version}; single-document reads remain exact-version.
+   */
+  readonly compatibleVersions?: readonly number[]
 }
 
 /**
@@ -74,7 +84,8 @@ export interface KvUnit {
   /**
    * Upsert one record durably. Overwrite semantics: an existing key is replaced.
    * @param table - Declared table name.
-   * @param key - Record key; any string is safe (keys never reach file paths).
+   * @param key - Record key. Per-record keys become path segments and must
+   * match `[a-zA-Z0-9_-]+`; single-document keys remain opaque.
    * @param value - Opaque JSON-serializable record.
    * @returns resolution after durability.
    */
@@ -87,6 +98,16 @@ export interface KvUnit {
    * @returns resolution after durability.
    */
   deleteRecord(table: string, key: string): Promise<void>
+
+  /**
+   * Move one record document outside the readable set while preserving its
+   * bytes for diagnosis. Backends without independent record documents omit
+   * this operation.
+   * @param table - Declared table name.
+   * @param key - Record key.
+   * @returns the medium location that received the backup.
+   */
+  backupRecord?(table: string, key: string): Promise<string>
 
   /**
    * Write the global singleton durably. Only valid when the descriptor

@@ -2,12 +2,13 @@
 
 English | [中文](README.zh.md)
 
-JSON backend for the [storage hub](../storage/README.md): one human-readable `<unit>.json` file per unit under a configured root, registered as backend `json`. Design: [domain KV storage Agent Note](../../../.agents/notes/proposed/architecture/2026-07-24-domain-kv-storage-and-workspace.zh.md).
+JSON backend for the [storage hub](../storage/README.md), registered as backend `json`. A unit uses either one human-readable `<unit>.json` document or independent `<unit>/<table>/<key>.json` record documents under the configured root. Design: [domain KV storage Agent Note](../../../.agents/notes/proposed/architecture/2026-07-24-domain-kv-storage-and-workspace.zh.md).
 
 ## Model
 
-- The in-memory unit state is authoritative; every write primitive republishes the whole file via temp-write + fsync + atomic `rename()` replace. A unit file is always the complete current net state — legibility is this backend's reason to exist; scale is the SQLite backend's job.
-- A missing file opens as an empty unit and materializes on the first write. A foreign or unparsable file rejects with `malformed-medium`; a stored version differing from the descriptor rejects with `version-mismatch` (no migration, pre-release stance).
+- In the default `single` layout, in-memory unit state is authoritative and every write republishes the whole file through temp-write, fsync, and atomic `rename()`. A missing file opens empty; malformed media and version mismatch reject.
+- In the `per-record` layout, the directory is authoritative and each write touches one record document. Malformed, unreadable, unsafe-name, and unaccepted-version documents read as absent without affecting siblings. Record keys must match `[a-zA-Z0-9_-]+`.
+- An empty per-record tree imports an accepted legacy single-unit file once, writes current-version documents, and retains the source unchanged. `backupRecord` moves an invalid schema record to `<key>.json.bak.<YYYYMMDDHHmm>`; the domain layer decides whether that salvage policy is allowed.
 - Write ordering across calls belongs to the caller (the domain layer's write chain); each single call is atomic and durable once resolved.
 
 ## Config

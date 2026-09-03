@@ -57,6 +57,19 @@ describe('defineDomain', () => {
       tables: {},
     })).toThrow(/must not accept null/)
   })
+
+  it('validates compatible versions, layout, and invalid-record policy', () => {
+    expect(() => defineDomain({ name: 'ok', version: 2, compatibleVersions: [2], tables: {} }))
+      .toThrow(/below version/)
+    expect(() => defineDomain({ name: 'ok', version: 2, compatibleVersions: [-1], tables: {} }))
+      .toThrow(/compatibleVersions/)
+    expect(() => defineDomain({
+      name: 'ok', version: 2, layout: 'tree' as 'single', tables: {},
+    })).toThrow(/layout/)
+    expect(() => defineDomain({
+      name: 'ok', version: 2, invalidRecords: 'drop' as 'backup-and-skip', tables: {},
+    })).toThrow(/invalidRecords/)
+  })
 })
 
 describe('DomainFacility.open', () => {
@@ -126,6 +139,59 @@ describe('DomainFacility.open', () => {
       code: 'invalid-record',
       detail: { table: 'items', key: 'bad' },
     })
+  })
+
+  it('backs up and skips an invalid disposable record when the backend supports it', async () => {
+    const backedUp: string[] = []
+    const { ctx, facility } = await harness({ config: { backend: 'salvage' } })
+    ctx.storage.backend.register('salvage', {
+      kv: {
+        open: async () => ({
+          loadAll: async () => ({
+            tables: { rows: { good: { label: 'ok', count: 1 }, bad: { label: 'bad', count: 'NaN' } } },
+            global: null,
+          }),
+          putRecord: async () => {},
+          deleteRecord: async () => {},
+          backupRecord: async (_table, key) => {
+            backedUp.push(key)
+            return `backup/${key}.json`
+          },
+          setGlobal: async () => {},
+          close: async () => {},
+        }),
+      },
+      close: async () => {},
+    })
+    vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    const salvageSpec = defineDomain({
+      name: 'salvage',
+      version: 1,
+      layout: 'per-record',
+      invalidRecords: 'backup-and-skip',
+      tables: { rows: domainTable<string, Item>(itemSchema) },
+    })
+    const domain = await facility.open(salvageSpec)
+    expect(domain.table('rows').get('good')).toEqual({ label: 'ok', count: 1 })
+    expect(domain.table('rows').get('bad')).toBeUndefined()
+    expect(backedUp).toEqual(['bad'])
+  })
+
+  it('keeps invalid-record rejection when the backend cannot create a backup', async () => {
+    const pool = new MemoryMediaPool()
+    pool.versions.set('salvage', 1)
+    pool.media.set('salvage', {
+      tables: new Map([['rows', new Map([['bad', { label: 'bad', count: 'NaN' }]])]]),
+      global: null,
+    })
+    const { facility } = await harness({ pool })
+    const salvageSpec = defineDomain({
+      name: 'salvage',
+      version: 1,
+      invalidRecords: 'backup-and-skip',
+      tables: { rows: domainTable<string, Item>(itemSchema) },
+    })
+    await expect(facility.open(salvageSpec)).rejects.toMatchObject({ code: 'invalid-record' })
   })
 
   it('rejects a stored global that fails its schema with the global marker', async () => {

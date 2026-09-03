@@ -129,6 +129,29 @@ Dependency installation still reports deprecation warnings for packages includin
 - A corrupt cache is backed up and rebuilt; a corrupt primary log still fails explicitly instead of silently losing messages.
 - A copied temporary Dev userData completes one upgrade rehearsal from old package data to the new Runtime.
 
+### 6.5 Stage 1 execution record
+
+Stage 1 completed Dev-candidate verification on 2026-09-03 without building or installing a Stable package.
+
+| Difference | Previous local baseline | Upstream v4/v5 | Ported decision |
+| --- | --- | --- | --- |
+| Medium layout | One v3 `session_projcache.json` file | Per-Session documents | v5 writes `<root>/session_projcache/sessions/<id>.json` |
+| Version reads | Exact version only | Cross-version v4/v5 reads | Explicitly accept v3/v4; preserve and ignore unknown newer versions |
+| Record identity | `createdAt`/`cwd` | Includes lineage binding | v5 writes seeded status and inherited-event count; old records never seed a fork |
+| Corruption handling | One schema error can reject the domain | Independent-record salvage | Only disposable derived domains back up uniquely before skipping; backup failure remains loud |
+| Primary data | Session JSONL | Upstream also has handle-based persistence | Do not port the handle architecture; JSONL remains the sole source of truth |
+
+The implementation adds an optional Storage `per-record` layout, explicit `compatibleVersions`, and `backup-and-skip` for disposable domains. The first v3 single-file import retains its source. New backup names combine a millisecond timestamp with a UUID so repeated corruption of the same record cannot replace an earlier diagnostic copy within one minute. Salvage logs omit underlying schema errors and message content.
+
+Verification evidence:
+
+- The storage and projection-cache matrix passed 75 tests across 4 files, covering v3/v4/v5, unknown versions, truncated documents, schema-invalid backup, read-only backup failure, and fork-lineage rejection.
+- Repository typecheck, Stage 1 scoped lint, all five product-plugin builds, 26 Desktop tests, source/release privacy checks, and five-plugin Profile Runtime assembly passed.
+- The standard `npm run product:dist:dev` chain passed its complete plugin suite and empty-userData launch, produced `v1.00.21 (dev)`, and replaced the fixed Dev output path.
+- A separate packaged-App launch used temporary userData seeded with a synthetic v3 cache. After the Web backend became ready, the v5 per-Session document existed and the v3 source bytes were unchanged.
+
+`product:test:plugins` initially encountered timing failures in the Better Sidebar PTY-exit wait and the Cowork WeChat message-order assertion. Neither depends on this Stage 1 code, and the complete plugin suite passed inside the final standard Dev packaging chain. The corpus-wide Agent Note format gate remains blocked by the pre-existing `2026-08-17-blank-session-external-conversation-views.md`, which lacks `Alternatives considered`; the new Stage 1 Agent Note has the complete required structure.
+
 ## 7. Stage 2: Connection recovery and heartbeat
 
 ### 7.1 Upstream reference scope

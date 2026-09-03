@@ -129,6 +129,29 @@
 - 损坏 cache 会备份并重建，损坏主日志仍明确失败，不静默丢消息。
 - 使用复制的临时 Dev userData 完成一次旧包数据到新 Runtime 的升级演练。
 
+### 6.5 阶段 1 执行记录
+
+阶段 1 已于 2026-09-03 完成 Dev 候选验证，未构建或安装 Stable 包。
+
+| 差异项 | 本地旧基线 | 上游 v4/v5 | 移植后决策 |
+| --- | --- | --- | --- |
+| 介质布局 | v3 `session_projcache.json` 单文件 | 逐 Session 文档 | v5 写入 `<root>/session_projcache/sessions/<id>.json` |
+| 版本读取 | 仅接受精确版本 | v4/v5 跨版本读取 | 显式接受 v3/v4，未知新版本保留并忽略 |
+| 记录身份 | `createdAt`/`cwd` | 包含 lineage 绑定 | v5 写入 seed 状态和继承事件数；旧记录不用于 Fork |
+| 损坏处理 | 一条 schema 错误可阻断整个 domain | 独立记录 salvage | 仅对可丢弃派生 domain 先唯一备份再跳过；备份失败仍明确失败 |
+| 主数据 | Session JSONL | 上游已出现 handle-based persistence | 不移植 handle 架构，JSONL 仍是唯一真源 |
+
+实现新增了 Storage 可选 `per-record` layout、显式 `compatibleVersions` 和可丢弃 domain 的 `backup-and-skip`。v3 单文件首次导入时保留源文件；新备份名使用毫秒时间戳与 UUID，避免同名记录在同一分钟内重复损坏时覆盖之前诊断副本。Salvage 日志不输出 schema 底层错误或消息正文。
+
+验证证据如下：
+
+- 存储与 projection cache 矩阵：4 个测试文件、75 项通过，覆盖 v3/v4/v5、未知版本、截断文档、schema 无效备份、只读备份失败和 Fork lineage 防误用。
+- 全仓 typecheck、阶段 1 定向 lint、5 个产品插件构建、Desktop 26 项测试、源码/发布隐私检查和 Profile Runtime 5 插件装配通过。
+- 标准 `npm run product:dist:dev` 链路通过完整插件测试与空 userData 启动，生成 `v1.00.21 (dev)` 并覆盖固定 Dev 路径。
+- 对打包 App 另用合成 v3 cache 的临时 userData 启动；Web 后端就绪后已生成 v5 逐 Session 文档，v3 源文件字节不变。
+
+`product:test:plugins` 曾分别命中 Better Sidebar PTY 退出等待和 Cowork 微信消息先后顺序的时序失败；它们与本阶段代码无依赖，最终 Dev 标准打包链中的完整插件套件已通过。全局 Agent Note 格式门禁仍被既有 `2026-08-17-blank-session-external-conversation-views.md` 缺少 `Alternatives considered` 阻断；阶段 1 新 Agent Note 已包含完整结构。
+
 ## 7. 阶段 2：连接恢复与心跳
 
 ### 7.1 上游参考范围

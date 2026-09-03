@@ -37,6 +37,15 @@ export interface DomainSpec {
   readonly name: string
   /** Domain format version; a medium stamped with a different version rejects at open. */
   readonly version: number
+  /** Backend medium layout; absent means one document for the complete unit. */
+  readonly layout?: 'single' | 'per-record'
+  /** Older per-record versions accepted by the current record schemas. */
+  readonly compatibleVersions?: readonly number[]
+  /**
+   * Invalid-record policy for disposable derived data. The backend must
+   * support record backup or opening continues to fail loudly.
+   */
+  readonly invalidRecords?: 'backup-and-skip'
   /** Optional global singleton slot. */
   readonly global?: DomainGlobalSpec<unknown>
   /** Table declarations keyed by table name; each name must match `UNIT_NAME_RE`. */
@@ -83,6 +92,23 @@ export function defineDomain<S extends DomainSpec>(spec: S): S {
   if (!Number.isInteger(spec.version) || spec.version < 0) {
     throw new Error(`domain '${spec.name}' version must be a non-negative integer, got ${spec.version}`)
   }
+  for (const compatible of spec.compatibleVersions ?? []) {
+    if (!Number.isInteger(compatible) || compatible < 0 || compatible >= spec.version) {
+      throw new Error(
+        `domain '${spec.name}' compatibleVersions entries must be non-negative integers below version ${spec.version}, got ${compatible}`,
+      )
+    }
+  }
+  const layout: unknown = spec.layout
+  if (layout !== undefined && layout !== 'single' && layout !== 'per-record') {
+    throw new Error(`domain '${spec.name}' layout must be 'single' or 'per-record', got ${JSON.stringify(layout)}`)
+  }
+  const invalidRecords: unknown = spec.invalidRecords
+  if (invalidRecords !== undefined && invalidRecords !== 'backup-and-skip') {
+    throw new Error(
+      `domain '${spec.name}' invalidRecords must be 'backup-and-skip' when present, got ${JSON.stringify(invalidRecords)}`,
+    )
+  }
   for (const table of Object.keys(spec.tables)) {
     if (!UNIT_NAME_RE.test(table)) {
       throw new Error(`domain '${spec.name}' table name '${table}' must match ${UNIT_NAME_RE}`)
@@ -108,5 +134,7 @@ export function descriptorOf(spec: DomainSpec): KvUnitDescriptor {
     version: spec.version,
     tables: Object.keys(spec.tables),
     hasGlobal: spec.global !== undefined,
+    ...spec.layout === undefined ? {} : { layout: spec.layout },
+    ...spec.compatibleVersions === undefined ? {} : { compatibleVersions: spec.compatibleVersions },
   }
 }
