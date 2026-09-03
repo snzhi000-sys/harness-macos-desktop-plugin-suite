@@ -15,6 +15,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import * as WebFetchLocal from '@deepseek-ai/dsh-web-fetch-http'
+import { publicHttpNetwork } from '../../web-fetch-http/src/network.ts'
 import * as WebSearchExa from '@deepseek-ai/dsh-web-search-exa'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import * as TimeoutPolicy from '@deepseek-ai/dsh-tool-call-timeout-policy'
@@ -33,7 +34,8 @@ beforeEach(async () => {
   handler = (_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<h1>Hello</h1><p>World</p>') }
   server = createServer((req, res) => { handler(req, res) })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  base = `http://public.test:${(server.address() as AddressInfo).port}`
+  vi.spyOn(publicHttpNetwork, 'resolve').mockResolvedValue([{ address: '127.0.0.1', family: 4 }])
 
   ctx = new Context()
   await ctx.plugin(SystemPrompt)
@@ -52,6 +54,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await fiber.dispose()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   await new Promise<void>(resolve => server.close(() => { resolve() }))
 })
 
@@ -128,7 +131,8 @@ describe('tool-call timeout returns TOOL_TIMEOUT (deadline wins over a slow fetc
     openSockets = []
     slowServer = createServer((_req, res) => { openSockets.push(res) })
     await new Promise<void>(resolve => slowServer.listen(0, '127.0.0.1', resolve))
-    slowBase = `http://127.0.0.1:${(slowServer.address() as AddressInfo).port}`
+    slowBase = `http://slow-public.test:${(slowServer.address() as AddressInfo).port}`
+    vi.spyOn(publicHttpNetwork, 'resolve').mockResolvedValue([{ address: '127.0.0.1', family: 4 }])
 
     tctx = new Context()
     await tctx.plugin(SystemPrompt)
@@ -167,7 +171,7 @@ describe('tool-call timeout returns TOOL_TIMEOUT (deadline wins over a slow fetc
       timeoutMs: 50,
       maxRedirects: 5,
       userAgent: 'integration-test',
-    })
+    }, async () => [{ address: '127.0.0.1', family: 4 }])
     const err = await direct.fetch({ url: slowBase }).then(
       () => undefined,
       (e: unknown) => e as { code?: string },

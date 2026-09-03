@@ -282,6 +282,16 @@ Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动�
 - Profile Runtime 验证确认 Fetch Provider 和工具开关符合目标通道配置。
 - Dev 中公网 URL 可读，私网、重绑定和跨源重定向均被拒绝。
 
+### 9.5 阶段 4 执行记录
+
+阶段 4 已于 2026-09-03 完成安全传输层，但没有打开共享产品 Profile。`web-fetch-http` 现在会验证完整 IPv4／IPv6 答案集，拒绝任何混合或非公网目标，发现 RFC 6052／RFC 7050 DNS64 前缀，拒绝映射到私网 IPv4 的 NAT64 地址，并使用请求私有的 Undici dispatcher，只把已验证地址交给 lookup。每个同源重定向都会重新验证并固定地址；跨源重定向会在解析或连接第二个来源前被拒绝。现有 URL 长度、超时、正文大小、解码与错误约定保持不变。
+
+上游代理路径有意没有移植：代理侧 DNS 会让本机无法证明最终目标仍属于公网。Better Sidebar Browser 没有改动，继续代表用户主动浏览，与模型选择的 WebFetch 权限保持隔离。
+
+受控 resolver 与 loopback HTTP fixture 的 87 项安全和集成测试通过；Web 子系统全量 11 个文件、285 项通过。Host／Client typecheck、定向 lint、包路径、包不变量、README、Cordis、配置目录和阶段 4 双语文档检查通过。全语料 doc-sync 仍报告阶段 4 范围外已有的 Agent Note 与双语配对问题。
+
+标准 `npm run product:dist:dev` 链路通过产品插件测试、Desktop 29 项测试、隐私检查、Profile／Runtime 装配、身份验证、ad-hoc 签名和空临时 userData 隔离启动，并覆盖固定 Dev 路径。最终版本为 `v1.00.26 (dev)`，构建时间 `2026-09-03T13:55:22.404Z`，Runtime ID `d43d5c585f31cee4`，Profile ID `c0d7117aaa9608be`。包内 Profile 仍保持 `fetch: false` 且没有挂载 Fetch Provider，因为 Dev 与 Stable 当前共用同一份 Profile 源码；打包 Dev 启用需要等待通道专属组成机制，不能冒险让 Stable 隐式继承。本阶段没有构建或安装 Stable。
+
 ## 10. 阶段 5：DeepSeek 原生多模态与 Files API
 
 ### 10.1 移植范围

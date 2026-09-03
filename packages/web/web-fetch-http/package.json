@@ -38,7 +38,9 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "workspace:^"
+    "@deepseek-ai/schemastery": "workspace:^",
+    "ipaddr.js": "^2.5.0",
+    "undici": "^8.10.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-invariants": "workspace:^",

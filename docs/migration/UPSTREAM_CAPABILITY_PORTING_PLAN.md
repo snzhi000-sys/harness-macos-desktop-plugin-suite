@@ -282,6 +282,16 @@ This capability primarily affects the Web tool Host and does not change the righ
 - Profile Runtime verification confirms that Fetch Provider assembly and tool flags match the target channel configuration.
 - Dev can read a public URL and rejects private, rebinding, and cross-origin-redirect destinations.
 
+### 9.5 Stage 4 execution record
+
+Stage 4 completed the security transport on 2026-09-03 without enabling the shared product Profile. `web-fetch-http` now validates the complete IPv4/IPv6 answer set, rejects any mixed or non-public destination, discovers RFC 6052/RFC 7050 DNS64 prefixes, rejects NAT64 mappings to private IPv4, and connects through a request-private Undici dispatcher whose lookup serves only validated addresses. Every same-origin redirect repeats validation and pinning; cross-origin redirects are rejected before the second origin is resolved or contacted. The existing URL-length, timeout, body-size, decoding, and error contracts remain intact.
+
+The upstream proxy path was intentionally not ported: proxy-side DNS would prevent local proof that the final target remains public. Better Sidebar Browser was not changed and continues to represent user-directed browsing, separate from model-selected WebFetch authority.
+
+Controlled resolver and loopback HTTP fixtures passed 87 focused security and integration tests; the full Web subsystem passed 285 tests across 11 files. Host/Client typecheck, focused lint, package-path, package-invariant, README, Cordis, config-catalog, and the Stage 4 bilingual documentation checks passed. Corpus-wide doc-sync still reports unrelated pre-existing Agent Note and bilingual-pairing issues outside Stage 4.
+
+The standard `npm run product:dist:dev` chain passed product-plugin tests, 29 Desktop tests, privacy checks, Profile/Runtime assembly, identity verification, ad-hoc signing, and an isolated launch with empty temporary userData. It replaced the fixed Dev path with `v1.00.26 (dev)`, built at `2026-09-03T13:55:22.404Z`, Runtime ID `d43d5c585f31cee4`, and Profile ID `c0d7117aaa9608be`. The packaged Profile still has `fetch: false` and mounts no Fetch Provider because Dev and Stable currently share the same Profile source. This deliberately leaves packaged Dev activation pending a channel-specific composition mechanism rather than risking implicit Stable activation. No Stable package was built or installed.
+
 ## 10. Stage 5: Native DeepSeek multimodal input and Files API
 
 ### 10.1 Porting scope

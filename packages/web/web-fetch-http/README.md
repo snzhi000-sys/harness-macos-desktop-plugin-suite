@@ -17,6 +17,9 @@ A shipping web-tool deployment sets the provider backstop above the tool budget,
 ## Transport hygiene
 
 - Accepts only `http:` and `https:` URLs; rejects credentials in URLs (`WEB_BLOCKED_URL`) and over-long/malformed URLs (`WEB_INVALID_URL`).
+- Resolves the complete DNS answer set for every hop and rejects the whole set when any IPv4 or IPv6 address is loopback, link-local, private, carrier-grade NAT, documentation-reserved, multicast, broadcast, unspecified, or otherwise non-public.
+- Detects RFC 6052/RFC 7050 DNS64 prefixes and rejects NAT64 destinations whose embedded IPv4 address is non-public.
+- Connects through a request-private Undici dispatcher whose lookup serves only the validated addresses. The original hostname remains in the URL for HTTP `Host` and TLS SNI, preventing DNS rebinding between validation and connection.
 - Enforces a max URL length, response byte cap (`WEB_FETCH_TOO_LARGE`), decoded body character cap, timeout (`WEB_FETCH_TIMEOUT`), and redirect hop cap.
 - Propagates the caller's abort signal (`WEB_ABORTED`) into the network request and the streaming read.
 - Follows only **same-origin** redirects; a cross-origin redirect fails with `WEB_REDIRECT_BLOCKED`, requiring a fresh tool call (the model of Claude Code's WebFetch).
@@ -46,6 +49,6 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 
 ## Known Limitations and Deferred Work
 
-- **SSRF / private-network protection is deferred** — no blocking of private, loopback, link-local, multicast, or otherwise non-public destinations, no DNS-resolve-then-validate, no per-hop re-validation (see [the web capability seam Agent Note](../../../.agents/notes/implemented/architecture/2026-06-24-web-capability-seam.md)). Until it lands, this provider is an SSRF primitive and **must not be enabled** in a deployment that can reach sensitive internal network targets.
+- **Proxy routing is intentionally not used by this provider** — allowing a proxy to resolve the origin would bypass the locally validated and pinned answer set. Proxy support requires a separately verifiable policy and must not silently weaken SSRF protection.
 - **Only textual content decodes** — html/xhtml and `text/*`-plus-JSON/XML families; a missing `Content-Type` or any binary type throws `WEB_UNSUPPORTED_CONTENT_TYPE`, and text-extractable PDF decoding is named deferred work.
 - **Charset comes only from the `Content-Type` header** (UTF-8 default) — an HTML `<meta charset>` declaration is ignored, and a declared-but-unrecognized charset label throws rather than falling back.
