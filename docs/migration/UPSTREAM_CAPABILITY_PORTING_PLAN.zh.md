@@ -365,6 +365,16 @@ File Edit 的归属仍为 `origin: "subagent"`，嵌套修改继续通过现有�
 
 插件版本上报默认只发送包名和版本，不发送本机路径、用户插件配置、工作区信息或 Profile 内容。设置扩展继续使用现有 `settings.section` 生命周期，不把 Better Sidebar 变成所有设置能力的所有者。
 
+### 12.1 阶段 7 执行记录
+
+阶段 7 保留现有模型设置区的所有权，并开放两个 root 作用域子槽位：按设置命名空间 keyed 的 provider-card seat，以及列表型 footer。Keyed owner share 只包含提供方目录中的配置事实，因此认证插件可以增加路由专属控件，无需读取模型页 store，也不把所有权转移给 Better Sidebar。模型发现现在支持按 id／显示名称进行不区分大小写的搜索；批量选择只影响可见结果，并保留隐藏项目的选择状态。
+
+`llm-pi-ai` 在 Host 端询问模型端点时会复用已配置路由的 Profile header。表单 key 优先于已保存凭据；没有 key 时仍可保留 Profile authorization；JSON `Accept` 与 Harness 归因信息在 Profile 合并后应用。浏览器侧发现仍与 Profile header 隔离。
+
+DeepSeek 适配器现在使用可叠加的请求扩展 Registry。扩展在 fetch 前准备，与原生字段冲突时 fail closed，快照会分离并冻结，取消信号可停止等待，确认事务只在 HTTP 2xx 后执行一次。基础 composition 注册可选的插件包清单，在 `dsh_plugin_packages` 下包含活跃且具有 package 身份的 Host 与常驻 preset entry，经稳定排序和去重后的名称／版本对。它排除本地路径、配置、工作区／Profile 数据、非活跃 entry、松散模块、URL entry 与 Cordis builtin。可以通过 inventory 插件的 `enabled` 选项关闭上报。
+
+定向 TypeScript 构建通过；首轮不依赖网络监听的回归共 5 个文件、184 项通过，覆盖槽位分发、搜索语义、Registry 事务、取消、生命周期撤回、排序、去重和隐私边界；另有 4 项使用 fetch stub、不需要监听端口的发现测试通过。标准 Dev 产品构建已经重建完整 Harness Host／Client（包含两个新包）和五个产品插件，随后在产品测试门禁处因既有 Better Sidebar 媒体 Range 集成测试限制停止：沙箱拒绝 4 项测试监听 `127.0.0.1`，错误为 `EPERM`，其余 543 项通过。流水线在 Electron 候选生成前按预期停止，因此没有生成或发布新的 Dev App。同一监听限制也使当前环境无法完整运行 pi-ai 与 DeepSeek adapter 的 mock-server 测试。没有绕过任何门禁，本阶段不构建或安装 Stable。
+
 ## 13. 明确暂缓的架构迁移
 
 ### 13.1 `Session.events` 到索引 API

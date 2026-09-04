@@ -14,6 +14,10 @@ Every edit lands as `settings.mutate` path ops against the stored section — a 
 
 ## Model list and endpoint interrogation
 
+The discovery picker can filter by model id or display name. Select-all and deselect-all apply only to the current filtered result, preserving hidden selections.
+
+The section owns two root-scoped child slots. `settings.models.provider-card` is keyed by the provider settings namespace and receives only provider-directory facts (`provider`, `configured`, and `keyConfigured`); `settings.models.footer` is an unkeyed list below the page. Provider authentication plugins can therefore add route-specific sign-in controls without taking ownership of the Models page or Better Sidebar.
+
 A pi-ai profile's `models` list is edited on the card: one row per model showing its id and display name, with the context window and output cap behind a per-row disclosure and two label-free actions — expand and delete — on the right. An empty list means "serve this route's built-in catalog", so a row is only ever added deliberately; clearing a capacity drops it rather than storing a value the schema would reject, and the adapter's route-level fallbacks size whatever configuration leaves out — an empty capacity shows those fallbacks' magnitude as its placeholder, a hint rather than a mirror, since the field counts `K` as 1000 and a deployment may override them. A capacity that is not a positive integer is simply not stored.
 
 **Fetch available models** asks `llm.discoverModels` about the endpoint the form **currently shows**, including a base URL edited but not yet saved and a key typed but not yet stored, so adding a provider is one pass instead of save-then-return. The reply opens a picker rather than being written: candidates already configured start unchecked, so adopting a selection never overwrites a capacity the user corrected. A provider that cannot be interrogated is a detour, not a dead end — the adapter's own message appears beside the rows, which stay editable by hand.

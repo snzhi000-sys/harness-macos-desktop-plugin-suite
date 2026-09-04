@@ -66,6 +66,8 @@ harness LLM（大语言模型）seam 的 DeepSeek chat-completions 适配器：�
 
 ## 应用归因
 
+挂载可选的 `@deepseek-ai/dsh-deepseek-llm-api-extensions` 服务后，插件可以为某个已序列化请求贡献各自拥有的顶层 JSON 字段。字段准备在网络请求前完成；与原生请求字段冲突会以 `REQUEST_EXTENSION` 失败；贡献确认只在 HTTP 2xx 后执行一次。基础产品会挂载 `@deepseek-ai/dsh-plugin-package-inventory-deepseek`，在 `dsh_plugin_packages` 下将活跃且有 package 身份的插件上报为排序后的 `{name, version}`；它不会发送模块路径、插件配置、工作区数据或 Profile 内容。将该插件的 `enabled` 设为 `false` 可完全省略此字段。
+
 每个请求都携带 dsh-llm `attributionHeaders()` 的共享归因标头，即用于识别 harness 的必需 `User-Agent` 基线（见 [dsh-llm § 应用归因](../llm/README.md#app-attribution-attributionts)）。在该适配器约定（adapter contract）下，直接 DeepSeek 请求与 OpenAI 兼容 gateway 请求都不会获得提供方特定应用归因标头；OpenRouter 应用归因暂缓到未来的显式 OpenRouter 适配器或模式。`GenerateOptions.purpose` 为 `compaction` 的请求（dsh-compaction-basic 的辅助摘要调用）还会携带 `x-deepseek-harness-compact: 1`，让宿主可以将压缩流量与会话请求分开。
 
 DeepSeek 请求身份独立于应用归因。凭据解析成功后，每个提供方请求都会通过 `x-deepseek-harness-user-id` 携带来自 [`@deepseek-ai/dsh-anonymous-user-id`](../../identity/anonymous-user-id/README.md) 的稳定匿名 id；携带 `GenerateOptions.sessionId` 的请求还会通过 `x-deepseek-harness-session-id` 发送该确切值，缺少会话的直接调用则省略会话标头。两个标头都会发送至解析后的 `baseURL`（包括已配置的 gateway），且不会进入请求正文或模型可见内容。

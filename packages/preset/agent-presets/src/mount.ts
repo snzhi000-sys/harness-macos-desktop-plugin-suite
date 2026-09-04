@@ -117,6 +117,8 @@ export interface PresetMount {
   readonly presetId: string
   /** The mounted subtree's fiber. */
   readonly fiber: Fiber
+  /** Loader entry tree whose active rows form this standing composition. */
+  readonly tree: EntryTree
   /** The standing scope key agents are parented to (undefined only in torn-down records). */
   readonly key: ScopeKey | undefined
 }
@@ -365,7 +367,7 @@ export async function mountPreset(agentCtx: Context, preset: AgentPreset): Promi
         + 'a preset service must sit behind an `isolate` realm or move to the host composition',
       )
     }
-    mounts.add({ presetId: preset.id, fiber, key: scopeOf(agentCtx) })
+    mounts.add({ presetId: preset.id, fiber, tree, key: scopeOf(agentCtx) })
   } catch (error) {
     try {
       await handle.dispose()

@@ -488,6 +488,39 @@ describe('endpoint interrogation', () => {
     ])
   })
 
+  it('searches by id or display name and bulk-selects only visible candidates', async () => {
+    const discover = vi.fn(() => Promise.resolve(ok({
+      models: [
+        { id: 'alpha' },
+        { id: 'opaque-id', name: 'Beta Display' },
+        { id: 'gamma' },
+      ],
+    })))
+    await mountSection({ discover })
+    openEditor('openai')
+
+    fireEvent.click(screen.getByText(en.fetchModels))
+    await screen.findByText(en.fetchTitle)
+    const search = screen.getByRole('searchbox', { name: en.fetchSearch })
+
+    fireEvent.change(search, { target: { value: 'ALP' } })
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(screen.queryByText('opaque-id')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: en.fetchDeselectAll }))
+
+    fireEvent.change(search, { target: { value: 'beta' } })
+    expect(screen.getByText('opaque-id')).toBeTruthy()
+    expect(screen.getByRole<HTMLInputElement>('checkbox').checked).toBe(true)
+
+    fireEvent.change(search, { target: { value: '' } })
+    const boxes = screen.getAllByRole<HTMLInputElement>('checkbox')
+    expect(boxes.map(box => box.checked)).toEqual([false, true, true])
+
+    fireEvent.change(search, { target: { value: 'missing' } })
+    expect(screen.getByRole('status').textContent).toBe(en.fetchNoMatches)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: en.fetchSelectAll }).disabled).toBe(true)
+  })
+
   it('keeps the rows editable when the provider cannot be interrogated', async () => {
     const discover = vi.fn(() => Promise.resolve(
       fail('https://proxy.example/v1/models answered 401; check the API key', 'model-discovery-failed'),

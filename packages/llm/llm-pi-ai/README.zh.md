@@ -120,6 +120,8 @@ profile 的 `models` 列表是*替换*该路由已安装 catalog，而不是扩�
 
 ## 端点询问
 
+对于已配置路由，模型发现会同时复用该路由的 Profile `headers` 与已保存凭据。表单中临时输入的 key 会覆盖已保存 Bearer token，但继续保留部署 header。发现请求在合并 Profile 后强制设置 JSON `Accept` 和 Harness 归因 header，因此 Profile 不能覆盖这些受控字段。浏览器侧发现不会接收 Profile header。
+
 插件提供 `ctx.llm.registerModelDiscovery('llm-pi-ai', …)`，用来回答「这个提供方能服务哪些模型？」——针对配置界面正在编辑或起草的路由。它刻意**不是** catalog 刷新：什么都不存储，回复是界面供用户采纳的候选。`settings.yaml` 始终是唯一决定路由服务什么的东西。
 
 点名了**已安装 catalog 所提供路由**的请求，直接由该 catalog 作答，完全不联网：pi-ai 的注册表才是它自家提供方的权威列表，且携带列表端点不会公布的上下文窗口与输出上限。这类路由根本不需要 `baseURL`。只有 catalog 未描述的路由——网关、自建服务——才会经协议层询问；若它也没给端点，则会被告知去设置一个或手工填写模型。

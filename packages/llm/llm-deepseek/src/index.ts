@@ -295,6 +295,11 @@ export function apply(ctx: Context, config: Config): void {
     resolveApiKey,
     resolveUserId,
     resolveAttachments: () => ctx.get('attachments'),
+    prepareExtensions: (request) => {
+      const extensions = ctx.get('deepseekLlmApiExtensions')
+      return extensions?.prepare(request)
+        ?? Promise.resolve({ fields: {}, accept: () => Promise.resolve() })
+    },
   })
   ctx.llm.registerConfigurableProviders([
     { provider: PROVIDER, displayName: 'DeepSeek', settingsNs: NS, settingsPath: [] },

@@ -365,6 +365,16 @@ This stage can be split into three independent items: plugin-provided Provider s
 
 Plugin-version reporting sends only package names and versions by default, never local paths, user plugin configuration, workspace information, or Profile content. Settings extensions continue through the existing `settings.section` lifecycle and do not make Better Sidebar the owner of all settings capabilities.
 
+### 12.1 Stage 7 execution record
+
+Stage 7 keeps the existing Models settings section as owner and opens two root-scoped child slots: a provider-card seat keyed by settings namespace and a list footer. The keyed owner share contains only provider-directory configuration facts, allowing authentication plugins to add route-specific controls without reading the Models page store or transferring ownership to Better Sidebar. Model discovery now provides case-insensitive id/display-name search; bulk selection affects only visible results and preserves hidden choices.
+
+`llm-pi-ai` reuses the configured route's Profile headers for Host-side endpoint discovery. A form key wins over the stored credential, Profile authorization remains valid when no key is available, and JSON `Accept` plus Harness attribution are applied after the Profile merge. Browser discovery remains isolated from Profile headers.
+
+The DeepSeek adapter now consumes an additive request-extension registry. Preparation occurs before fetch, native-field collisions fail closed, snapshots are detached and frozen, cancellation stops waiting, and acceptance executes once only after HTTP 2xx. The base composition registers an optional plugin-package inventory under `dsh_plugin_packages`; it includes stable, deduplicated name/version pairs for active package-backed Host and standing-preset entries. It excludes local paths, configuration, workspace/Profile data, inactive entries, loose modules, URL entries, and Cordis builtins. Reporting can be disabled through the inventory plugin's `enabled` option.
+
+Focused TypeScript builds pass. The initial network-independent regression run passes 184 tests across five files, covering slot dispatch, search semantics, registry transactions, cancellation, lifecycle withdrawal, sorting, deduplication, and privacy boundaries; four additional fetch-stub discovery tests pass without a listener. The standard Dev product build rebuilt the complete Harness Host/Client, including both new packages, and rebuilt all five product plugins. Its product-test gate then stopped on the existing Better Sidebar media-range integration restriction: the sandbox denied four tests permission to listen on `127.0.0.1` with `EPERM`, while the other 543 tests passed. The pipeline correctly stopped before Electron candidate generation, so no new Dev App was produced or published. The same listener restriction prevents the complete pi-ai and DeepSeek adapter mock-server suites in this environment. No gate was bypassed, and this stage does not build or install Stable.
+
 ## 13. Explicitly deferred architecture migrations
 
 ### 13.1 `Session.events` to indexed APIs

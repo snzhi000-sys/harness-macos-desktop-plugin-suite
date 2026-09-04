@@ -22,6 +22,11 @@ import type { AttachmentStore, StoredImageAttachment } from '@deepseek-ai/dsh-at
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
+import type {
+  DeepSeekLlmApiExtensionRequest,
+  DeepSeekLlmApiJson,
+  PreparedDeepSeekLlmApiExtensions,
+} from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
 import { serializeRequest, serializeRequestWithImages } from './serialize.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { parseSse } from './sse.ts'
@@ -96,6 +101,8 @@ export interface DeepSeekAdapterOptions {
   resolveAttachments?: () => AttachmentStore | undefined
   /** Process-wide provider upload cache; primarily injectable for tests. */
   fileStore?: DeepSeekFileStore
+  /** Prepare plugin-owned top-level fields for one exact serialized request. */
+  prepareExtensions: (request: DeepSeekLlmApiExtensionRequest) => Promise<PreparedDeepSeekLlmApiExtensions>
 }
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
@@ -385,9 +392,26 @@ export class DeepSeekAdapter extends LlmAdapter {
         body = await inlineBody()
       }
     }
-    // Prepared outside the try so the TRANSPORT label below covers exactly the
-    // transport boundary, never a serialization failure.
-    let payload = JSON.stringify(body)
+    let extensions: PreparedDeepSeekLlmApiExtensions
+    try {
+      extensions = await this.config.prepareExtensions({
+        body: body as unknown as Readonly<Record<string, DeepSeekLlmApiJson>>,
+        signal,
+        ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+        ...options.purpose === undefined ? {} : { purpose: options.purpose },
+      })
+    } catch (error) {
+      throw new LlmError('DeepSeek request extension preparation failed', 'REQUEST_EXTENSION', { cause: error })
+    }
+    for (const field of Object.keys(extensions.fields)) {
+      if (Object.hasOwn(body, field)) {
+        throw new LlmError(
+          `DeepSeek request extension field ${JSON.stringify(field)} collides with the base request`,
+          'REQUEST_EXTENSION',
+        )
+      }
+    }
+    let payload = JSON.stringify({ ...body, ...extensions.fields })
     const headers = {
       'authorization': `Bearer ${apiKey}`,
       'content-type': 'application/json',
@@ -462,6 +486,11 @@ export class DeepSeekAdapter extends LlmAdapter {
       })
     }
     if (response === undefined) throw new LlmError('DeepSeek API request did not run', 'TRANSPORT')
+    try {
+      await extensions.accept()
+    } catch (error) {
+      throw new LlmError('DeepSeek request extension acceptance failed', 'REQUEST_EXTENSION', { cause: error })
+    }
     if (!response.body) {
       throw new LlmError('DeepSeek API returned no response body', 'EMPTY_RESPONSE')
     }
