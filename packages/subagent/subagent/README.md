@@ -35,6 +35,7 @@ Same-process requests, descriptors, results, and event payloads are trusted type
 
 Start-time features are advertised in `provider.capabilities` because the service must reject an unsupported one-shot request before child creation:
 
+- `agentOptions` — apply caller-supplied child Provider, model, reasoning effort, and output-token limit.
 - `outputSchema` — enforce a structured final result.
 - `depthLimit` — enforce `maxDepth`.
 - `toolFilter` — apply the requested child tool restriction.
@@ -48,7 +49,7 @@ Continuable creation is the optional `SubagentProvider.prepareContinuable?()` me
 
 ## The durable descriptor
 
-The Service Definition owns the versioned `subagent/descriptor` session event vocabulary (`src/descriptor.ts`): `snapshotSubagentDescriptor()` validates and detaches the record before provider work, and `foldSubagentDescriptor()` validates the complete current-version payload before recovering it from a loaded child log. Every local session-backed start appends one descriptor with the provider name and lifecycle `mode`. A `one-shot` descriptor optionally carries the caller-owned durable display `label`; a `continuable` descriptor requires its durable creation label and additionally records resolved child `agentOptions.provider`/`model` and optional `persona`/`toolFilter` for cold resume. These are explicit fields, never the merge-extensible `AgentOptions` object, so an unrelated extension value cannot break continuation. The descriptor omits `subagentDepth` (the persisted header's `delegationDepth` is the monotone floor) and `outputSchema` (an Activation's result contract). The event is log-only: no `surfaceOp`, absent from model history, and retained by the append-only log across compaction. Malformed current-version payloads are corrupt; unsupported versions cannot be classified by this runtime.
+The Service Definition owns the versioned `subagent/descriptor` session event vocabulary (`src/descriptor.ts`): `snapshotSubagentDescriptor()` validates and detaches the record before provider work, and `foldSubagentDescriptor()` validates each supported version before recovering it from a loaded child log. Every local session-backed start appends one descriptor with the provider name and lifecycle `mode`. A `one-shot` descriptor optionally carries the caller-owned durable display `label`; a `continuable` v3 descriptor requires its durable creation label and records resolved child Provider, model, reasoning effort, output-token limit, and optional `persona`/`toolFilter` for cold resume. The reader also accepts v2 descriptors, whose omitted reasoning and token fields use route defaults after recovery. These are explicit fields, never the merge-extensible `AgentOptions` object, so an unrelated extension value cannot break continuation. The descriptor omits `subagentDepth` (the persisted header's `delegationDepth` is the monotone floor) and `outputSchema` (an Activation's result contract). The event is log-only: no `surfaceOp`, absent from model history, and retained by the append-only log across compaction. Malformed supported payloads are corrupt; unsupported versions cannot be classified by this runtime.
 
 ## Delegation depth
 

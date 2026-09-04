@@ -12,17 +12,16 @@
  * omits `subagentDepth` — cold resume trusts the persisted header's
  * `delegationDepth` as the monotone floor — and `outputSchema`, which belongs
  * to one activation's result contract rather than durable child composition.
- * Per-activation knobs such as `maxTokens` are omitted for the same reason as
- * `outputSchema`: they budget one activation. Cold resume requires the exact
- * live parent for authorization but reconstructs child options only from the
- * durable descriptor, so it neither restores the prior budget nor inherits
- * the parent's current one; the resumed route's defaults apply instead.
+ * `outputSchema` remains activation-local. Provider, model, reasoning effort,
+ * and maxTokens are child composition, so continuable descriptors retain all
+ * four across cold resume instead of inheriting a later parent selection.
  *
  * @module @deepseek-ai/dsh-subagent/descriptor
  */
 
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ToolRestriction } from '@deepseek-ai/dsh-tools'
 
 declare module '@deepseek-ai/dsh-session/types' {
@@ -40,11 +39,13 @@ declare module '@deepseek-ai/dsh-session/types' {
 
 /**
  * The current descriptor format version, stamped into every appended
- * `subagent/descriptor` event and required verbatim by {@link foldSubagentDescriptor}.
- * Supporting another composition input is a deliberate version change, never
- * an implicit extra field.
+ * `subagent/descriptor` event. {@link foldSubagentDescriptor} also accepts the
+ * immediately preceding format so existing continuable children remain
+ * recoverable. Supporting another composition input is a deliberate version
+ * change, never an implicit extra field.
  */
-export const SUBAGENT_DESCRIPTOR_VERSION = 2
+export const SUBAGENT_DESCRIPTOR_VERSION = 3
+const PREVIOUS_SUBAGENT_DESCRIPTOR_VERSION = 2
 
 /** Fields shared by every supported `subagent/descriptor` payload. */
 interface SubagentDescriptorBase {
@@ -76,6 +77,10 @@ export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBas
   readonly agentProvider?: string
   /** Resolved child `agentOptions.model`, when one was declared. */
   readonly agentModel?: string
+  /** Resolved child `agentOptions.reasoningEffort`, when one was declared. */
+  readonly agentReasoningEffort?: ReasoningEffortId
+  /** Resolved child `agentOptions.maxTokens`, when one was declared. */
+  readonly agentMaxTokens?: number
   /** Per-child persona that shadows the deployment persona on resume. */
   readonly persona?: string
   /** Child tool scoping reapplied on resume. */
@@ -111,6 +116,10 @@ export interface ContinuableSubagentDescriptorInput extends SubagentDescriptorIn
   readonly agentProvider?: string
   /** Requested child `agentOptions.model`. */
   readonly agentModel?: string
+  /** Requested child `agentOptions.reasoningEffort`. */
+  readonly agentReasoningEffort?: ReasoningEffortId
+  /** Requested child `agentOptions.maxTokens`. */
+  readonly agentMaxTokens?: number
   /** Requested per-child persona. */
   readonly persona?: string
   /** Requested child tool scoping. */
@@ -129,10 +138,19 @@ const DESCRIPTOR_BASE_KEYS = [
   'label',
 ] as const
 const ONE_SHOT_DESCRIPTOR_KEYS = new Set(DESCRIPTOR_BASE_KEYS)
+const PREVIOUS_CONTINUABLE_DESCRIPTOR_KEYS = new Set([
+  ...DESCRIPTOR_BASE_KEYS,
+  'agentProvider',
+  'agentModel',
+  'persona',
+  'toolFilter',
+])
 const CONTINUABLE_DESCRIPTOR_KEYS = new Set([
   ...DESCRIPTOR_BASE_KEYS,
   'agentProvider',
   'agentModel',
+  'agentReasoningEffort',
+  'agentMaxTokens',
   'persona',
   'toolFilter',
 ])
@@ -157,6 +175,16 @@ function optionalString(value: Record<string, unknown>, key: string): string | u
   const field = value[key]
   if (typeof field !== 'string') {
     throw new Error(`persisted subagent descriptor ${key} must be a string`)
+  }
+  return field
+}
+
+/** Read one optional positive safe-integer field from a persisted descriptor. */
+function optionalPositiveInteger(value: Record<string, unknown>, key: string): number | undefined {
+  if (!Object.hasOwn(value, key)) return undefined
+  const field = value[key]
+  if (typeof field !== 'number' || !Number.isSafeInteger(field) || field <= 0) {
+    throw new Error(`persisted subagent descriptor ${key} must be a positive safe integer`)
   }
   return field
 }
@@ -201,17 +229,16 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
   if (typeof version !== 'number') {
     throw new Error('persisted subagent descriptor version must be a number')
   }
-  if (version !== SUBAGENT_DESCRIPTOR_VERSION) return undefined
+  if (version !== SUBAGENT_DESCRIPTOR_VERSION && version !== PREVIOUS_SUBAGENT_DESCRIPTOR_VERSION) return undefined
 
   const mode = value['mode']
   if (mode !== 'one-shot' && mode !== 'continuable') {
     throw new Error('persisted subagent descriptor mode must be "one-shot" or "continuable"')
   }
-  assertKnownKeys(
-    value,
-    mode === 'one-shot' ? ONE_SHOT_DESCRIPTOR_KEYS : CONTINUABLE_DESCRIPTOR_KEYS,
-    'payload',
-  )
+  const continuableKeys = version === PREVIOUS_SUBAGENT_DESCRIPTOR_VERSION
+    ? PREVIOUS_CONTINUABLE_DESCRIPTOR_KEYS
+    : CONTINUABLE_DESCRIPTOR_KEYS
+  assertKnownKeys(value, mode === 'one-shot' ? ONE_SHOT_DESCRIPTOR_KEYS : continuableKeys, 'payload')
   const provider = value['provider']
   if (typeof provider !== 'string') {
     throw new Error('persisted subagent descriptor provider must be a string')
@@ -219,7 +246,7 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
   if (mode === 'one-shot') {
     const label = optionalString(value, 'label')
     return {
-      version: SUBAGENT_DESCRIPTOR_VERSION,
+      version,
       mode,
       provider,
       ...label !== undefined ? { label } : {},
@@ -231,17 +258,21 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
   }
   const agentProvider = optionalString(value, 'agentProvider')
   const agentModel = optionalString(value, 'agentModel')
+  const agentReasoningEffort = optionalString(value, 'agentReasoningEffort') as ReasoningEffortId | undefined
+  const agentMaxTokens = optionalPositiveInteger(value, 'agentMaxTokens')
   const persona = optionalString(value, 'persona')
   const toolFilter = Object.hasOwn(value, 'toolFilter')
     ? parseToolFilter(value['toolFilter'])
     : undefined
   return {
-    version: SUBAGENT_DESCRIPTOR_VERSION,
+    version,
     mode,
     provider,
     label,
     ...agentProvider !== undefined ? { agentProvider } : {},
     ...agentModel !== undefined ? { agentModel } : {},
+    ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
+    ...agentMaxTokens !== undefined ? { agentMaxTokens } : {},
     ...persona !== undefined ? { persona } : {},
     ...toolFilter !== undefined ? { toolFilter } : {},
   }
@@ -283,6 +314,8 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
       label: input.label,
       ...input.agentProvider !== undefined ? { agentProvider: input.agentProvider } : {},
       ...input.agentModel !== undefined ? { agentModel: input.agentModel } : {},
+      ...input.agentReasoningEffort !== undefined ? { agentReasoningEffort: input.agentReasoningEffort } : {},
+      ...input.agentMaxTokens !== undefined ? { agentMaxTokens: input.agentMaxTokens } : {},
       ...input.persona !== undefined ? { persona: input.persona } : {},
       ...input.toolFilter !== undefined ? { toolFilter: input.toolFilter } : {},
     }
@@ -299,11 +332,10 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
  * appends exactly one, so a later same-type event cannot rewrite the declared
  * composition.
  * @param events - the loaded child session events.
- * @returns the descriptor, or `undefined` when the log has none or its
- *   version is not {@link SUBAGENT_DESCRIPTOR_VERSION} (the child cannot be
- *   classified by this runtime).
- * @throws when a current-version persisted payload does not match its complete
- *   declared schema.
+ * @returns the descriptor, or `undefined` when the log has none or its version
+ *   is unsupported (the child cannot be classified by this runtime).
+ * @throws when a supported persisted payload does not match its versioned
+ *   schema.
  */
 export function foldSubagentDescriptor(events: readonly SessionEvent[]): SubagentDescriptorData | undefined {
   const event = events.find(

@@ -2618,6 +2618,11 @@ export interface Config {
    */
   toolName?: string
   /**
+   * Exact Profile-authorized child model routes. When present and non-empty,
+   * the model may select these routes plus its own current route per call.
+   */
+  selectableModels?: AllowedModelRoute[]
+  /**
    * Expose `run_in_background` (default true). Disabled instances omit the
    * parameter and reject forced background calls.
    */
@@ -2660,11 +2665,19 @@ export interface Config {
    */
   maxDepth?: number | 'provider-managed'
 }
+
+/** One exact child LLM route authorized by the Profile. */
+export interface AllowedModelRoute {
+  /** Registered LLM provider id. */
+  readonly provider: string
+  /** Provider-owned exact model id. */
+  readonly model: string
+}
 ```
 
 依赖：[`AgentOptions`](subsystems/core.md)
 
-来源：[`packages/subagent/tool-subagent/src/index.ts:29`](../packages/subagent/tool-subagent/src/index.ts)
+来源：[`packages/subagent/tool-subagent/src/index.ts:44`](../packages/subagent/tool-subagent/src/index.ts)
 
 <a id="deepseek-aidsh-tool-subagent-report"></a>
 

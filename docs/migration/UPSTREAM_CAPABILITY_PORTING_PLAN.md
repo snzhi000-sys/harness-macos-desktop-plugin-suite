@@ -351,6 +351,14 @@ Focused verification covers DeepSeek multimodal serialization, Files API transpo
 - An unavailable Provider/model, insufficient permission, disconnected parent Session, and exited subagent each produce a deterministic state.
 - Subagent file changes, deliverables, token/duration metrics, and parent-child messages reconstruct after refresh.
 
+### 11.3 Stage 6 execution record
+
+Stage 6 keeps the existing subagent service, continuation lifecycle, control tools, and Job projection. The configured spawn tool now grants an exact Profile model directory plus the parent's current route. It exposes per-call Provider, model, reasoning effort, and output-token fields together with `list_subagent_models`, whose discovery results are filtered before any global Provider detail reaches the model. Explicit selections are authorized first and then resolved through the live LLM adapter before child creation; a provider replacement during asynchronous validation fails the call instead of mixing generations. Calls without these fields retain the previous creation path and do not add an LLM preflight.
+
+`AgentOptions.reasoningEffort` seeds the first child request, and the request-reconstruction invariant verifies it against the durable request header. Continuable descriptor v3 stores Provider, model, reasoning effort, and maximum tokens for cold recovery; the reader accepts v2 descriptors and applies route defaults for their absent fields. Spawn and fork providers explicitly advertise support for one-shot `agentOptions`, while the product fork tool does not expose route selection so it retains inherited-route KV Cache behavior.
+
+File Edit ownership remains `origin: "subagent"`, and nested changes continue to settle through the existing parent ledger. Better Sidebar's Job Panel still reads `jobsBySession`; its subagent topology uses the stable history/catalog API rather than deriving job state from Session arrays. Focused TypeScript builds pass, and the expanded regression set passes 503 tests across 25 files, including continuation recovery, provider capability rejection, authorization filtering, Job projection, and Better Sidebar Job rendering. The final Dev packaging and isolated-launch result is recorded after the stage's product build; no Stable package is built or installed.
+
 ## 12. Stage 7: Configuration and diagnostic enhancements
 
 This stage can be split into three independent items: plugin-provided Provider sign-in controls in model settings, model discovery using Profile headers with search, and optional reporting of enabled plugin package names and versions in DeepSeek requests.

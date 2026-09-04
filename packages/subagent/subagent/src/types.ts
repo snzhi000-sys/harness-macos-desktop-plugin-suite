@@ -84,6 +84,8 @@ export interface SubagentRunEndInfo {
  * to `maxDepth`; the other names match.
  */
 export interface SubagentCapabilities {
+  /** Whether one-shot starts apply caller-supplied child Agent options. */
+  readonly agentOptions?: boolean
   readonly outputSchema: boolean
   readonly depthLimit: boolean
   readonly toolFilter: boolean

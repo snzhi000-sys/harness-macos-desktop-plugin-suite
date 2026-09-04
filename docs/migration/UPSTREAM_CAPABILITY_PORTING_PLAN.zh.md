@@ -351,6 +351,14 @@ Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动�
 - Provider/模型不可用、权限不足、父会话断线和子代理退出均有确定状态。
 - 子代理文件修改、产物、token/耗时和父子消息在刷新后可重建。
 
+### 11.3 阶段 6 执行记录
+
+阶段 6 保留现有 subagent 服务、继续执行生命周期、控制工具和 Job 投影。配置的 spawn 工具现在允许使用 Profile 中的确切模型目录以及父 agent 当前路由，并公开逐次调用的提供方、模型、推理强度与输出 token 字段，同时提供 `list_subagent_models`；该发现工具会在任何全局提供方详情到达模型前过滤结果。系统先授权显式选择，再通过实时 LLM 适配器解析，并且在异步校验期间发生提供方替换时拒绝调用，避免混用不同代际。未携带这些字段的调用继续采用原有创建路径，也不会增加 LLM 预检。
+
+`AgentOptions.reasoningEffort` 会为子 agent 的首次请求设定初始值，请求重建不变量会将其与持久请求 header 比对。可继续描述符 v3 保存提供方、模型、推理强度和最大 token 数以供冷恢复；读取方仍接受 v2 描述符，并为其中缺少的字段采用路由默认值。spawn 与 fork 提供方显式声明一次性 `agentOptions` 支持，但产品 fork 工具不公开路由选择，因此继续保留继承路由的 KV Cache 行为。
+
+File Edit 的归属仍为 `origin: "subagent"`，嵌套修改继续通过现有父级账本结算。Better Sidebar 的 Job Panel 仍读取 `jobsBySession`，其 subagent 拓扑使用稳定的 history/catalog API，而不是根据 Session 数组推导 Job 状态。定向 TypeScript 构建通过；扩展回归覆盖继续执行恢复、提供方能力拒绝、授权过滤、Job 投影和 Better Sidebar Job 渲染，共 25 个文件、503 项测试通过。阶段产品构建完成后再记录最终 Dev 打包与隔离启动结果；本阶段不构建或安装 Stable。
+
 ## 12. 阶段 7：配置与诊断增强
 
 本阶段可以拆成三个独立小项：插件在模型设置页注册 Provider 登录控件；模型发现复用 Profile headers 并提供搜索；DeepSeek 请求可选附带已启用插件的包名和版本。

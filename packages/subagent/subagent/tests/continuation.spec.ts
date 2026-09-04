@@ -2324,18 +2324,18 @@ describe('continuable errors', () => {
       request: {
         prompt: message('routed work'),
         parent,
-        agentOptions: { provider: 'mock', model: 'child-model' },
+        agentOptions: { provider: 'mock', model: 'child-model', maxTokens: 2_048 },
       },
     })
     await waitNoActivation(ctx, started.childId)
     const loaded = await ctx.sessionPersistence.load(started.childId)
     expect(loaded.events.find(event => event.type === 'subagent/descriptor')?.data)
-      .toMatchObject({ agentProvider: 'mock', agentModel: 'child-model' })
+      .toMatchObject({ agentProvider: 'mock', agentModel: 'child-model', agentMaxTokens: 2_048 })
 
     // The resumed Activation runs on the declared route, not the parent's.
     await followup(ctx, parent, started.childId, message('again'))
     await vi.waitFor(() => {
-      expect(ctx.agents.get(started.childId)?.options.model).toBe('child-model')
+      expect(ctx.agents.get(started.childId)?.options).toMatchObject({ model: 'child-model', maxTokens: 2_048 })
     })
     await waitNoActivation(ctx, started.childId)
   })
