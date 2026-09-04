@@ -61,6 +61,8 @@ export interface IConversation {
   loadOlder(): Promise<void>
   /** Page history backwards until it covers a target event sequence. */
   loadThrough(seq: number): Promise<void>
+  /** Resolve and cache one image through the owning Session's authorization route. */
+  resolveImage(sessionId: SessionId, attachment: ImageAttachmentRef): Promise<string>
 }
 
 /** Create one browser-only draft descriptor; only its id enters input state. */
@@ -71,6 +73,24 @@ function browserDraftAttachment(file: File): ComposerAttachment {
     previewUrl: URL.createObjectURL(file),
     file,
   }
+}
+
+function probeDimensions(attachment: ComposerAttachment): void {
+  if (typeof Image !== 'function') return
+  const probe = new Image()
+  probe.onload = () => {
+    attachment.width = probe.naturalWidth
+    attachment.height = probe.naturalHeight
+  }
+  probe.src = attachment.previewUrl
+}
+
+/** Yield one paint so the optimistic text/image echo is visible before encoding starts. */
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { setTimeout(resolve, 0) })
+    else setTimeout(resolve, 0)
+  })
 }
 
 interface ImageUrlEntry {
@@ -166,11 +186,31 @@ export class ConversationController extends Service implements IConversation {
     if (attachments.length !== imageIds.length) {
       throw new Error('conversation.sendSession: one or more draft images are no longer available')
     }
-    const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
-    const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
-    const result = await session.prompt(content, mode)
-    if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
-    this.releaseDraftImages(attachments)
+    const submission = session.beginSubmission({
+      text,
+      images: attachments.map(attachment => ({
+        previewUrl: attachment.previewUrl,
+        ...(attachment.file.name === '' ? {} : { name: attachment.file.name }),
+        ...(attachment.width === undefined ? {} : { width: attachment.width }),
+        ...(attachment.height === undefined ? {} : { height: attachment.height }),
+      })),
+      onRetire: (reason) => {
+        if (reason === 'observed') this.releaseDraftImages(attachments)
+      },
+    })
+    try {
+      await nextPaint()
+      const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
+      const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
+      const result = await session.prompt(content, mode)
+      if (!result.ok) {
+        submission.abandon()
+        throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
+      }
+    } catch (error) {
+      submission.abandon()
+      throw error
+    }
   }
 
   /**
@@ -184,6 +224,7 @@ export class ConversationController extends Service implements IConversation {
       const attachment = browserDraftAttachment(file)
       this.draftAttachments.set(attachment.id, attachment)
       this.createdImageUrls.add(attachment.previewUrl)
+      probeDimensions(attachment)
       return attachment
     })
   }

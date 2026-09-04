@@ -16,7 +16,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ConversationTimelineSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatViewSlotProps } from '../contract/slots.ts'
-import { PendingSteeringBubble } from './MessageItem.tsx'
+import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { TurnNavigator } from './TurnNavigator.tsx'
 import { turnRailItems, type TurnRailItem } from './turn-rail-items.ts'
@@ -156,6 +156,9 @@ export function ChatView({
   const locations = useSession(s => s.chat.locations)
   const turnOutline = useProjection('turnOutline')
   const inbox = useSession(s => s.queue)
+  // Fixture/third-party snapshot producers compiled against the older face
+  // degrade to no local echoes instead of crashing the whole conversation.
+  const pendingSubmissions = useSession(s => s.pendingSubmissions ?? [])
   // Workspace root off the session list row: path summaries display relative to it.
   const cwd = useSessions(s => s.byId[sessionId]?.cwd)
   const running = useSession(s => s.running)
@@ -486,6 +489,9 @@ export function ChatView({
               renderSlot={renderSlot}
               t={t}
             />
+          ))}
+          {pendingSubmissions.map(submission => (
+            <PendingSubmissionBubble key={submission.id} submission={submission} />
           ))}
           {/* No pending placeholders: questions (ui-user-questions) and approvals
               (ApprovalPanel) both take over the composer, so a flow card would

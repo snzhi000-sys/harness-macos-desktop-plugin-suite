@@ -325,6 +325,16 @@ Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动�
 - Files API 上传可复用，失效文件 ID 能重新上传；切换 Provider 不复用错误 ID。
 - 刷新、重启、Fork、reroll、retry 和长历史分页后图片不丢失、不重复、不阻塞文本消息即时显示。
 
+### 10.5 阶段 5 执行记录
+
+阶段 5 于 2026-09-04 在现有持久附件与 Session 事件链上完成，没有导入上游新版 Session Controller 或整体替换 `ui-conversation`。DeepSeek 目录现在显式区分文本模型与视觉模型；未收录的透传模型仍按仅文本处理。图片在用户消息写入前已经由 Host 校验并保存为内容寻址附件，Queue、Steer、Fork、retry、reroll、刷新与分页继续只携带持久引用，不持久化 Blob URL 或 base64。
+
+`llm-deepseek` 在保留阶段 0 `reasoning_content` 规则的同时，将用户和工具结果图片序列化为 DeepSeek 图文消息。它优先使用 Files API，并按附件摘要、规范化端点和单向凭据作用域复用文件 id；临近过期会主动刷新。受控上传失败会在请求图片预算内降级为内联数据。chat completion 明确拒绝过期 id 时，只使匹配映射失效，重新上传一次并重传一次；重新上传仍失败时可受控降级，但不会形成重试循环。同一图片的并发上传会合并，单个等待者取消不会中止仍被其他请求需要的上传。
+
+子代理浏览器图片先经父 Host 的附件服务校验和保存，再以持久引用进入子会话；纯文本子模型在写入部分消息前拒绝图片。Trajectory 保留助手与工具结果中的图片引用，并通过 Conversation 的 Session 授权加载器展示，不复用 Better Sidebar Preview 权限。超过请求图片预算时只在临时模型请求中从最旧图片开始替换为明确省略标记，不改写 Session 历史。
+
+定向验证覆盖 DeepSeek 图文序列化、Files API、上传索引、并发取消、思考历史、Queue、Steer、Fork、子代理准入与持久化，以及 Trajectory 授权图片渲染。当前补充复跑结果为 7 个测试文件、243 项通过，相关 LLM、Host、Subagent、Client Runtime、Conversation 与 Trajectory TypeScript 工程构建通过。最终 Dev 打包与隔离启动记录在本阶段完成后补入；本阶段不构建或安装 Stable。
+
 ## 11. 阶段 6：子代理与模型配置增强
 
 ### 11.1 移植方法

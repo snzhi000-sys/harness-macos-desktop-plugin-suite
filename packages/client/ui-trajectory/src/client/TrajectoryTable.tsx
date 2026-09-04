@@ -13,6 +13,8 @@ import {
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { structuredPatch } from 'diff'
+import { ImageGallery } from '@deepseek-ai/dsh-client-ui-attachment'
+import type { ImageLoader, MessageImageLabels } from '@deepseek-ai/dsh-client-ui-attachment'
 import type {
   AssistantRequestConfig, ConversationPromptSnapshot,
 } from '@deepseek-ai/dsh-client-runtime/client'
@@ -33,6 +35,14 @@ const OLDER_LOAD_THRESHOLD_PX = 48
 const HISTORY_LOAD_ROW_HEIGHT_PX = 30
 const VIRTUALIZATION_THRESHOLD = 100
 const VIRTUAL_OVERSCAN_ROWS = 12
+const IMAGE_LABELS: MessageImageLabels = {
+  image: 'Image',
+  open: 'Open image',
+  openNamed: label => `Open ${label}`,
+  loading: 'Loading image',
+  loadFailed: 'Image failed to load. Retry',
+  lightbox: { dialog: 'Image preview', close: 'Close image preview' },
+}
 const VIRTUAL_INITIAL_VIEWPORT_HEIGHT_PX = 600
 
 const KIND_LABEL: Record<TrajectoryCellKind, string> = {
@@ -345,6 +355,8 @@ function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {
 
 /** Props for the trajectory ledger. */
 export interface TrajectoryTableProps {
+  /** Resolve a durable image through the current Session's authorization route. */
+  loadImage: ImageLoader
   /** Session-global request numbers for the request groups visible in this context. */
   requestNumbers?: readonly TrajectoryRequestNumber[]
   /** Grouped records in display order. */
@@ -1055,9 +1067,11 @@ function MarkdownFragment({
 function SourceBlocks({
   blocks,
   onOpenCall,
+  loadImage,
 }: {
   blocks: readonly TrajectorySourceBlock[]
   onOpenCall: (callId: string) => void
+  loadImage: ImageLoader
 }) {
   return (
     <div className={css.sourceBlocks}>
@@ -1087,8 +1101,8 @@ function SourceBlocks({
                 </span>
               </div>
             )}
-          {block.imageSrc !== undefined
-            ? <PanelImage block={block} />
+          {block.attachment !== undefined || block.imageSrc !== undefined
+            ? <PanelImage block={block} loadImage={loadImage} />
             : <pre className={css.sourceBlockContent}>{block.content}</pre>}
         </section>
       ))}
@@ -1098,11 +1112,16 @@ function SourceBlocks({
 
 function PanelImage({
   block,
+  loadImage,
   preview = false,
 }: {
   block: TrajectorySourceBlock
+  loadImage: ImageLoader
   preview?: boolean
 }) {
+  if (block.attachment !== undefined) {
+    return <ImageGallery images={[{ attachment: block.attachment }]} load={loadImage} align="start" labels={IMAGE_LABELS} />
+  }
   if (block.imageSrc === undefined) return null
   return (
     <a
@@ -1123,16 +1142,21 @@ function PanelImage({
 
 function MessageImages({
   blocks,
+  loadImage,
   preview,
 }: {
   blocks: readonly TrajectorySourceBlock[] | undefined
+  loadImage: ImageLoader
   preview: boolean
 }) {
-  const images = blocks?.filter(block => block.imageSrc !== undefined) ?? []
-  if (images.length === 0) return null
+  const durable = blocks?.flatMap(block => block.attachment === undefined
+    ? [] : [{ attachment: block.attachment }]) ?? []
+  const legacy = blocks?.filter(block => block.imageSrc !== undefined) ?? []
+  if (durable.length === 0 && legacy.length === 0) return null
   return (
     <div className={preview ? `${css.messageImages} ${css.messageImagesPreview}` : css.messageImages}>
-      {images.map((block, index) => <PanelImage block={block} preview={preview} key={index} />)}
+      <ImageGallery images={durable} load={loadImage} align="start" labels={IMAGE_LABELS} />
+      {legacy.map((block, index) => <PanelImage block={block} loadImage={loadImage} preview={preview} key={index} />)}
     </div>
   )
 }
@@ -1323,10 +1347,12 @@ function SystemPromptDiff({
 function ToolOutputBlocks({
   blocks,
   error,
+  loadImage,
   preview,
 }: {
   blocks: readonly TrajectorySourceBlock[]
   error: boolean
+  loadImage: ImageLoader
   preview: boolean
 }) {
   return (
@@ -1337,8 +1363,8 @@ function ToolOutputBlocks({
     ].filter((value): value is string => value !== undefined).join(' ')}
     >
       {blocks.map((block, index) => (
-        block.imageSrc !== undefined
-          ? <PanelImage block={block} preview={preview} key={index} />
+        block.attachment !== undefined || block.imageSrc !== undefined
+          ? <PanelImage block={block} loadImage={loadImage} preview={preview} key={index} />
           : block.content !== ''
             ? <pre className={css.resultBlockText} key={index}>{block.content}</pre>
             : null
@@ -1354,6 +1380,7 @@ function MarkdownRecordContent({
   thinkingExpanded,
   onThinkingExpandedChange,
   onOpenCall,
+  loadImage,
 }: {
   record: TableRecord
   rendered: boolean
@@ -1361,9 +1388,10 @@ function MarkdownRecordContent({
   thinkingExpanded: boolean
   onThinkingExpandedChange: (expanded: boolean) => void
   onOpenCall: (callId: string) => void
+  loadImage: ImageLoader
 }) {
   if (!rendered && record.cell.sourceBlocks && record.cell.sourceBlocks.length > 0) {
-    return <SourceBlocks blocks={record.cell.sourceBlocks} onOpenCall={onOpenCall} />
+    return <SourceBlocks blocks={record.cell.sourceBlocks} onOpenCall={onOpenCall} loadImage={loadImage} />
   }
   if (record.cell.thinkingDetail) {
     if (!rendered) {
@@ -1414,13 +1442,15 @@ function MarkdownRecordContent({
         />
         <MessageImages
           blocks={record.cell.sourceBlocks}
+          loadImage={loadImage}
           preview={preview}
         />
       </div>
     )
   }
   const source = markdownSource(record)
-  const hasImages = record.cell.sourceBlocks?.some(block => block.imageSrc !== undefined) === true
+  const hasImages = record.cell.sourceBlocks?.some(block =>
+    block.attachment !== undefined || block.imageSrc !== undefined) === true
   const hasToolCalls = record.cell.kind === 'message'
     && record.cell.sourceBlocks?.some(block => block.type === 'tool-call') === true
   if (!source && !hasImages && !hasToolCalls) {
@@ -1442,7 +1472,7 @@ function MarkdownRecordContent({
           onOpenCall={onOpenCall}
         />
       )}
-      <MessageImages blocks={record.cell.sourceBlocks} preview={preview} />
+      <MessageImages blocks={record.cell.sourceBlocks} loadImage={loadImage} preview={preview} />
     </div>
   )
 }
@@ -1498,10 +1528,12 @@ function RequestTiming({
 function RecordPayload({
   record,
   direction,
+  loadImage,
   preview = false,
 }: {
   record: TableRecord
   direction: 'input' | 'output'
+  loadImage: ImageLoader
   preview?: boolean
 }) {
   const value = direction === 'input' ? record.cell.inputDetail : record.cell.outputDetail
@@ -1530,12 +1562,13 @@ function RecordPayload({
   if (
     direction === 'output'
     && record.cell.outputBlocks?.some(block =>
-      block.imageSrc !== undefined || block.content !== '') === true
+      block.attachment !== undefined || block.imageSrc !== undefined || block.content !== '') === true
   ) {
     return (
       <ToolOutputBlocks
         blocks={record.cell.outputBlocks}
         error={error}
+        loadImage={loadImage}
         preview={preview}
       />
     )
@@ -1691,6 +1724,7 @@ function OverviewSection({
  * @returns The ledger and an optional local record inspector.
  */
 export function TrajectoryTable({
+  loadImage,
   requestNumbers: sessionRequestNumbers,
   turns,
   streamingCells = [],
@@ -2877,6 +2911,7 @@ export function TrajectoryTable({
                   >
                     <MarkdownRecordContent
                       record={selected}
+                      loadImage={loadImage}
                       rendered
                       thinkingExpanded={thinkingExpanded}
                       onThinkingExpandedChange={setThinkingExpanded}
@@ -2989,6 +3024,7 @@ export function TrajectoryTable({
                         <OverviewSection label="Preview" onOpen={() => { activateTab('rendered') }}>
                           <MarkdownRecordContent
                             record={selected}
+                            loadImage={loadImage}
                             rendered
                             preview
                             thinkingExpanded={thinkingExpanded}
@@ -3002,12 +3038,12 @@ export function TrajectoryTable({
                       <>
                         {selected.cell.inputDetail && (
                           <OverviewSection label="Payload" onOpen={() => { activateTab('input') }}>
-                            <RecordPayload record={selected} direction="input" preview />
+                            <RecordPayload record={selected} direction="input" loadImage={loadImage} preview />
                           </OverviewSection>
                         )}
                         {selected.cell.outputDetail && (
                           <OverviewSection label="Result" onOpen={() => { activateTab('output') }}>
-                            <RecordPayload record={selected} direction="output" preview />
+                            <RecordPayload record={selected} direction="output" loadImage={loadImage} preview />
                           </OverviewSection>
                         )}
                         <OverviewSection label="Schema" onOpen={() => { activateTab('schema') }}>
@@ -3036,6 +3072,7 @@ export function TrajectoryTable({
             {!promptSelected && selected !== undefined && activeTab === 'rendered' && (
               <MarkdownRecordContent
                 record={selected}
+                loadImage={loadImage}
                 rendered
                 thinkingExpanded={thinkingExpanded}
                 onThinkingExpandedChange={setThinkingExpanded}
@@ -3045,6 +3082,7 @@ export function TrajectoryTable({
             {!promptSelected && selected !== undefined && activeTab === 'raw' && (
               <MarkdownRecordContent
                 record={selected}
+                loadImage={loadImage}
                 rendered={false}
                 thinkingExpanded={thinkingExpanded}
                 onThinkingExpandedChange={setThinkingExpanded}
@@ -3055,10 +3093,10 @@ export function TrajectoryTable({
               <MessageSource record={selected} />
             )}
             {!promptSelected && selected !== undefined && activeTab === 'input' && (
-              <RecordPayload record={selected} direction="input" />
+              <RecordPayload record={selected} direction="input" loadImage={loadImage} />
             )}
             {!promptSelected && selected !== undefined && activeTab === 'output' && (
-              <RecordPayload record={selected} direction="output" />
+              <RecordPayload record={selected} direction="output" loadImage={loadImage} />
             )}
             {!promptSelected && selected !== undefined && activeTab === 'schema' && (
               <RecordSchema record={selected} />

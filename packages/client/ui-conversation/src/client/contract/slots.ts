@@ -28,6 +28,8 @@ export interface ComposerAttachment {
   id: DraftAttachmentId
   file: File
   previewUrl: string
+  width?: number
+  height?: number
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

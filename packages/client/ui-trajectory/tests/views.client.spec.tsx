@@ -159,16 +159,19 @@ function emptyWorkspaces() {
 /** Standalone view props: the session-scope standard kit the outlet would bake. */
 function standaloneProps(
   nodes: ConversationSnapshot['nodes'],
-): ConvViewProps & { t: (key: LocaleKeysOf<'trajectory'>) => string } {
+): ConvViewProps & Pick<TrajectoryViewInjected, 'loadImage'>
+  & { t: (key: LocaleKeysOf<'trajectory'>) => string } {
   return {
     sessionId: SID,
     useSession: fakeSession(nodes).useSession,
     useSessions: emptySessions(),
     useWorkspaces: emptyWorkspaces(),
     useProjection: (() => undefined) as never,
+    loadImage: () => Promise.resolve('blob:trajectory-fixture'),
     // The locale seat the outlet would inject for the declared namespace.
     t: (key: LocaleKeysOf<'trajectory'>) => zh[key as TrajectoryKey] ?? key,
-  } as unknown as ConvViewProps & { t: (key: LocaleKeysOf<'trajectory'>) => string }
+  } as unknown as ConvViewProps & Pick<TrajectoryViewInjected, 'loadImage'>
+    & { t: (key: LocaleKeysOf<'trajectory'>) => string }
 }
 
 /** Real-stack bench: root Context + real SlotRegistry ring + the plugin fiber. */
@@ -202,6 +205,7 @@ async function bench(snapshot = historySnapshot(NODES)) {
   ctx.provide('connection', { api: { settings: {} }, isLoopback: false } as never)
   ctx.provide('remote', { $on: () => () => {} } as never)
   ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+  ctx.provide('conversation', { resolveImage: () => Promise.resolve('blob:trajectory-fixture') } as never)
   ctx.plugin({ inject: [...localeInject], apply: localeApply })
   const fiber = ctx.plugin({ inject: [...inject], apply })
   await fiber.await()
@@ -245,6 +249,7 @@ function mount(slots: SlotRegistry, nodes: ConversationSnapshot['nodes'] = NODES
       ? (() => {
         const trajectory = injected as TrajectoryViewInjected
         return {
+          loadImage: trajectory.loadImage,
           loadOlder: trajectory.loadOlder,
           setActualDuration: trajectory.setActualDuration,
           useDuration: bindSnapshotSelector(trajectory.hooks.duration),

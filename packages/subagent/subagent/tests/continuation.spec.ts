@@ -436,6 +436,68 @@ describe('SubagentRuntime.startContinuable', () => {
   })
 })
 
+describe('continuable image follow-ups', () => {
+  const imageBlock = {
+    type: 'image' as const,
+    attachment: {
+      attachmentId: 'att-image' as never,
+      mediaType: 'image/png' as const,
+      bytes: 1,
+      width: 1,
+      height: 1,
+    },
+  }
+
+  it('refuses a text-only child before an image message enters its log', async () => {
+    const { ctx, parent } = await setup([textResponse('child work')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await waitNoActivation(ctx, started.childId)
+    const resolve = vi.spyOn(ctx.llm, 'resolveModelInfo')
+      .mockResolvedValue({ inputModalities: ['text'] } as never)
+
+    await expect(ctx.subagents.followup(parent, started.childId, [
+      { type: 'text', text: 'see this' },
+      imageBlock,
+    ], { source: { kind: 'user' }, signal: testSignal }))
+      .rejects.toMatchObject({ code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' })
+
+    expect(resolve).toHaveBeenCalledWith('mock', 'mock', testSignal)
+    const loaded = await ctx.sessionPersistence.load(started.childId)
+    expect(loaded.events.some(event => event.type === 'user/message'
+      && event.data.content.some(block => block.type === 'image'))).toBe(false)
+    await drainManager(ctx)
+  })
+
+  it('preserves a durable image reference for an image-capable child', async () => {
+    const releaseFirst = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child work'), gate: releaseFirst.promise },
+      { chunks: textResponse('image reply') },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(1) })
+    vi.spyOn(ctx.llm, 'resolveModelInfo')
+      .mockResolvedValue({ inputModalities: ['text', 'image'] } as never)
+
+    await ctx.subagents.followup(parent, started.childId, [
+      { type: 'text', text: 'compare' },
+      imageBlock,
+    ], { source: { kind: 'user' }, signal: testSignal })
+    releaseFirst.resolve(undefined)
+    await waitNoActivation(ctx, started.childId)
+
+    const loaded = await ctx.sessionPersistence.load(started.childId)
+    const delivered = loaded.events.find(event => event.type === 'user/message'
+      && event.data.content.some(block => block.type === 'image'))
+    expect(delivered?.type === 'user/message' && delivered.data.content).toEqual([
+      { type: 'text', text: 'compare' },
+      imageBlock,
+    ])
+    await drainManager(ctx)
+  })
+})
+
 describe('SubagentRuntime.followup residency routing', () => {
   it('enqueues in the same Activation while it is running, preserving one inbox FIFO', async () => {
     const releaseFirst = Promise.withResolvers<undefined>()

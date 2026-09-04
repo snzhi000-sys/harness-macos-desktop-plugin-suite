@@ -32,6 +32,12 @@ export interface ISession {
   readonly sessionId: SessionId
   /** Host-computed projection values by key (the useProjection seat). */
   readonly projections: ProjectionsFace
+  /** Publish one local prompt echo before attachment encoding or network I/O. */
+  beginSubmission(input: {
+    text: string
+    images: readonly { previewUrl: string; name?: string; width?: number; height?: number }[]
+    onRetire?: (reason: 'observed' | 'failed') => void
+  }): { abandon(): void }
   /**
    * Send a prompt into the session.
    * @param content - text plus browser-owned temporary image uploads.

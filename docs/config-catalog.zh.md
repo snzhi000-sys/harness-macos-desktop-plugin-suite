@@ -872,6 +872,12 @@ export interface Config {
   models?: DeepSeekCatalogModel[]
   /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
   streamIdleTimeoutMs?: number
+  /** Maximum accumulated inline image payload after Files API fallback. */
+  maxRequestImageBytes?: number
+  /** Explicit lifetime assigned to uploaded image files. */
+  fileExpiresAfterSeconds?: number
+  /** Remaining lifetime below which a cached file id is refreshed. */
+  fileRefreshMarginSeconds?: number
   /** Provider-owned model-request retry policy; omission uses normal defaults. */
   retryPolicy?: RetryPolicyConfig
 }
@@ -888,12 +894,14 @@ export interface DeepSeekCatalogModel {
   contextWindow?: number
   /** Per-request output cap for this model; omission falls back to the profile's {@link DeepSeekConnectionOptions.maxTokens}. */
   maxTokens?: number
+  /** Accepted request modalities; omission is deliberately text-only. */
+  inputModalities?: ModelModality[]
 }
 ```
 
-依赖：[`RetryPolicyConfig`](../packages/llm/llm/src/index.ts)
+依赖：[`ModelModality`](../packages/llm/llm/src/index.ts) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts)
 
-来源：[`packages/llm/llm-deepseek/src/index.ts:62`](../packages/llm/llm-deepseek/src/index.ts)
+来源：[`packages/llm/llm-deepseek/src/index.ts:72`](../packages/llm/llm-deepseek/src/index.ts)
 
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 

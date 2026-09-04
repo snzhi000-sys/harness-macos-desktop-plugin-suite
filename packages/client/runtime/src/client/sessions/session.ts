@@ -86,6 +86,13 @@ export class Session implements SessionFace {
   private pending = new Map<string, PendingInteraction>()
   private pendingRev = 0
   private pendingCache: { rev: number; value: PendingInteraction[] } | null = null
+  private pendingSubmissions: Array<{
+    id: string
+    text: string
+    images: readonly { previewUrl: string; name?: string; width?: number; height?: number }[]
+    onRetire?: (reason: 'observed' | 'failed') => void
+  }> = []
+  private submissionSeq = 0
   /** Authoritative stream-only inbox snapshot; pending work never hits history. */
   private readonly queueMirror = new SessionQueueMirror()
   /** Session-owned business Context engine over the contiguous raw window. */
@@ -190,6 +197,25 @@ export class Session implements SessionFace {
 
   // ---- Operations ----
 
+  beginSubmission(input: {
+    text: string
+    images: readonly { previewUrl: string; name?: string; width?: number; height?: number }[]
+    onRetire?: (reason: 'observed' | 'failed') => void
+  }): { abandon(): void } {
+    const entry = { id: `submission-${++this.submissionSeq}`, ...input }
+    this.pendingSubmissions.push(entry)
+    this.notifier.markDirty()
+    return {
+      abandon: () => {
+        const index = this.pendingSubmissions.indexOf(entry)
+        if (index < 0) return
+        this.pendingSubmissions.splice(index, 1)
+        entry.onRetire?.('failed')
+        this.notifier.markDirty()
+      },
+    }
+  }
+
   /**
    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
    * @param content - text plus browser-owned temporary image uploads.
@@ -224,25 +250,12 @@ export class Session implements SessionFace {
           },
         }
       } else {
-        if (content.some(part => part.type === 'image')) {
-          result = {
-            ok: false,
-            error: {
-              code: 'attachment-error',
-              message: 'Image input is unavailable for subagent continuations.',
-              details: { reason: 'SUBAGENT_IMAGE_UNSUPPORTED' },
-            },
-          }
-        } else {
-          const routed = (await this.api.subagents.prompt({
-            ...this.address,
-            content: content.flatMap(part => part.type === 'text'
-              ? [{ type: 'text' as const, text: part.text }]
-              : []),
-            clientTimeZone: resolvedClientTimeZone(),
-          })).result
-          result = routed.ok ? { ok: true, value: { accepted: true } } : routed
-        }
+        const routed = (await this.api.subagents.prompt({
+          ...this.address,
+          content,
+          clientTimeZone: resolvedClientTimeZone(),
+        })).result
+        result = routed.ok ? { ok: true, value: { accepted: true } } : routed
       }
     } catch (error) {
       result = transportError(error)
@@ -739,6 +752,10 @@ export class Session implements SessionFace {
     if (tailSeq !== null && event.seq <= tailSeq) return 'none' // replay overlap, drop
     this.events.push(event)
     this.views.push(view)
+    if (event.type === 'user/message' && event.data.source.kind === 'user') {
+      const submission = this.pendingSubmissions.shift()
+      submission?.onRetire?.('observed')
+    }
     if (event.type === 'turn/start') this.firstPromptPendingTurn = false
     const queueChanged = this.queueMirror.acceptDurable(event)
     const publication = this.conversation.append({ event, view })
@@ -825,6 +842,7 @@ export class Session implements SessionFace {
       partial: legacy.partial,
       runningCalls: legacy.runningCalls,
       pending: this.pendingCache.value,
+      pendingSubmissions: this.pendingSubmissions.map(({ id, text, images }) => ({ id, text, images })),
       queue: this.queueMirror.snapshot(),
       running: this.running,
       subagent: this.address === undefined

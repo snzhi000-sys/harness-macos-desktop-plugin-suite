@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, CallId , createMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionForkError, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
@@ -97,6 +98,34 @@ describe('SessionStore.fork', () => {
       parentSession: SessionId('parent'),
       seedLength: source.events.length,
     })
+  })
+
+  it('preserves complete durable image blocks in a fork seed', async () => {
+    const { ctx, sessions } = await setup()
+    const source = ctx.sessions.create(SessionId('image-parent'))
+    const attachment = {
+      attachmentId: AttachmentId(`sha256:${'f'.repeat(64)}`),
+      mediaType: 'image/png' as const,
+      bytes: 3,
+      width: 10,
+      height: 20,
+      name: 'shot.png',
+    }
+    source.append('turn/start', { turn: 1 })
+    source.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: '看图' }, { type: 'image', attachment }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+    const child = sessions.fork(source, undefined, SessionId('image-child'))
+
+    expect(firstUserMessage(child.events).data.content).toEqual([
+      { type: 'text', text: '看图' },
+      { type: 'image', attachment },
+    ])
+    expect(firstUserMessage(child.events).data.content)
+      .not.toBe(firstUserMessage(source.events).data.content)
   })
 
   it('includes stable log-only events appended after a closed turn', async () => {

@@ -609,6 +609,52 @@ describe('prompt and cancel errors', () => {
     expect(session.getSnapshot().composerPhase).toBe('active')
   })
 
+  it('publishes a submission echo synchronously and retires it only when the durable user message arrives', async () => {
+    const { session } = makeSession()
+    await session.open()
+    const retired = vi.fn()
+    const submission = session.beginSubmission({
+      text: '图文问题',
+      images: [{ previewUrl: 'blob:preview', name: 'shot.png', width: 10, height: 20 }],
+      onRetire: retired,
+    })
+    expect(session.getSnapshot().pendingSubmissions).toEqual([{
+      id: 'submission-1',
+      text: '图文问题',
+      images: [{ previewUrl: 'blob:preview', name: 'shot.png', width: 10, height: 20 }],
+    }])
+    session.handleMuxEnvelope('echo' as never, {
+      type: 'session/event', sessionId: SID, event: ev.user(0, '图文问题'),
+    })
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retired).toHaveBeenCalledWith('observed')
+    submission.abandon()
+    expect(retired).toHaveBeenCalledOnce()
+  })
+
+  it.each(['queue', 'steer'] as const)('keeps browser image bytes on the %s prompt wire', async (mode) => {
+    const { api, session } = makeSession()
+    const content = [
+      { type: 'image' as const, mediaType: 'image/png' as const, data: 'AQID', name: 'shot.png' },
+      { type: 'text' as const, text: '看图' },
+    ]
+    await expect(session.prompt(content, mode)).resolves.toMatchObject({ ok: true })
+    expect(api.callsOf('session.prompt')).toMatchObject([{
+      sessionId: SID,
+      mode,
+      content,
+    }])
+  })
+
+  it('abandons a failed submission echo without waiting for model feedback', () => {
+    const { session } = makeSession()
+    const retired = vi.fn()
+    const submission = session.beginSubmission({ text: '失败', images: [], onRetire: retired })
+    submission.abandon()
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retired).toHaveBeenCalledWith('failed')
+  })
+
   it('business failure lands in promptError with op=send; the phase stays engaging (retry, no hero bounce)', async () => {
     const { api, session } = makeSession()
     session.handleBlank(true)

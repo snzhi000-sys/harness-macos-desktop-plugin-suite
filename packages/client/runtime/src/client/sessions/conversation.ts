@@ -323,6 +323,18 @@ export interface QueuedMessage {
   readonly text: string | null
 }
 
+/** Client-local prompt echo shown until its durable user/message is observed. */
+export interface PendingSubmission {
+  readonly id: string
+  readonly text: string
+  readonly images: readonly {
+    readonly previewUrl: string
+    readonly name?: string
+    readonly width?: number
+    readonly height?: number
+  }[]
+}
+
 /** In-progress assistant output (chunk accumulator product). */
 export interface PartialAssistant {
   turn: number
@@ -445,6 +457,8 @@ export interface ConversationSnapshot {
   partial: PartialAssistant | null
   runningCalls: readonly RunningToolCall[]
   pending: readonly PendingInteraction[]
+  /** Optimistic user prompts awaiting their authoritative Host log event; absent on older snapshot producers. */
+  pendingSubmissions?: readonly PendingSubmission[]
   /** Authoritative transient inbox snapshot, including queued and steering placements. */
   queue: readonly QueuedMessage[]
   running: boolean

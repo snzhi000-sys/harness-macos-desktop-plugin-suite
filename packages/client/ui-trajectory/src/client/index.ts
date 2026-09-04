@@ -20,7 +20,7 @@ import { registerTrajectoryToolDefinition } from './trajectory-tool-definition.t
 import { TrajectoryView, type TrajectoryViewInjected } from './TrajectoryView.tsx'
 
 /** Required services: the conversation slot, registries, ordinary Session paging, and the locale service. */
-export const inject = ['slots', 'conversationEvents', 'conversationViews', 'sessions', 'locale']
+export const inject = ['slots', 'conversation', 'conversationEvents', 'conversationViews', 'sessions', 'locale']
 
 /**
  * Client plugin body: register the trajectory view tab. The registration
@@ -53,6 +53,7 @@ export function apply(ctx: Context): void {
       }
       return {
         hooks: { duration },
+        loadImage: attachment => ctx.conversation.resolveImage(sessionId, attachment),
         loadOlder: async () => {
           const before = session.getSnapshot().views.get('trajectory')
           await session.loadOlder()

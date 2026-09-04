@@ -325,6 +325,16 @@ The standard `npm run product:dist:dev` chain passed product-plugin tests, 29 De
 - Files API uploads are reused, expired file IDs trigger re-upload, and switching Provider does not reuse an invalid ID.
 - Images survive refresh, restart, fork, reroll, retry, and long-history paging without disappearing, duplicating, or blocking immediate text-message display.
 
+### 10.5 Stage 5 execution record
+
+Stage 5 completed on 2026-09-04 on the existing durable-attachment and Session-event path, without importing the upstream Session Controller or replacing `ui-conversation` wholesale. The DeepSeek catalog now distinguishes text and vision models explicitly; uncatalogued pass-through models remain text-only. The Host validates and stores images as content-addressed attachments before publishing a user message. Queue, steer, fork, retry, reroll, refresh, and paging continue to carry only durable references and never persist Blob URLs or base64.
+
+`llm-deepseek` preserves the Stage 0 `reasoning_content` rule while serializing user and tool-result images into DeepSeek multimodal messages. It prefers the Files API and reuses file ids by attachment digest, normalized endpoint, and one-way credential scope, with proactive refresh near expiry. Controlled upload failure falls back to inline data within the request image budget. When chat completion explicitly rejects a stale id, only matching mappings are invalidated, followed by one re-upload and one chat retry. A failed re-upload may use controlled fallback but cannot start a retry loop. Concurrent uploads of one image coalesce, while cancellation by one waiter does not abort an upload still needed by another request.
+
+Subagent browser images pass through the parent Host attachment validator and store before a durable reference enters the child Session; a text-only child rejects the image before writing a partial message. Trajectory retains assistant and tool-result image references and renders them through Conversation's Session-authorized loader rather than Better Sidebar Preview authority. Request image pressure replaces oldest images with an explicit omission marker only in the transient model request and never rewrites Session history.
+
+Focused verification covers DeepSeek multimodal serialization, Files API transport, upload indexing, concurrent cancellation, reasoning history, queue, steer, fork, subagent admission and durability, and Trajectory's authorized image rendering. The current supplemental rerun passed 243 tests across 7 files, and the affected LLM, Host, Subagent, Client Runtime, Conversation, and Trajectory TypeScript projects build successfully. The final Dev package and isolated-launch record will be appended when this stage completes; no Stable package is built or installed.
+
 ## 11. Stage 6: Subagent and model-configuration enhancements
 
 ### 11.1 Porting method

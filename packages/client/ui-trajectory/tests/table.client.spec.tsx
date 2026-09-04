@@ -58,6 +58,7 @@ const TURNS: readonly TrajectoryTurnModel[] = [{
 }]
 
 const FOLD_PROPS = {
+  loadImage: vi.fn(async () => 'blob:trajectory-image'),
   collapsedTurns: new Set<number>(),
   onToggleTurn: () => {},
   collapsedAssistants: new Set<string>(),
@@ -65,6 +66,36 @@ const FOLD_PROPS = {
 }
 
 describe('TrajectoryTable', () => {
+  it('loads durable image records through the current Session image route', async () => {
+    const loadImage = vi.fn(async () => 'blob:trajectory-image')
+    const attachment = {
+      attachmentId: 'sha256:image' as never,
+      mediaType: 'image/png' as const,
+      bytes: 3,
+      width: 10,
+      height: 20,
+      name: 'shot.png',
+    }
+    const turns: readonly TrajectoryTurnModel[] = [{
+      turn: 1,
+      groups: [{
+        title: 'Step 1',
+        cells: [{
+          index: 1,
+          kind: 'message',
+          text: 'Image',
+          sourceBlocks: [{ type: 'image', content: '', attachment }],
+          timeSeconds: 0.1,
+        }],
+      }],
+    }]
+    render(<TrajectoryTable turns={turns} {...FOLD_PROPS} loadImage={loadImage} />)
+    fireEvent.click(screen.getByRole('row', { name: /ASSISTANT/ }))
+
+    await waitFor(() => { expect(loadImage).toHaveBeenCalledWith(attachment) })
+    expect(await screen.findByAltText('shot.png')).toBeTruthy()
+  })
+
   it('shows a muted placeholder for an assistant response containing only tool calls', () => {
     const turns: readonly TrajectoryTurnModel[] = [{
       turn: 1,

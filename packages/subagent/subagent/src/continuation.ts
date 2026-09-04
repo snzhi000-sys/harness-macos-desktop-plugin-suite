@@ -30,7 +30,7 @@ import type {
   AgentSetupCommit,
   CreateAgentOptions,
 } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, contentHasImage, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -493,6 +493,14 @@ export class SubagentContinuationManager {
         if (activation.disposal !== undefined) {
           return activation.disposal.then(() => undefined, () => undefined)
         }
+        if (contentHasImage(content)) {
+          await this.assertImageCapable(activation.handle.agent, options.signal)
+          const disposal = this.activations.get(childId)?.disposal
+          if (disposal !== undefined) {
+            await disposal.catch(() => undefined)
+            return undefined
+          }
+        }
         return this.submitAdmitted(activation, content, options.source, parent, options.signal)
       })
       /* v8 ignore start -- only the lost-cutoff arm above returns undefined, so only that
@@ -948,12 +956,30 @@ export class SubagentContinuationManager {
     signal: AbortSignal,
   ): Promise<MessageId> {
     try {
+      if (contentHasImage(content)) {
+        await this.assertImageCapable(activation.handle.agent, signal)
+        if (activation.disposal !== undefined) {
+          throw new SubagentError(`subagent "${activation.childId}" is closing`, 'ACTIVATION_CLOSING')
+        }
+      }
       return this.submitAdmitted(activation, content, source, parent, signal)
     } catch (error: unknown) {
       /* v8 ignore next -- rollback disposal failures must not mask the
        * pre-acceptance signal, drain, or lifecycle failure. */
       await this.dispose(activation).catch(() => undefined)
       throw error
+    }
+  }
+
+  /** Refuse image delivery before it enters a text-only child's inbox. */
+  private async assertImageCapable(agent: Agent, signal: AbortSignal): Promise<void> {
+    const { provider, model } = agent.options
+    if (provider === undefined || model === undefined) return
+    const llm = this.ctx.get('llm')
+    if (llm === undefined) return
+    const info = await llm.resolveModelInfo(provider, model, signal)
+    if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+      throw new SubagentError(`Model "${model}" does not support image input.`, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
     }
   }
 

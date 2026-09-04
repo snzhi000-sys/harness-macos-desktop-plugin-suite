@@ -2,14 +2,17 @@
  * Serialize harness messages into DeepSeek chat completions. User text is joined; assistant text
  * becomes `content`, tool calls become `tool_calls`, and tool results become separate tool messages.
  * Thinking-mode requests replay `reasoning_content` on every assistant history message, including
- * an empty string when that message recorded no reasoning. Core image blocks are rejected explicitly because this wire route is text-only;
- * unknown declaration-merged block types retain the adapter's documented extension fallback.
+ * an empty string when that message recorded no reasoning. Image-aware serialization resolves durable user and tool-result
+ * attachments into either Files API references or inline data URLs; unsupported roles fail instead of losing content.
+ * Unknown declaration-merged block types retain the adapter's documented extension fallback.
  * @module dsh-llm-deepseek/serialize
  */
 
-import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmError, offloadRequestImages } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
-import type { WireMessage, WireRequest, WireTool } from './types.ts'
+import { AttachmentError } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentStore, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { WireImageContentPart, WireMessage, WireRequest, WireTool, WireUserContentPart } from './types.ts'
 
 /** Adapter-level request defaults (from plugin config). */
 export interface RequestDefaults {
@@ -21,6 +24,19 @@ interface ResolvedThinking {
   thinking?: 'enabled' | 'disabled'
   reasoningEffort?: 'high' | 'max'
 }
+
+export type ImageRepresentation =
+  | { kind: 'base64' }
+  | { kind: 'file'; resolveFileId: (stored: StoredImageAttachment) => Promise<string> }
+
+export interface ImageSerializationOptions {
+  attachments: AttachmentStore
+  representation: ImageRepresentation
+  maxRequestImageBytes: number
+  signal: AbortSignal
+}
+
+const TOOL_RESULT_IMAGE_TEXT = 'Attached image(s) from tool result:'
 
 /** Validate the adapter-owned effort before resolving its DeepSeek wire fields. */
 function reasoningEffort(effort: NonNullable<GenerateOptions['reasoningEffort']>): 'off' | 'high' | 'max' {
@@ -65,6 +81,58 @@ function assertTextOnly(blocks: readonly ContentBlock[]): void {
   if (contentHasImage(blocks)) {
     throw new LlmError('The DeepSeek chat-completions adapter does not support image content.', 'UNSUPPORTED_CONTENT')
   }
+}
+
+function assertSupportedImageRoles(messages: readonly Message[]): void {
+  for (const message of messages) {
+    if (message.role !== 'user' && contentHasImage(message.content)) {
+      throw new LlmError(
+        `The DeepSeek chat-completions adapter cannot represent image content in a ${message.role} message.`,
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+  }
+}
+
+async function imagePart(
+  block: Extract<ContentBlock, { type: 'image' }>,
+  images: ImageSerializationOptions,
+): Promise<WireImageContentPart | { type: 'file'; file_id: string }> {
+  try {
+    const stored = await images.attachments.readImage(block.attachment, images.signal)
+    if (images.representation.kind === 'file') {
+      return { type: 'file', file_id: await images.representation.resolveFileId(stored) }
+    }
+    return {
+      type: 'image_url',
+      image_url: { url: `data:${stored.ref.mediaType};base64,${Buffer.from(stored.data).toString('base64')}` },
+    }
+  } catch (error: unknown) {
+    if (error instanceof AttachmentError) throw new LlmError(error.message, error.code, { cause: error })
+    throw error
+  }
+}
+
+async function contentParts(
+  blocks: readonly ContentBlock[],
+  images: ImageSerializationOptions,
+): Promise<WireUserContentPart[]> {
+  const parts: WireUserContentPart[] = []
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      if (block.text.length > 0) parts.push({ type: 'text', text: block.text })
+    } else if (block.type === 'image') {
+      parts.push(await imagePart(block, images))
+    } else if (block.type === 'tool-result') {
+      parts.push(...await contentParts(block.content, images))
+    }
+  }
+  return parts
+}
+
+function userContent(parts: readonly WireUserContentPart[]): string | WireUserContentPart[] {
+  if (parts.every(part => part.type === 'text')) return parts.map(part => part.text).join('')
+  return [...parts]
 }
 
 /** Serialize one assistant message (text + reasoning + tool calls). */
@@ -141,6 +209,49 @@ export function serializeMessages(messages: Message[], thinkingEnabled = false):
   return wire
 }
 
+export async function serializeMessagesWithImages(
+  messages: readonly Message[],
+  images: ImageSerializationOptions,
+  thinkingEnabled = false,
+): Promise<WireMessage[]> {
+  assertSupportedImageRoles(messages)
+  const wire: WireMessage[] = []
+  let pendingToolImages: Array<Exclude<WireUserContentPart, { type: 'text' }>> = []
+  const flushToolImages = (): void => {
+    if (pendingToolImages.length === 0) return
+    wire.push({ role: 'user', content: [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }, ...pendingToolImages] })
+    pendingToolImages = []
+  }
+  for (const message of messages) {
+    if (message.role === 'system') {
+      flushToolImages()
+      wire.push({ role: 'system', content: flattenText(message.content) })
+      continue
+    }
+    if (message.role === 'assistant') {
+      flushToolImages()
+      wire.push(serializeAssistant(message, thinkingEnabled))
+      continue
+    }
+    const regular = message.content.filter(block => block.type !== 'tool-result')
+    const toolResults = message.content.filter((block): block is Extract<ContentBlock, { type: 'tool-result' }> => block.type === 'tool-result')
+    const regularParts = await contentParts(regular, images)
+    if (regularParts.length > 0 || toolResults.length === 0) {
+      flushToolImages()
+      wire.push({ role: 'user', content: userContent(regularParts) })
+    }
+    for (const result of toolResults) {
+      const parts = await contentParts(result.content, images)
+      const attached = parts.filter((part): part is Exclude<WireUserContentPart, { type: 'text' }> => part.type !== 'text')
+      const text = parts.filter((part): part is Extract<WireUserContentPart, { type: 'text' }> => part.type === 'text').map(part => part.text).join('')
+      wire.push({ role: 'tool', tool_call_id: result.toolCallId, content: text || (attached.length > 0 ? '(see attached image)' : '(no output)') })
+      pendingToolImages.push(...attached)
+    }
+  }
+  flushToolImages()
+  return wire
+}
+
 /**
  * Build the full wire request. Always streaming (`stream: true`, usage
  * reporting on); optional fields are omitted rather than sent as null, so
@@ -179,6 +290,39 @@ export function serializeRequest(
     ...resolvedThinking.reasoningEffort !== undefined
       ? { reasoning_effort: resolvedThinking.reasoningEffort }
       : {},
+    ...tools !== undefined && tools.length > 0 ? { tools } : {},
+    ...options.temperature !== undefined ? { temperature: options.temperature } : {},
+    ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },
+    ...options.stop !== undefined ? { stop: options.stop } : {},
+  }
+}
+
+export async function serializeRequestWithImages(
+  options: GenerateOptions,
+  images: ImageSerializationOptions,
+  defaults: RequestDefaults = {},
+): Promise<WireRequest> {
+  assertSupportedImageRoles(options.messages)
+  const requestMessages = offloadRequestImages(options.messages, images.maxRequestImageBytes)
+  const resolvedThinking = resolveThinking(options, defaults)
+  const messages: WireMessage[] = []
+  if (options.system !== undefined) messages.push({ role: 'system', content: options.system })
+  messages.push(...await serializeMessagesWithImages(
+    requestMessages,
+    images,
+    resolvedThinking.thinking === 'enabled',
+  ))
+  const tools: WireTool[] | undefined = options.tools?.map(tool => ({
+    type: 'function',
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  }))
+  return {
+    model: options.model,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+    ...resolvedThinking.thinking !== undefined ? { thinking: { type: resolvedThinking.thinking } } : {},
+    ...resolvedThinking.reasoningEffort !== undefined ? { reasoning_effort: resolvedThinking.reasoningEffort } : {},
     ...tools !== undefined && tools.length > 0 ? { tools } : {},
     ...options.temperature !== undefined ? { temperature: options.temperature } : {},
     ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },

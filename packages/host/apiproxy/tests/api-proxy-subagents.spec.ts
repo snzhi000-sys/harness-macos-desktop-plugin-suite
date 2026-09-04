@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import { RpcId } from '../src/api/rpc.ts'
@@ -80,6 +81,15 @@ function bench(options: {
     if (options.projectionsThrow === true) throw new Error('hostile unit')
     return { snapshot: coldBlock }
   })
+  const imageRef = {
+    attachmentId: AttachmentId(`sha256:${'a'.repeat(64)}`),
+    mediaType: 'image/png' as const,
+    bytes: 3,
+    width: 1,
+    height: 1,
+  }
+  const validateImage = vi.fn(async () => imageRef)
+  const saveImage = vi.fn(async () => imageRef)
   const ctx = new Context()
   ctx.provide('agents', { get: getAgent })
   ctx.provide('subagents', { listChildren, followup, interrupt })
@@ -102,10 +112,18 @@ function bench(options: {
     register: () => () => {},
   })
   ctx.provide('userQuestions', { registerProvider: () => () => {} })
+  ctx.provide('attachments', {
+    imageLimits: { maxImagesPerMessage: 8, maxMessageImageBytes: 20 * 1024 * 1024 },
+    validateImage,
+    saveImage,
+  } as never)
   const api = createApiProxy(ctx, {
     defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp',
   })
-  return { api, getAgent, listChildren, inspect, snapshot, restore, followup, interrupt, parent }
+  return {
+    api, getAgent, listChildren, inspect, snapshot, restore, followup, interrupt, parent,
+    validateImage, saveImage, imageRef,
+  }
 }
 
 describe('subagent gateway', () => {
@@ -276,6 +294,31 @@ describe('subagent gateway', () => {
       content,
       { source: { kind: 'user', rpcId: RpcId('subagent-rpc') }, signal },
     )
+  })
+
+  it('persists browser image bytes before delivering a durable child prompt', async () => {
+    const { api, parent, followup, validateImage, saveImage, imageRef } = bench()
+    const signal = new AbortController().signal
+    const response = await api.subagents.prompt(request({
+      parentSessionId: PARENT,
+      childSessionId: CHILD,
+      mode: 'continuable',
+      content: [
+        { type: 'text', text: '看图' },
+        { type: 'image', mediaType: 'image/png', data: 'AQID', name: 'shot.png' },
+      ],
+    }), signal)
+    expect(response.result).toMatchObject({ ok: true })
+    expect(validateImage).toHaveBeenCalledWith({
+      data: Uint8Array.from([1, 2, 3]), mediaType: 'image/png', name: 'shot.png',
+    })
+    expect(saveImage).toHaveBeenCalledWith({
+      data: Uint8Array.from([1, 2, 3]), mediaType: 'image/png', name: 'shot.png',
+    })
+    expect(followup).toHaveBeenCalledWith(parent, CHILD, [
+      { type: 'text', text: '看图' },
+      { type: 'image', attachment: imageRef },
+    ], { source: { kind: 'user', rpcId: RpcId('subagent-rpc') }, signal })
   })
 
   it('canonicalizes browser-zone provenance before delivering a child prompt', async () => {
