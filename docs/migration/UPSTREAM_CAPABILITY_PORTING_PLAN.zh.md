@@ -357,7 +357,7 @@ Web E2E 首次因本机 Playwright 1.61.1 缺少 revision 1228 而无法启动�
 
 `AgentOptions.reasoningEffort` 会为子 agent 的首次请求设定初始值，请求重建不变量会将其与持久请求 header 比对。可继续描述符 v3 保存提供方、模型、推理强度和最大 token 数以供冷恢复；读取方仍接受 v2 描述符，并为其中缺少的字段采用路由默认值。spawn 与 fork 提供方显式声明一次性 `agentOptions` 支持，但产品 fork 工具不公开路由选择，因此继续保留继承路由的 KV Cache 行为。
 
-File Edit 的归属仍为 `origin: "subagent"`，嵌套修改继续通过现有父级账本结算。Better Sidebar 的 Job Panel 仍读取 `jobsBySession`，其 subagent 拓扑使用稳定的 history/catalog API，而不是根据 Session 数组推导 Job 状态。定向 TypeScript 构建通过；扩展回归覆盖继续执行恢复、提供方能力拒绝、授权过滤、Job 投影和 Better Sidebar Job 渲染，共 25 个文件、503 项测试通过。阶段产品构建完成后再记录最终 Dev 打包与隔离启动结果；本阶段不构建或安装 Stable。
+File Edit 的归属仍为 `origin: "subagent"`，嵌套修改继续通过现有父级账本结算。Better Sidebar 的 Job Panel 仍读取 `jobsBySession`，其 subagent 拓扑使用稳定的 history/catalog API，而不是根据 Session 数组推导 Job 状态。定向 TypeScript 构建通过；扩展回归覆盖继续执行恢复、提供方能力拒绝、授权过滤、Job 投影和 Better Sidebar Job 渲染，共 25 个文件、503 项测试通过。2026-09-04 的标准 Dev 产品构建完成了 Harness Host/Client 与五个产品插件的重建，但当前执行沙箱禁止 Better Sidebar 媒体 Range 集成测试监听 `127.0.0.1`，4 项测试以 `listen EPERM` 终止，另外 543 项通过；流水线在 Electron 候选生成前按预期停止，因此没有产生或发布新的 Dev App，也没有执行隔离启动。本阶段不绕过门禁，不构建或安装 Stable；需在允许本地回环监听的环境中重新运行 `npm run product:dist:dev`。
 
 ## 12. 阶段 7：配置与诊断增强
 

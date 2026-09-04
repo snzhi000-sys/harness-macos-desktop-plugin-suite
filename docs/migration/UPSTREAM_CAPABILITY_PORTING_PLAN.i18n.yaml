@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/migration/UPSTREAM_CAPABILITY_PORTING_PLAN.md
-UPSTREAM_CAPABILITY_PORTING_PLAN.md: a65ca048763e35f3a058357b5a1fa46a9cfae98e
-UPSTREAM_CAPABILITY_PORTING_PLAN.zh.md: b6a04cedbc46aa32292e72ccfa65386819359ba5
+UPSTREAM_CAPABILITY_PORTING_PLAN.md: 7fee8a9e9c1ad76dd6eb89840edba197b5a5fb52
+UPSTREAM_CAPABILITY_PORTING_PLAN.zh.md: 589de5063a5621fc249b5da887213d98ff5730fe
