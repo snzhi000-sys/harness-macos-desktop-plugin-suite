@@ -183,18 +183,39 @@ function scriptedFace(overrides: {
 
 type WireFace = ConstructorParameters<typeof ModelsSettingsStore>[0]
 
+type RenderSlotCall = [name: string, owner: Record<string, unknown>, opts?: { entryKey?: string }]
+
+function stubRenderSlot() {
+  return vi.fn((..._call: RenderSlotCall) => null)
+}
+
+function cardSeatCalls(
+  renderSlot: ReturnType<typeof stubRenderSlot>,
+): Array<[string, boolean, boolean, string | undefined]> {
+  return renderSlot.mock.calls
+    .filter(call => call[0] === 'settings.models.provider-card')
+    .map(call => [
+      (call[1] as { provider: { provider: string } }).provider.provider,
+      (call[1] as { configured: boolean }).configured,
+      (call[1] as { keyConfigured: boolean }).keyConfigured,
+      call[2]?.entryKey,
+    ])
+}
+
 async function mountFace(scripted: ReturnType<typeof scriptedFace>) {
   const { face, update, replace, mutate, set, unset } = scripted
   const controller = new ModelsSettingsStore(face as unknown as WireFace)
   await controller.load()
-  const injected: ModelsSectionInjected = {
+  const renderSlot = stubRenderSlot()
+  const injected: ModelsSectionProps = {
     controller,
     useSnapshot: bindSnapshotSelector(controller.store),
     api: face as never,
     t,
+    renderSlot: renderSlot as unknown as NonNullable<ModelsSectionProps['renderSlot']>,
   }
   const view = render(<ModelsSection {...injected} />)
-  return { view, face, update, replace, mutate, set, unset, controller }
+  return { view, face, update, replace, mutate, set, unset, controller, renderSlot }
 }
 
 async function mountSection(overrides: Parameters<typeof scriptedFace>[0] = {}) {
@@ -230,6 +251,29 @@ describe('ModelsSection', () => {
     const uninjected = {} as ModelsSectionProps
     render(<ModelsSection {...uninjected} />)
     expect(document.body.textContent).toBe('')
+  })
+
+  it('dispatches provider-card rows by namespace and renders one footer seat', async () => {
+    const { renderSlot } = await mountSection()
+    const cards = cardSeatCalls(renderSlot)
+    expect(cards).toContainEqual(['openai', true, true, 'llm-pi-ai'])
+    expect(cards).toContainEqual(['deepseek-official', true, false, 'llm-deepseek'])
+    expect(renderSlot.mock.calls.filter(call => call[0] === 'settings.models.footer')).toEqual([
+      ['settings.models.footer', {}],
+    ])
+  })
+
+  it('dispatches provider-card seats for first-run setup and add-provider drafts', async () => {
+    const firstRun = await mountFirstRun()
+    expect(cardSeatCalls(firstRun.renderSlot)).toContainEqual([
+      'deepseek-official', true, false, 'llm-deepseek',
+    ])
+    cleanup()
+
+    const regular = await mountSection()
+    regular.renderSlot.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: en.add }))
+    expect(cardSeatCalls(regular.renderSlot)).toContainEqual(['anthropic', false, false, 'llm-pi-ai'])
   })
 
   it('renders the unkeyed whole-section provider as an open setup card in the first-run posture', async () => {

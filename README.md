@@ -2,29 +2,11 @@
 
 主文档 | [中文镜像](README.zh.md)
 
-<div align="center">
-  <img src="assets/readme/cover.png" width="100%" alt="Harness for macOS：把 Agent、文件与审阅放进同一个工作空间">
-</div>
-
-<div align="center">
-  <br>
-  <strong>一个为 AI 办公重新设计的 macOS 桌面工作台</strong>
-  <br><br>
-  <a href="#设计理念">设计理念</a> ·
-  <a href="#产品特色">产品特色</a> ·
-  <a href="#终端快速体验">快速体验</a> ·
-  <a href="#当前公开发行状态">发行边界</a>
-  <br><br>
-  <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple&logoColor=white">
-  <img alt="DeepSeek Harness" src="https://img.shields.io/badge/Based%20on-DeepSeek%20Harness-2563eb">
-  <img alt="License MIT" src="https://img.shields.io/badge/License-MIT-16a34a">
-</div>
-
 面向日常办公场景的 macOS AI 工作台：基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 二次开发，把 Agent 对话、文件浏览与网页/多媒体浏览整合进同一个桌面 App，并保留 Harness 的 Cordis 插件架构和 Agent 能力，在统一工程中维护 Electron 桌面封装、必要的 Harness Web 定制、五个产品插件以及可复现的 Dev/Stable 打包流程。
 
 市面上的 Agent 生产力工具长期难以在 Codex 与 IDE 之间取得平衡：用 Codex 开发，模型更强，但它的文件浏览、文件管理器等侧边栏不好用，甚至功能尚不成熟；回到 IDE，写代码、看代码顺手，但浏览 Markdown 要切换渲染视图，日常写文档的办公能力也捉襟见肘。本项目从「日常办公用 AI」这个需求重新出发，重构一套把浏览文件与对话 AI 摆到同等位置的工作台。
 
-> 本项目是社区第三方项目，并非 DeepSeek 官方产品。仓库公开的是可审查源码快照，不代表 Stable App 已完成签名、公证或公开二进制发行验证；上游 Harness 仍处于开发者预览阶段，后续更新可能包含兼容性破坏性变更。
+> 本项目是社区第三方项目，并非 DeepSeek 官方产品。当前 `release/open-source-v1` 是公开审查候选分支，不是已签名、公证或可直接发行的正式版本；上游 Harness 仍处于开发者预览阶段，后续更新可能包含兼容性破坏性变更。
 
 ## 设计理念
 
@@ -43,7 +25,7 @@
 - **三栏工作台布局**：正式界面采用会话列表、Explorer 文件树和对话主面板三栏布局，支持亮色与暗黑主题。
 - **平滑启动**：启动页使用与三栏结构一致的简洁骨架占位，跟随上次主题，并在主界面就绪后平滑淡出。
 - **通道隔离**：Dev 与 Stable 使用不同的 App 标识和用户数据目录；重新打包会复用各自通道已有的模型 Key、设置和偏好，但这些数据始终保存在 App 外部，不写入源码或发行包。
-- **版本可辨**：「关于 App」显示构建时写入的版本号、构建时间和 Dev/Stable 通道，便于区分测试包与正式候选包。
+- **版本可辨**：「关于 Harness App」显示构建时写入的版本号、构建时间和 Dev/Stable 通道，便于区分测试包与正式候选包。
 
 ### 干净的 Explorer
 
@@ -55,17 +37,6 @@
 - **安全拖动**：文件和文件夹都能拖入其他目录，也能移回工作区根目录；Host 会再次检查工作区边界、符号链接、循环移动和同名冲突。
 - **右键操作**：右键菜单提供引用、复制路径、在访达中显示等常用操作。
 
-<table>
-  <tr>
-    <td width="55%" align="center"><img src="assets/readme/explorer-labels.png" width="100%" alt="为文件和文件夹设置 Emoji 快捷标签"></td>
-    <td width="45%" align="center"><img src="assets/readme/explorer-focus.png" width="100%" alt="隐藏或显示非常用文件"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>为常用资源设置快捷标签</strong></td>
-    <td align="center"><strong>隐藏干扰，随时恢复显示</strong></td>
-  </tr>
-</table>
-
 ### 浏览文件优先的多标签布局
 
 **把最大的显示面积留给文件浏览，AI 对话与文件统一收纳成标签**：在同一个视图里通过标签切换文件与对话。
@@ -75,10 +46,6 @@
 - **右侧浏览边栏**：网页、图片、PDF、DOCX、XLSX、PPTX 和视频共享右侧 Browser/Preview 标签栏，可切换、关闭、拖动排序并按会话恢复标签状态；边开发网页边在同一窗口里看渲染效果。
 - **视频流式播放**：MP4、M4V、WebM、MOV 和 OGV 使用 HTTP Range 流式读取，不把完整视频载入 Node 内存；播放器提供播放、暂停、进度、缓冲、音量、倍速、全屏、画中画和局部键盘控制。
 - **自动暂停**：切换视频标签、收起右栏或切换会话会自动暂停；不支持的容器或编码会显示明确错误，并提供系统播放器和下载兜底。
-
-<div align="center">
-  <img src="assets/readme/workbench.png" width="100%" alt="Harness 文件浏览与多标签工作台">
-</div>
 
 ### 打通对话框与文件的引用
 
@@ -98,10 +65,6 @@
 - **删除可恢复**：AI 删除文件或目录前，内容先进入持久隔离区并生成删除墓碑；目录删除按一个批次展示，可展开查看所有子文件、整批接受，或完整恢复目录结构和内容。
 - **删除前快照**：被 AI 删除的文本文件仍可从审核入口只读查看删除前快照，文件标签使用红色删除线表达删除状态。
 - **严格门禁**：可写 Shell 工具受到严格门禁；AI 删除必须经过结构化 `file_delete`，确保删除前已有可恢复副本并进入审核流程。
-
-<div align="center">
-  <img src="assets/readme/review.png" width="100%" alt="Harness 文件修改审核视图">
-</div>
 
 ### 会话编辑与谱系
 
@@ -174,21 +137,6 @@ docs/          架构、开发、迁移和维护资料
 统一工程把 `src/` 与可维护源码归为源码面（source plane），把 `lib/`、`dist/`、`.artifacts/`、Profile、Runtime 和 `.app` 归为产物面（artifact plane）；开发只改前者，不从已安装 App 或用户 Profile 反向覆盖源码。
 
 <a id="run"></a><a id="run-from-source"></a>
-
-## 终端快速体验
-
-当前暂未提供已签名、公证的公开安装包。使用 macOS Apple Silicon 的用户可以在终端下载源码、构建并打开独立的 Dev App：
-
-```bash
-git clone --depth 1 https://github.com/snzhi000-sys/harness-macos-desktop-plugin-suite.git
-cd harness-macos-desktop-plugin-suite
-corepack enable
-pnpm install
-npm run product:dist:dev
-open "desktop/dist/dev/mac-arm64/DeepSeek Harness Dev.app"
-```
-
-首次构建需要下载依赖并生成 Runtime 与产品 Profile，所需时间取决于网络和机器性能。Dev App 使用独立数据目录，不会覆盖已安装的 Stable App。
 
 ## 本地开发
 
@@ -275,14 +223,6 @@ DeepSeek Harness (`dsh`) 是 DeepSeek AI 开发的开源 Agent Harness，采用�
 - [本仓库开发指南](docs/development.md)
 - [本仓库架构文档](docs/architecture.md)
 - [贡献指南](CONTRIBUTING.md)
-
-## 作者与致谢
-
-- 作者：[zhee](https://github.com/snzhi000-sys)
-- 项目地址：[harness-macos-desktop-plugin-suite](https://github.com/snzhi000-sys/harness-macos-desktop-plugin-suite)
-- 上游：[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-
-感谢 Better Sidebar、File Edit、Message Edit 与 Cowork 等社区项目提供的基础能力。各组件来源和许可证以仓库内说明与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 为准。
 
 ## License
 

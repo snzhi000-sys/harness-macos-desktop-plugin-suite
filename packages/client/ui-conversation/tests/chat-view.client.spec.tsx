@@ -154,6 +154,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
   const openDetails = vi.fn<(t: SelectionTarget) => void>()
   const openFile = vi.fn<(path: string) => void>()
   const loadOlder = vi.fn()
+  const loadThrough = vi.fn<(seq: number) => Promise<void>>(() => Promise.resolve())
   const inspectCall = vi.fn<(callId: string) => void>()
   // In-memory scroll memory matching the apply.ts per-session map contract.
   let savedScroll: ReturnType<ChatViewSlotProps['chatScroll']['read']> = null
@@ -283,6 +284,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     openDetails,
     openFile,
     loadOlder,
+    loadThrough,
     loadImage: vi.fn(() => Promise.reject(new Error('not used'))),
     inspectCall,
     chatScroll,
@@ -294,7 +296,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
   }
   const setSelection = (next: SelectionTarget | null): void => { chat.actions.select(next) }
   return {
-    set, ChatView, props, openDetails, openFile, loadOlder, inspectCall,
+    set, ChatView, props, openDetails, openFile, loadOlder, loadThrough, inspectCall,
     chatScroll, forkAt, setSelection, toolOwners,
   }
 }
@@ -377,6 +379,27 @@ describe('Chat node rendering', () => {
 })
 
 describe('ChatView', () => {
+  it('keeps an old-turn jump pending until a reader-owned page releases loading', async () => {
+    const h = makeHarness({
+      nodes: [assistant(10, 'latest', 2)],
+      hasMore: true,
+      loadingOlder: true,
+    })
+    h.props.useProjection = (() => ({ turns: [
+      { turn: 1, seq: 0, prompt: 'old question', response: 'old answer', status: 'closed' },
+      { turn: 2, seq: 8, prompt: 'latest question', response: 'latest answer', status: 'closed' },
+    ] }))
+    const view = render(<h.ChatView {...h.props} />)
+
+    fireEvent.click(view.getByRole('button', { name: '加载并跳转到第 1 轮' }))
+    expect(h.loadThrough).not.toHaveBeenCalled()
+    expect(view.getByRole('button', { name: '加载并跳转到第 1 轮' }).getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => { h.set({ loadingOlder: false }) })
+    expect(h.loadThrough).toHaveBeenCalledTimes(1)
+    expect(h.loadThrough).toHaveBeenLastCalledWith(0)
+  })
+
   it('hands a windowless tool result to the Tool seat with an empty tool name', () => {
     const h = makeHarness({
       nodes: [{ ...toolResult(3, 'w1'), call: null }],
@@ -512,6 +535,28 @@ describe('ChatView', () => {
     expect(branchButtons[0]!.getAttribute('aria-disabled')).toBeNull()
     fireEvent.click(branchButtons[0]!)
     expect(h.forkAt).toHaveBeenCalledWith(1)
+  })
+
+  it('keeps an immediate local echo only until the matching Host queue occurrence is visible', () => {
+    const submission = { id: 'submission-1', text: 'send immediately', images: [] }
+    const queued = {
+      id: 'queued-occurrence' as never,
+      messageId: 'queued-message' as never,
+      placement: 'queued' as const,
+      content: [{ type: 'text' as const, text: submission.text }],
+      preview: submission.text,
+      text: submission.text,
+    }
+    const h = makeHarness({ pendingSubmissions: [submission] })
+    const view = render(<h.ChatView {...h.props} />)
+
+    expect(view.getByText(submission.text).closest('[data-pending-submission]')).not.toBeNull()
+
+    act(() => { h.set({ queue: [queued] }) })
+    expect(view.queryByText(submission.text)).toBeNull()
+
+    act(() => { h.set({ queue: [] }) })
+    expect(view.queryByText(submission.text)).toBeNull()
   })
 
   it('keeps a later pending occurrence visible when it reuses a durable MessageId', () => {

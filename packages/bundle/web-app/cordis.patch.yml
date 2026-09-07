@@ -84,6 +84,11 @@
     - id: session-stats
       name: '@deepseek-ai/dsh-session-stats'
 
+    # Whole-log bounded turn index used by Chat navigation. The projection
+    # carries no tool output, attachment body, or file content.
+    - id: session-turn-outline
+      name: '@deepseek-ai/dsh-session-turn-outline'
+
     # Resolve bind host, SSH launch, and display once at boot, then mount the
     # matching dual-face directory picker. Mount -native or -browse directly in
     # an overlay to pin the interaction.

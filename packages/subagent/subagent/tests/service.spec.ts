@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { type Agent } from '@deepseek-ai/dsh-agent'
 
-import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { HarnessError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import SubagentRuntime, {
   foldSubagentDescriptor,
@@ -24,8 +24,20 @@ function fakeParent(id = 'parent-1'): Agent {
   return { id: SessionId(id) } as unknown as Agent
 }
 
-const ALL_CAPS: SubagentCapabilities = { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }
-const NO_CAPS: SubagentCapabilities = { outputSchema: false, depthLimit: false, toolFilter: false, persona: false }
+const ALL_CAPS: SubagentCapabilities = {
+  agentOptions: true,
+  outputSchema: true,
+  depthLimit: true,
+  toolFilter: true,
+  persona: true,
+}
+const NO_CAPS: SubagentCapabilities = {
+  agentOptions: false,
+  outputSchema: false,
+  depthLimit: false,
+  toolFilter: false,
+  persona: false,
+}
 
 function baseRequest(overrides: Partial<SubagentStartRequest> = {}): SubagentStartRequest {
   return {
@@ -161,6 +173,7 @@ describe('SubagentRuntime', () => {
   })
 
   it.each([
+    ['agentOptions', { agentOptions: { model: 'child' } }],
     ['outputSchema', { outputSchema: { type: 'object', properties: {} } }],
     ['depthLimit', { maxDepth: 1 }],
     ['toolFilter', { toolFilter: { deny: ['bash'] } }],
@@ -347,6 +360,8 @@ describe('subagent descriptors', () => {
       label: 'complete child',
       agentProvider: 'deepseek',
       agentModel: 'chat',
+      agentReasoningEffort: ReasoningEffortId('max'),
+      agentMaxTokens: 8_192,
       persona: 'reviewer',
       toolFilter: { allow: ['read'], deny: ['bash'] },
     }
@@ -356,10 +371,20 @@ describe('subagent descriptors', () => {
       label: complete.label,
       agentProvider: complete.agentProvider,
       agentModel: complete.agentModel,
+      agentReasoningEffort: complete.agentReasoningEffort,
+      agentMaxTokens: complete.agentMaxTokens,
       persona: complete.persona,
       toolFilter: complete.toolFilter,
     })).toEqual(complete)
     expect(foldSubagentDescriptor([event(complete)])).toEqual(complete)
+    expect(foldSubagentDescriptor([event({
+      version: 2,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'legacy child',
+      agentProvider: 'deepseek',
+      agentModel: 'chat',
+    })])).toMatchObject({ version: 2, label: 'legacy child', agentModel: 'chat' })
     expect(foldSubagentDescriptor([
       event({
         version: SUBAGENT_DESCRIPTOR_VERSION,
@@ -447,6 +472,20 @@ describe('subagent descriptors', () => {
       label: 'l',
       agentModel: [],
     }, 'agentModel must be a string'],
+    ['invalid reasoning effort', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'l',
+      agentReasoningEffort: [],
+    }, 'agentReasoningEffort must be a string'],
+    ['invalid max tokens', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'l',
+      agentMaxTokens: 0,
+    }, 'agentMaxTokens must be a positive safe integer'],
     ['invalid persona', {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'continuable',

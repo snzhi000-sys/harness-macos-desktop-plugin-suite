@@ -87,6 +87,14 @@ test('deleted files remain read-only browseable and use a red strike-through tab
   assert.match(source, /r\.same && diff[\s\S]*diff\.deleted[\s\S]*store\.markDeleted\(reqPath\)/)
 })
 
+test('unrecoverable shell deletion is labeled and cannot offer automatic reject', async () => {
+  const source = await readFile(sourceUrl, 'utf8')
+  assert.match(source, /shell-delete-unrecoverable[\s\S]*Shell 删除未隔离/)
+  assert.match(source, /删除前未建立隔离备份/)
+  assert.match(source, /item\.restorable === false[\s\S]*disabled: !!acting \|\| item\.restorable === false/)
+  assert.match(source, /diff\.restorable === false[\s\S]*disabled: !!reviewAction \|\| diff\.restorable === false/)
+})
+
 test('directory deletion batches reuse the review bar with expandable file details', async () => {
   const source = await readFile(sourceUrl, 'utf8')
   assert.match(source, /function reviewRows\(files\)/)

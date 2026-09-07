@@ -35,10 +35,27 @@ export interface WireSystemMessage {
   content: string
 }
 
+export interface WireTextContentPart {
+  type: 'text'
+  text: string
+}
+
+export interface WireImageContentPart {
+  type: 'image_url'
+  image_url: { url: string }
+}
+
+export interface WireFileContentPart {
+  type: 'file'
+  file_id: string
+}
+
+export type WireUserContentPart = WireTextContentPart | WireImageContentPart | WireFileContentPart
+
 /** User-role message: a single string of user input. */
 export interface WireUserMessage {
   role: 'user'
-  content: string
+  content: string | WireUserContentPart[]
 }
 
 /** Tool-role message: the result of one tool call, keyed by its call id. */

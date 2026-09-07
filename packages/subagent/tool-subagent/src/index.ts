@@ -12,12 +12,27 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { AgentOptions } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
-import { assertSubagentMaxDepth, settleRun } from '@deepseek-ai/dsh-subagent'
+import {
+  assertSubagentMaxDepth,
+  parentAgentOptionsForDelegation,
+  settleRun,
+} from '@deepseek-ai/dsh-subagent'
 import type { SubagentProvider, SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import { registerListSubagentModels } from './list-models.ts'
+import {
+  allowedRoutesForParent,
+  assertAllowedModelSelection,
+  assertModelSelectionProvider,
+  hasDelegationModelRequest,
+  preflightChildLlmRoute,
+  requestedAgentOptions,
+  resolveAllowedModelRoutes,
+  type AllowedModelRoute,
+} from './model-selection.ts'
 
 export const name = 'tool-subagent'
 export const inject = ['tools', 'subagents', 'systemPrompt']
@@ -34,6 +49,11 @@ export interface Config {
    * a distinct name.
    */
   toolName?: string
+  /**
+   * Exact Profile-authorized child model routes. When present and non-empty,
+   * the model may select these routes plus its own current route per call.
+   */
+  selectableModels?: AllowedModelRoute[]
   /**
    * Expose `run_in_background` (default true). Disabled instances omit the
    * parameter and reject forced background calls.
@@ -81,14 +101,24 @@ export interface Config {
 export const Config: z<Config> = z.object({
   provider: z.string().required(),
   toolName: z.string().default('subagent'),
+  selectableModels: z.array(z.object({
+    provider: z.string().min(1).required(),
+    model: z.string().min(1).required(),
+  })).default(undefined as unknown as AllowedModelRoute[]),
   enableRunInBackground: z.boolean().default(true),
   backgroundMode: z.union(['one-shot', 'continuable'] as const).default('one-shot'),
   // Prevent Schemastery from materializing omitted agentOptions as `{}`.
   agentOptions: z.object({
     provider: z.string(),
     model: z.string(),
+    reasoningEffort: z.string().min(1) as z<ReasoningEffortId>,
     maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
-  }).default(undefined as unknown as { provider: string; model: string; maxTokens: number }),
+  }).default(undefined as unknown as {
+    provider: string
+    model: string
+    reasoningEffort: ReasoningEffortId
+    maxTokens: number
+  }),
   persona: z.string(),
   // Preserve omission; Schemastery's `{ allow: [] }` default would deny every tool.
   toolFilter: z.object({
@@ -275,6 +305,11 @@ export function apply(ctx: Context, config: Config): void {
   const backgroundEnabled = config.enableRunInBackground !== false
   const continuable = (config.backgroundMode ?? 'one-shot') === 'continuable'
   const toolName = config.toolName ?? 'subagent'
+  const selectableModels = resolveAllowedModelRoutes(config.selectableModels)
+  if (config.selectableModels !== undefined && selectableModels.length === 0) {
+    throw new Error('tool-subagent: selectableModels must contain at least one exact route')
+  }
+  const modelSelectionEnabled = selectableModels.length > 0
   // Mirror provider lifecycle because sibling load order and HMR replacement
   // can change provider availability while this fiber remains active.
   let disposeTool: (() => void) | undefined
@@ -294,7 +329,10 @@ export function apply(ctx: Context, config: Config): void {
         `tool-subagent: provider "${provider.name}" does not support \`backgroundMode: continuable\``,
       )
     }
-    disposeTool = ctx.tools.register(defineTool({
+    if (modelSelectionEnabled || config.agentOptions !== undefined) assertModelSelectionProvider(provider)
+    const disposers: (() => void)[] = []
+    if (modelSelectionEnabled) disposers.push(registerListSubagentModels(ctx, selectableModels))
+    disposers.push(ctx.tools.register(defineTool({
       name: toolName,
       description: wording.description + (backgroundEnabled
         // The completion notice is the continuation service's own behavior, not
@@ -303,7 +341,10 @@ export function apply(ctx: Context, config: Config): void {
         ? continuable
           ? ' This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result.'
           : ' This call waits for the result by default. Set `run_in_background: true` to return a job id; collect with `job_output` and stop with `job_kill`.'
-        : ' This call waits for the subagent and returns its result.'),
+        : ' This call waits for the subagent and returns its result.')
+        + (modelSelectionEnabled
+          ? ' You may select an authorized child Provider, model, reasoning effort, and output-token limit; use list_subagent_models to discover allowed ids.'
+          : ''),
       parameters: {
         description: {
           type: 'string',
@@ -315,6 +356,24 @@ export function apply(ctx: Context, config: Config): void {
           required: true,
           description: wording.promptDescription,
         },
+        ...modelSelectionEnabled ? {
+          provider: {
+            type: 'string' as const,
+            description: 'Authorized child LLM provider id. Must be supplied together with model.',
+          },
+          model: {
+            type: 'string' as const,
+            description: 'Authorized exact child model id. Must be supplied together with provider.',
+          },
+          reasoning_effort: {
+            type: 'string' as const,
+            description: 'Adapter-owned reasoning effort id for the effective child route.',
+          },
+          max_tokens: {
+            type: 'number' as const,
+            description: 'Positive safe-integer output-token limit for the child.',
+          },
+        } : {},
         ...backgroundEnabled ? {
           run_in_background: {
             type: 'boolean' as const,
@@ -373,18 +432,43 @@ export function apply(ctx: Context, config: Config): void {
           throw new Error('subagent tool requires a calling agent (exec.agent was undefined)')
         }
 
+        const runSpec = resolveDelegationRun(args, { backgroundEnabled, continuable })
+        const modelRequest = {
+          ...args.provider === undefined ? {} : { provider: args.provider },
+          ...args.model === undefined ? {} : { model: args.model },
+          ...args.reasoning_effort === undefined ? {} : { reasoning_effort: args.reasoning_effort },
+          ...args.max_tokens === undefined ? {} : { max_tokens: args.max_tokens },
+        }
+        const selectingModel = hasDelegationModelRequest(modelRequest)
+        const parentOptions = selectingModel ? parentAgentOptionsForDelegation(parent) : parent.options
+        const agentOptions = selectingModel
+          ? requestedAgentOptions(parentOptions, config.agentOptions, modelRequest, modelSelectionEnabled)
+          : config.agentOptions
+        if (selectingModel) {
+          const allowed = allowedRoutesForParent(selectableModels, parentOptions)
+          assertAllowedModelSelection(allowed, parentOptions, agentOptions, modelRequest)
+          const llm = ctx.get('llm')
+          if (llm === undefined) {
+            throw new Error('cannot select a child LLM route because the `llm` service is unavailable')
+          }
+          await preflightChildLlmRoute(llm, parentOptions, agentOptions, exec.signal)
+          exec.signal.throwIfAborted()
+          if (ctx.subagents.getProvider(config.provider) !== provider) {
+            throw new Error(`subagent provider "${config.provider}" changed during child LLM validation; retry the call`)
+          }
+        }
+
         const maxDepth = typeof config.maxDepth === 'number' ? config.maxDepth : undefined
         const request = {
           label: args.description,
           prompt: [{ type: 'text', text: args.prompt }] as ContentBlock[],
           parent,
-          ...config.agentOptions !== undefined ? { agentOptions: config.agentOptions } : {},
+          ...agentOptions !== undefined ? { agentOptions } : {},
           ...config.persona !== undefined ? { persona: config.persona } : {},
           ...config.toolFilter !== undefined ? { toolFilter: config.toolFilter } : {},
           ...maxDepth !== undefined ? { maxDepth } : {},
         }
 
-        const runSpec = resolveDelegationRun(args, { backgroundEnabled, continuable })
         if (runSpec.runInBackground) {
           if (continuable) {
             // Resolves at inbox acceptance: the child owns its own turns from
@@ -428,7 +512,10 @@ export function apply(ctx: Context, config: Config): void {
         })
         return settleForegroundRun(run)
       },
-    }))
+    })))
+    disposeTool = () => {
+      for (const dispose of disposers.splice(0).reverse()) dispose()
+    }
   }
 
   // Register listeners before checking presence so no synchronous change is missed.

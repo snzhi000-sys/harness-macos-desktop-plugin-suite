@@ -881,6 +881,25 @@ describe('remaining branches', () => {
 })
 
 describe('connected generation', () => {
+  it('ignores a session-list response from a superseded generation', async () => {
+    const api = new FakeApiClient()
+    const oldGeneration = deferred<Awaited<ReturnType<FakeApiClient['onList']>>>()
+    const newGeneration = deferred<Awaited<ReturnType<FakeApiClient['onList']>>>()
+    let calls = 0
+    api.onList = () => ++calls === 1 ? oldGeneration.promise : newGeneration.promise
+    const manager = new SessionManager(api, fakeRemote())
+
+    manager.handleConnected()
+    manager.handleConnected()
+    newGeneration.resolve(ok({ items: [summary(S2)] as never[] }))
+    await vi.waitFor(() => { expect(manager.getListSnapshot().items.map(item => item.sessionId)).toEqual([S2]) })
+    oldGeneration.resolve(ok({ items: [summary(S1)] as never[] }))
+    await oldGeneration.promise
+    await Promise.resolve()
+
+    expect(manager.getListSnapshot().items.map(item => item.sessionId)).toEqual([S2])
+  })
+
   it('refreshes the list and resyncs only opened instances', async () => {
     const api = new FakeApiClient()
     api.onHistory = () => Promise.resolve(ok({

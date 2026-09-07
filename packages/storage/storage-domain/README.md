@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
 
 Domain data form for the DeepSeek Harness storage hub: exposes the injectable `ctx.storageDomain` service and the matching `ctx.storage.domain` projection after every configured backend is registered. A domain is declared once with `defineDomain` (zod record schemas, `z.infer`-derived types), opened through `DomainFacility.open`, and served from authoritative in-memory state — reads are synchronous, writes serialize on one per-domain chain, reach durability on the routed backend first, then update memory and emit `domain/changed`. The opening consumer owns the handle's lifecycle and releases it with `Domain.close()` (idempotent; typically its own `ctx.effect` disposer); domains still open when the plugin unmounts are closed by the facility.
 
+A domain may opt into `per-record` storage and list `compatibleVersions` whose records its current schemas still accept; writes always use the current version. Authoritative domains keep fail-loud schema validation. A disposable derived-data domain may declare `invalidRecords: 'backup-and-skip'`: opening moves one invalid independent document through the backend's `backupRecord`, logs only its record location, domain version, and error category, and continues without that record. A backend without record backup retains the fail-loud behavior, and global-value corruption always fails.
+
 Design rationale, open semantics, and the storage/domain layer split live in the [Agent Note](../../../.agents/notes/proposed/architecture/2026-07-24-domain-kv-storage-and-workspace.zh.md).
 
 ## Configuration

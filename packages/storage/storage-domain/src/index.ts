@@ -88,7 +88,8 @@ export class DomainFacility {
    * (`facet-unsupported`); open the unit projected from the spec (backend
    * `version-mismatch`/`malformed-medium` pass through); load and validate
    * every stored record against the spec's zod schemas (`invalid-record`
-   * with the offending table and key); construct the domain.
+   * with the offending table and key). A disposable domain may instead back
+   * up and skip one invalid independent record; construct the domain.
    *
    * Lifecycle: the CALLER owns the returned handle and closes it via
    * `Domain.close()` (typically as its own `ctx.effect` disposer) — the
@@ -118,7 +119,16 @@ export class DomainFacility {
         for (const [table, tableSpec] of Object.entries(spec.tables)) {
           const records = new Map<string, unknown>()
           for (const [key, raw] of Object.entries(snapshot.tables[table] ?? {})) {
-            records.set(key, parseRecord(spec.name, table, key, () => tableSpec.valueSchema.parse(raw)))
+            try {
+              records.set(key, parseRecord(spec.name, table, key, () => tableSpec.valueSchema.parse(raw)))
+            } catch (error) {
+              if (spec.invalidRecords !== 'backup-and-skip' || unit.backupRecord === undefined) throw error
+              const moved = await unit.backupRecord(table, key)
+              this.ctx.logger.error(
+                `domain '${spec.name}' v${spec.version}: stored record '${key}' in table '${table}' `
+                + `failed with invalid-record; moved to '${moved}' and treated as absent.`,
+              )
+            }
           }
           tables.set(table, records)
         }

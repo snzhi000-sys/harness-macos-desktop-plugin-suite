@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, CallId, ReasoningEffortId, createMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
-import { serializeMessages, serializeRequest } from '../src/serialize.ts'
+import { serializeMessages, serializeRequest, serializeRequestWithImages } from '../src/serialize.ts'
 
 function request(overrides: Partial<GenerateOptions> = {}): GenerateOptions {
   return { provider: 'deepseek-official', model: 'deepseek-v4-flash', messages: [], ...overrides }
@@ -321,5 +321,59 @@ describe('review fixes: assistant content shapes', () => {
       source: { kind: 'plugin', plugin: 'test' },
     })])
     expect(wire[0]).toMatchObject({ content: '' })
+  })
+})
+
+describe('multimodal serialization', () => {
+  const ref = {
+    attachmentId: AttachmentId(`sha256:${'a'.repeat(64)}`),
+    mediaType: 'image/png' as const,
+    bytes: 3,
+    width: 1,
+    height: 1,
+    name: 'pixel.png',
+  }
+  const attachments = {
+    readImage: async () => ({ ref, data: Uint8Array.from([1, 2, 3]) }),
+  } as never
+
+  it('serializes durable images as inline data URLs without weakening reasoning passback', async () => {
+    const wire = await serializeRequestWithImages(request({ messages: [
+      createMessage({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'earlier answer' }],
+        source: { kind: 'plugin', plugin: 'test' },
+      }),
+      createUserMessage({
+        content: [{ type: 'text', text: 'inspect ' }, { type: 'image', attachment: ref }],
+        source: { kind: 'plugin', plugin: 'test' },
+      }),
+    ] }), {
+      attachments,
+      representation: { kind: 'base64' },
+      maxRequestImageBytes: 1024,
+      signal: new AbortController().signal,
+    }, { thinking: 'enabled' })
+
+    expect(wire.messages).toEqual([
+      { role: 'assistant', content: 'earlier answer', reasoning_content: '' },
+      { role: 'user', content: [
+        { type: 'text', text: 'inspect ' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+      ] },
+    ])
+  })
+
+  it('serializes the same durable image as a reusable Files API id', async () => {
+    const wire = await serializeRequestWithImages(request({ messages: [createUserMessage({
+      content: [{ type: 'image', attachment: ref }],
+      source: { kind: 'plugin', plugin: 'test' },
+    })] }), {
+      attachments,
+      representation: { kind: 'file', resolveFileId: async () => 'file-image-1' },
+      maxRequestImageBytes: 1024,
+      signal: new AbortController().signal,
+    })
+    expect(wire.messages).toEqual([{ role: 'user', content: [{ type: 'file', file_id: 'file-image-1' }] }])
   })
 })

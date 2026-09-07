@@ -31,6 +31,9 @@ import { SessionQueueMirror } from './queue-mirror.ts'
 /** Messages requested per history page. */
 export const PAGE_MESSAGES = 50
 
+/** Larger pages amortize round trips for an explicit old-turn jump. */
+export const JUMP_PAGE_MESSAGES = 250
+
 /** Manager-owned observers of a Session object's local state edges. */
 export interface SessionOptions {
   /** Catalog-discovered address selecting non-activating subagent transport. */
@@ -78,9 +81,18 @@ export class Session implements SessionFace {
    *  passes drop all writes once the generation moves on. */
   private openGeneration = 0
   private loadingOlder = false
+  private jumpTargetSeq: number | null = null
+  private jumpPromise: Promise<void> | null = null
   private pending = new Map<string, PendingInteraction>()
   private pendingRev = 0
   private pendingCache: { rev: number; value: PendingInteraction[] } | null = null
+  private pendingSubmissions: Array<{
+    id: string
+    text: string
+    images: readonly { previewUrl: string; name?: string; width?: number; height?: number }[]
+    onRetire?: (reason: 'observed' | 'failed') => void
+  }> = []
+  private submissionSeq = 0
   /** Authoritative stream-only inbox snapshot; pending work never hits history. */
   private readonly queueMirror = new SessionQueueMirror()
   /** Session-owned business Context engine over the contiguous raw window. */
@@ -185,6 +197,25 @@ export class Session implements SessionFace {
 
   // ---- Operations ----
 
+  beginSubmission(input: {
+    text: string
+    images: readonly { previewUrl: string; name?: string; width?: number; height?: number }[]
+    onRetire?: (reason: 'observed' | 'failed') => void
+  }): { abandon(): void } {
+    const entry = { id: `submission-${++this.submissionSeq}`, ...input }
+    this.pendingSubmissions.push(entry)
+    this.notifier.markDirty()
+    return {
+      abandon: () => {
+        const index = this.pendingSubmissions.indexOf(entry)
+        if (index < 0) return
+        this.pendingSubmissions.splice(index, 1)
+        entry.onRetire?.('failed')
+        this.notifier.markDirty()
+      },
+    }
+  }
+
   /**
    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
    * @param content - text plus browser-owned temporary image uploads.
@@ -219,25 +250,12 @@ export class Session implements SessionFace {
           },
         }
       } else {
-        if (content.some(part => part.type === 'image')) {
-          result = {
-            ok: false,
-            error: {
-              code: 'attachment-error',
-              message: 'Image input is unavailable for subagent continuations.',
-              details: { reason: 'SUBAGENT_IMAGE_UNSUPPORTED' },
-            },
-          }
-        } else {
-          const routed = (await this.api.subagents.prompt({
-            ...this.address,
-            content: content.flatMap(part => part.type === 'text'
-              ? [{ type: 'text' as const, text: part.text }]
-              : []),
-            clientTimeZone: resolvedClientTimeZone(),
-          })).result
-          result = routed.ok ? { ok: true, value: { accepted: true } } : routed
-        }
+        const routed = (await this.api.subagents.prompt({
+          ...this.address,
+          content,
+          clientTimeZone: resolvedClientTimeZone(),
+        })).result
+        result = routed.ok ? { ok: true, value: { accepted: true } } : routed
       }
     } catch (error) {
       result = transportError(error)
@@ -413,10 +431,63 @@ export class Session implements SessionFace {
     }
   }
 
-  /** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
-   *  reset the window and rerun open; pending waits for the baseline replay. Invalidates any
-   *  in-flight open first — its history request rode the dead connection and must not settle
-   *  the fresh generation into 'error'. */
+  /** Jump loader: page backwards until the current contiguous window covers seq. */
+  loadThrough(seq: number): Promise<void> {
+    if (!Number.isSafeInteger(seq) || seq < 0) return Promise.resolve()
+    if (this.openState !== 'open' || !this.hasMore || this.baseSeq <= seq) return Promise.resolve()
+    if (this.jumpPromise !== null) {
+      this.jumpTargetSeq = Math.min(this.jumpTargetSeq ?? seq, seq)
+      return this.jumpPromise
+    }
+    // A reader-owned one-page pull keeps ownership. The navigator retries
+    // after that pull settles instead of issuing a competing request.
+    if (this.loadingOlder) return Promise.resolve()
+    this.jumpTargetSeq = seq
+    this.loadingOlder = true
+    this.notifier.markDirty()
+    const generation = this.openGeneration
+    this.jumpPromise = (async () => {
+      try {
+        while (generation === this.openGeneration
+          && this.hasMore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
+          const before = this.baseSeq
+          const { result } = await this.history({ beforeSeq: before, maxMessages: JUMP_PAGE_MESSAGES })
+          if (generation !== this.openGeneration || !result.ok) return
+          const older = result.value.events
+          if (older.length === 0) {
+            this.hasMore = result.value.hasMore
+            this.conversation.prepend([], this.hasMore)
+            return
+          }
+          const tail = older.at(-1)
+          if (tail === undefined || tail.event.seq + 1 !== before) {
+            console.error(`[web-runtime] history jump page discontinuous: tail seq ${tail?.event.seq} vs baseSeq ${before}`)
+            this.hasMore = false
+            this.conversation.prepend([], false)
+            return
+          }
+          this.events = [...older.map(entry => entry.event), ...this.events]
+          this.views = [...older.map(entry => entry.view), ...this.views]
+          this.baseSeq = older[0]?.event.seq ?? before
+          this.hasMore = result.value.hasMore
+          this.conversation.prepend(older.map(conversationInput), this.hasMore)
+          this.notifier.markDirty()
+          if (this.baseSeq >= before) return
+        }
+      } catch (error) {
+        console.error('[web-runtime] loadThrough failed:', error)
+      } finally {
+        this.jumpTargetSeq = null
+        this.jumpPromise = null
+        this.loadingOlder = false
+        this.notifier.markDirty()
+      }
+    })()
+    return this.jumpPromise
+  }
+
+  /** Reconnect rebuild for an opened instance. The last committed window stays
+   *  visible while the replacement history is loading; installation remains atomic. */
   async resync(): Promise<void> {
     // The queue mirror is NOT cleared here: onConnected (which drives resync)
     // races the mux frames — the fresh generation's baseline may have landed
@@ -428,16 +499,13 @@ export class Session implements SessionFace {
     this.openPromise = null
     this.openState = 'cold'
     this.openError = null
-    this.events = []
-    this.views = []
-    this.baseSeq = 0
     // Superseded, not settled: the baseline replay re-sends still-pending requested frames verbatim
     // (same rpcId), re-minting fresh waits; a stale reference's respond() still reaches the host.
     this.pending.clear()
     this.pendingRev++
     this.subscribedLastSeq = null
     this.liveBuffer = []
-    this.notifier.markDirty()
+    this.jumpTargetSeq = null
     await this.open()
   }
 
@@ -684,6 +752,10 @@ export class Session implements SessionFace {
     if (tailSeq !== null && event.seq <= tailSeq) return 'none' // replay overlap, drop
     this.events.push(event)
     this.views.push(view)
+    if (event.type === 'user/message' && event.data.source.kind === 'user') {
+      const submission = this.pendingSubmissions.shift()
+      submission?.onRetire?.('observed')
+    }
     if (event.type === 'turn/start') this.firstPromptPendingTurn = false
     const queueChanged = this.queueMirror.acceptDurable(event)
     const publication = this.conversation.append({ event, view })
@@ -770,6 +842,7 @@ export class Session implements SessionFace {
       partial: legacy.partial,
       runningCalls: legacy.runningCalls,
       pending: this.pendingCache.value,
+      pendingSubmissions: this.pendingSubmissions.map(({ id, text, images }) => ({ id, text, images })),
       queue: this.queueMirror.snapshot(),
       running: this.running,
       subagent: this.address === undefined

@@ -43,6 +43,7 @@ export class WorkspaceManager {
   private phase: WorkspaceListPhase = 'pending'
   private error: RpcError | null = null
   private inflight: Promise<void> | null = null
+  private refreshToken: object | undefined
   private refreshFrames: WorkspaceDelta[] | null = null
   /**
    * True once a frame or unary echo installed the archive set while a list
@@ -81,10 +82,13 @@ export class WorkspaceManager {
    * Host order; later responses re-establish the durable order so reconnects
    * adopt reorders committed while this client was offline. Frames arriving
    * during the RPC are replayed over its response.
+   * @param replace - supersede any request from an older connection generation.
    * @returns the shared in-flight refresh.
    */
-  refresh(): Promise<void> {
-    if (this.inflight !== null) return this.inflight
+  refresh(replace = false): Promise<void> {
+    if (this.inflight !== null && !replace) return this.inflight
+    const token = {}
+    this.refreshToken = token
     this.state = 'loading'
     this.error = null
     const frames: WorkspaceDelta[] = []
@@ -93,6 +97,7 @@ export class WorkspaceManager {
     this.inflight = (async () => {
       try {
         const { result } = await this.api.workspace.list({})
+        if (this.refreshToken !== token) return
         if (result.ok) {
           let items = result.value.items
           items = items.filter(workspace => !this.removedIds.has(workspace.workspaceId))
@@ -106,15 +111,19 @@ export class WorkspaceManager {
           this.error = result.error
         }
       } catch (error) {
+        if (this.refreshToken !== token) return
         this.state = 'error'
         const folded = transportError<never>(error)
         /* v8 ignore next -- transportError always returns the failure branch. */
         this.error = folded.ok ? null : folded.error
       } finally {
-        this.refreshFrames = null
-        this.archivedSupersedesRefresh = false
-        this.inflight = null
-        this.notifier.markDirty()
+        if (this.refreshToken === token) {
+          this.refreshToken = undefined
+          this.refreshFrames = null
+          this.archivedSupersedesRefresh = false
+          this.inflight = null
+          this.notifier.markDirty()
+        }
       }
     })()
     return this.inflight
@@ -250,7 +259,7 @@ export class WorkspaceManager {
 
   /** Re-pull the baseline after each connection generation. */
   handleConnected(): void {
-    void this.refresh()
+    void this.refresh(true)
   }
 
   /**

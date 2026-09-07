@@ -162,6 +162,7 @@ describe('draft-provider model discovery', () => {
           apiKeyEnv: 'ACME_GATEWAY_KEY',
           api: 'openai-completions',
           baseURL: server.url,
+          headers: { 'X-Company-Code': 'private-tenant' },
           models: [{ id: 'acme-large' }],
         },
       },
@@ -176,6 +177,40 @@ describe('draft-provider model discovery', () => {
 
     expect(server.headers.map(headers => headers.authorization))
       .toEqual(['Bearer stored-key', 'Bearer typed', undefined])
+    expect(server.headers.map(headers => headers['x-company-code']))
+      .toEqual(['private-tenant', 'private-tenant', undefined])
+  })
+
+  it('keeps profile authorization without a key and protects discovery attribution headers', async () => {
+    const requests: RequestInit[] = []
+    vi.stubGlobal('fetch', async (_url: string | URL, init?: RequestInit) => {
+      requests.push(init ?? {})
+      return new Response(JSON.stringify({ data: [{ id: 'm' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const storedProfile = () => ({
+      headers: {
+        Authorization: 'Profile tenant-token',
+        Accept: 'text/plain',
+        'User-Agent': 'profile-agent',
+        'X-Profile': 'present',
+      },
+      resolveApiKey: () => Promise.resolve(undefined),
+    })
+
+    await discoverModels({
+      provider: 'gateway',
+      baseURL: 'https://gateway.example/v1',
+      api: 'openai-completions',
+    }, storedProfile)
+
+    const headers = new Headers(requests[0]?.headers)
+    expect(headers.get('authorization')).toBe('Profile tenant-token')
+    expect(headers.get('x-profile')).toBe('present')
+    expect(headers.get('accept')).toBe('application/json')
+    expect(headers.get('user-agent')).toBe(userAgent())
   })
 
   it('leaves a catalog route\'s credential unresolved, having never reached the network', async () => {

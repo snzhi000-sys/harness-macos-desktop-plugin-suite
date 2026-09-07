@@ -164,6 +164,7 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
   const [failure, setFailure] = useState<string | undefined>(undefined)
   const [candidates, setCandidates] = useState<readonly DiscoveredModelView[] | undefined>(undefined)
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  const [candidateQuery, setCandidateQuery] = useState('')
   // Rows carry an id and a name; capacities are the exception, so they stay
   // folded until asked for rather than crowding every row with four inputs.
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
@@ -250,6 +251,7 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
       // Everything already configured starts unchecked, so adopting a
       // selection never silently rewrites a capacity the user corrected.
       const known = new Set(models.map(model => textOf(model, 'id')))
+      setCandidateQuery('')
       setCandidates(found)
       setPicked(new Set(found.filter(model => !known.has(model.id)).map(model => model.id)))
     } catch (error) {
@@ -264,6 +266,7 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
   const closePicker = (): void => {
     setCandidates(undefined)
     setPicked(new Set())
+    setCandidateQuery('')
   }
 
   const adoptPicked = (): void => {
@@ -286,6 +289,27 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     setPicked((current) => {
       const next = new Set(current)
       if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
+
+  const activeCandidates = candidates ?? []
+  const normalizedCandidateQuery = candidateQuery.trim().toLowerCase()
+  const visibleCandidates = normalizedCandidateQuery.length === 0
+    ? activeCandidates
+    : activeCandidates.filter(candidate => candidate.id.toLowerCase().includes(normalizedCandidateQuery)
+      || candidate.name?.toLowerCase().includes(normalizedCandidateQuery) === true)
+  const allVisibleCandidatesPicked = visibleCandidates.length > 0
+    && visibleCandidates.every(candidate => picked.has(candidate.id))
+
+  const toggleVisibleCandidates = (): void => {
+    setPicked((current) => {
+      const next = new Set(current)
+      if (visibleCandidates.every(candidate => current.has(candidate.id))) {
+        for (const candidate of visibleCandidates) next.delete(candidate.id)
+      } else {
+        for (const candidate of visibleCandidates) next.add(candidate.id)
+      }
       return next
     })
   }
@@ -445,23 +469,42 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
           </>
         )}
       >
-        <ul className={styles['candidateList']}>
-          {(candidates ?? []).map(candidate => (
-            <li key={candidate.id} className={styles['candidate']}>
-              <label className={styles['candidateLabel']}>
-                <input
-                  type="checkbox"
-                  checked={picked.has(candidate.id)}
-                  onChange={() => { toggle(candidate.id) }}
-                />
-                {/* The id alone: it is the string adoption writes, and the
-                    capacities the endpoint reported are adopted with it and
-                    editable in the row that appears. */}
-                <span className={styles['candidateId']}>{candidate.id}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
+        <div className={styles['candidateToolbar']}>
+          <input
+            className={`${styles['input']} ${styles['candidateSearch']}`}
+            type="search"
+            value={candidateQuery}
+            placeholder={t('fetchSearch')}
+            aria-label={t('fetchSearch')}
+            onChange={(event) => { setCandidateQuery(event.target.value) }}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={visibleCandidates.length === 0}
+            onClick={toggleVisibleCandidates}
+          >
+            {t(allVisibleCandidatesPicked ? 'fetchDeselectAll' : 'fetchSelectAll')}
+          </Button>
+        </div>
+        {visibleCandidates.length === 0
+          ? <p className={styles['candidateEmpty']} role="status">{t('fetchNoMatches')}</p>
+          : (
+            <ul className={styles['candidateList']}>
+              {visibleCandidates.map(candidate => (
+                <li key={candidate.id} className={styles['candidate']}>
+                  <label className={styles['candidateLabel']}>
+                    <input
+                      type="checkbox"
+                      checked={picked.has(candidate.id)}
+                      onChange={() => { toggle(candidate.id) }}
+                    />
+                    <span className={styles['candidateId']}>{candidate.id}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
       </Modal>
     </section>
   )

@@ -9,10 +9,8 @@ export interface ConnectionConfig {
   backoffFactor?: number
   /** Upper bound for the backoff cap in ms. */
   backoffMaxMs?: number
-  /** Cap on waiting for both streams' onOpen before onConnected, in ms. The strict handshake
-   *  waits for mux+host stream establishment plus describe; a carrier that never
-   *  fires onOpen (misbehaving proxy) must not wedge the connection forever — on timeout the
-   *  generation proceeds as connected and the live-gap repair path covers stragglers. */
+  /** Delay before an incomplete readiness handshake is reported as stalled. The
+   *  controller keeps waiting; a slow Host must not be mistaken for a lost one. */
   streamOpenTimeoutMs?: number
 }
 
@@ -35,19 +33,17 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-/** Coarse connection state for the UI: 'connected' after each generation's handshake,
- *  'reconnecting' the moment the generation fails (covers the whole backoff+retry span). */
-export type ConnectionState = 'connected' | 'reconnecting'
+/** Connection lifecycle state shared by every client consumer. */
+export type ConnectionState = 'connecting' | 'connected' | 'stalled' | 'reconnecting'
 
 /** Frame sink callbacks: the Controller owns the physical streams; business dispatch belongs to
  *  SessionManager. */
 export interface ConnectionSinks {
-  onMuxEnvelope?: (envelope: RpcRequest<MuxFrame>) => void
-  onHostEnvelope?: (envelope: RpcRequest<HostFrame>) => void
+  onMuxEnvelope?: (envelope: RpcRequest<MuxFrame>, generation?: number) => void
+  onHostEnvelope?: (envelope: RpcRequest<HostFrame>, generation?: number) => void
   /** After each connection generation is established (both streams open + describe succeeded), first connect included. */
-  onConnected?: (description: HostDescription) => void
-  /** Coarse state transitions (deduplicated: fires only on change). The initial pre-connect
-   *  span reports nothing — the UI treats "no state yet" as connecting, not as an outage. */
+  onConnected?: (description: HostDescription, generation?: number) => void
+  /** State transitions are deduplicated. */
   onStateChange?: (state: ConnectionState) => void
 }
 
@@ -62,7 +58,9 @@ export class ConnectionController {
   private generation = 0
   private attempt = 0
   private current: AbortController | null = null
+  private retryDelay: AbortController | null = null
   private running = false
+  private immediateRetry = false
   private lastState: ConnectionState | null = null
   private readonly config: Required<ConnectionConfig>
 
@@ -78,6 +76,8 @@ export class ConnectionController {
   start(): void {
     if (this.running) return
     this.running = true
+    this.emitState('connecting')
+    if (!this.isRunning()) return
     void this.loop()
   }
 
@@ -86,6 +86,19 @@ export class ConnectionController {
     this.running = false
     this.current?.abort()
     this.current = null
+    this.retryDelay?.abort()
+    this.retryDelay = null
+  }
+
+  /** Replace the current generation or retry delay without refreshing the page. */
+  reconnect(): void {
+    if (!this.running) return
+    this.attempt = 0
+    this.immediateRetry = true
+    this.emitState('reconnecting')
+    if (!this.isRunning()) return
+    this.current?.abort(new Error('connection: manual reconnect requested'))
+    this.retryDelay?.abort(new Error('connection: manual reconnect requested'))
   }
 
   private backoffDelay(attempt: number): number {
@@ -97,6 +110,13 @@ export class ConnectionController {
   /** Read through a method: stop() flips the flag across awaits, so narrowing from the loop condition must not stick. */
   private isRunning(): boolean {
     return this.running
+  }
+
+  /** Consume a manual retry request that may have arrived across an await boundary. */
+  private takeImmediateRetry(): boolean {
+    const immediate = this.immediateRetry
+    this.immediateRetry = false
+    return immediate
   }
 
   /** Re-read both mutable liveness guards after a potentially reentrant sink. */
@@ -120,27 +140,36 @@ export class ConnectionController {
         new Promise<void>((resolve) => { hostOpened = resolve }),
       ])
 
+      let rejectGenerationLost!: (error: Error) => void
+      const generationLost = new Promise<never>((_resolve, reject) => {
+        rejectGenerationLost = reject
+      })
       const failed = new Promise<void>((resolve) => {
         const settle = (): void => {
           if (gen === this.generation && !ac.signal.aborted) ac.abort()
+          rejectGenerationLost(new Error('connection generation ended'))
           resolve()
         }
-        void this.pumpStream(this.api.events.mux({}, ac.signal, muxOpened), this.sinks.onMuxEnvelope, settle)
-        void this.pumpStream(this.api.events.host({}, ac.signal, hostOpened), this.sinks.onHostEnvelope, settle)
+        void this.pumpStream(this.api.events.mux({}, ac.signal, muxOpened), this.sinks.onMuxEnvelope, settle, ac, gen)
+        void this.pumpStream(this.api.events.host({}, ac.signal, hostOpened), this.sinks.onHostEnvelope, settle, ac, gen)
       })
 
+      let stalled: ReturnType<typeof setTimeout> | undefined
       try {
         // Strict readiness handshake: describe proves unary reachability, onOpen
         // proves each physical stream is established before any frame —
         // only then may onConnected fire, so the resync it triggers cannot outrun the
-        // subscribed baseline. The timeout guards against a carrier that never fires onOpen
-        // (see ConnectionConfig.streamOpenTimeoutMs).
-        const timeout = new AbortController()
-        const [description] = await Promise.all([
-          this.api.host.describe({}),
-          Promise.race([streamsOpen, sleep(this.config.streamOpenTimeoutMs, timeout.signal)]),
+        // subscribed baseline. A slow handshake reports stalled but remains alive.
+        stalled = setTimeout(() => {
+          if (this.isGenerationActive(ac)) this.emitState('stalled')
+        }, this.config.streamOpenTimeoutMs)
+        const [description] = await Promise.race([
+          Promise.all([
+            this.api.host.describe({}),
+            streamsOpen,
+          ]),
+          generationLost,
         ])
-        timeout.abort()
         const descriptionResult = description.result
         if (!descriptionResult.ok) {
           throw new Error(`host.describe failed: ${descriptionResult.error.code}: ${descriptionResult.error.message}`)
@@ -151,20 +180,28 @@ export class ConnectionController {
         // A state sink may synchronously stop this controller. Do not publish
         // a description for a generation that no longer exists afterward.
         if (this.isGenerationActive(ac)) {
-          this.callSink(() => { this.sinks.onConnected?.(descriptionResult.value) })
+          this.callSink(() => { this.sinks.onConnected?.(descriptionResult.value, gen) })
         }
       } catch {
-        // Transport failure: treat as generation failure, fall through to the shared backoff.
+        // Transport failure: converge through the shared retry path.
         if (!ac.signal.aborted) ac.abort()
+      } finally {
+        clearTimeout(stalled)
       }
 
       await failed
       if (!this.isRunning()) return
       this.emitState('reconnecting')
-      this.attempt += 1
-      console.warn(`[web-runtime] connection lost, retry #${this.attempt}`)
-      const idle = new AbortController()
-      await sleep(this.backoffDelay(this.attempt), idle.signal)
+      const immediate = this.takeImmediateRetry()
+      if (!immediate) {
+        this.attempt += 1
+        console.warn(`[web-runtime] connection lost, retry #${this.attempt}`)
+        const idle = new AbortController()
+        this.retryDelay = idle
+        await sleep(this.backoffDelay(this.attempt), idle.signal)
+        if (this.retryDelay === idle) this.retryDelay = null
+        this.takeImmediateRetry()
+      }
     }
   }
 
@@ -177,13 +214,17 @@ export class ConnectionController {
 
   private async pumpStream<F extends { type: string }>(
     stream: AsyncIterable<RpcRequest<F>>,
-    sink: ((envelope: RpcRequest<F>) => void) | undefined,
+    sink: ((envelope: RpcRequest<F>, generation?: number) => void) | undefined,
     onEnd: () => void,
+    controller: AbortController,
+    generation: number,
   ): Promise<void> {
     try {
       for await (const envelope of stream) {
         if (envelope.payload.type === 'stream/error') break
-        if (sink !== undefined) this.callSink(() => { sink(envelope) })
+        if (sink !== undefined && generation === this.generation && this.isGenerationActive(controller)) {
+          this.callSink(() => { sink(envelope, generation) })
+        }
       }
     } catch {
       // Stream loss: converge on onEnd, which triggers the shared reconnect.

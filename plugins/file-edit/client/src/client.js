@@ -2288,7 +2288,7 @@ window.__ModuleLoader__.load({
           const stats = item.createdThenDeleted
             ? React.createElement('span', { className: 'dsh-fe-stats' }, '本会话新建后删除')
             : item.note
-            ? React.createElement('span', { className: 'dsh-fe-stats' }, item.note === 'binary' ? '二进制' : (item.note === 'shell-unknown' ? '脚本修改' : (item.note === 'write-before-unknown' ? '修改前内容未知' : '过大')))
+            ? React.createElement('span', { className: 'dsh-fe-stats' }, item.note === 'binary' ? '二进制' : (item.note === 'shell-unknown' ? '脚本修改' : (item.note === 'write-before-unknown' ? '修改前内容未知' : (item.note === 'shell-delete-unrecoverable' ? 'Shell 删除未隔离' : '过大'))))
             : React.createElement('span', { className: 'dsh-fe-stats' },
               React.createElement('span', { className: 'dsh-fe-stat-add' }, '+' + item.added),
               ' ',
@@ -3998,7 +3998,9 @@ window.__ModuleLoader__.load({
             return React.createElement('div', { className: 'dsh-fe-pane' },
               toolbar,
               React.createElement('div', { className: 'dsh-fe-msg dsh-fe-deleted-hint' },
-                diff.createdThenDeleted
+                diff.note === 'shell-delete-unrecoverable'
+                  ? '检测到 Shell 删除，但删除前未建立隔离备份。以下仅是最后已知内容；该记录只能接受或手动恢复。'
+                  : diff.createdThenDeleted
                   ? '文件已从磁盘删除，以下为删除前内容。可确认保持删除，或恢复文件并继续保留新增审核。'
                   : (diff.changed ? '文件已从磁盘删除，以下为删除前内容。可在工具栏确认删除或恢复文件。' : '文件已从磁盘删除，以下保留删除前内容供只读浏览。')),
               error ? React.createElement('div', { className: 'dsh-fe-err' }, String(error)) : null,
@@ -4146,7 +4148,7 @@ window.__ModuleLoader__.load({
             return React.createElement('div', { className: 'dsh-fe-pane' },
               toolbar,
               React.createElement('div', { className: 'dsh-fe-msg' },
-                diff.note === 'binary' ? '二进制文件无法预览，可在修改列表中直接接受或拒绝' : (diff.note === 'shell-unknown' ? '已检测到脚本修改，但修改前内容无法恢复；请接受或手动检查文件。' : (diff.note === 'write-before-unknown' ? '已检测到文件被覆盖，但工具未返回修改前内容；为避免误判，不能自动拒绝，请接受或手动检查文件。' : '文件过大无法预览'))),
+                diff.note === 'binary' ? '二进制文件无法预览，可在修改列表中直接接受或拒绝' : (diff.note === 'shell-unknown' ? '已检测到脚本修改，但修改前内容无法恢复；请接受或手动检查文件。' : (diff.note === 'write-before-unknown' ? '已检测到文件被覆盖，但工具未返回修改前内容；为避免误判，不能自动拒绝，请接受或手动检查文件。' : (diff.note === 'shell-delete-unrecoverable' ? '检测到 Shell 删除，但没有可恢复的隔离备份。' : '文件过大无法预览')))),
               error ? React.createElement('div', { className: 'dsh-fe-err' }, String(error)) : null,
             )
           }

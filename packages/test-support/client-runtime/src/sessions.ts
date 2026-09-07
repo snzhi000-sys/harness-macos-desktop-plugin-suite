@@ -82,6 +82,14 @@ export class FixtureSession implements SessionFace {
   }
 
   /**
+   * Fail-loud stub; supply `beginSubmission` on the fixture's session face to exercise it.
+   * @returns never — always throws.
+   */
+  beginSubmission(): never {
+    throw new Error(`test session "${this.sessionId}": beginSubmission is not stubbed — supply it on the fixture's session face`)
+  }
+
+  /**
    * Fail-loud stub; supply `prompt` on the fixture's session face to exercise it.
    * @returns never — always throws.
    */
@@ -128,6 +136,14 @@ export class FixtureSession implements SessionFace {
    */
   loadOlder(): never {
     throw new Error(`test session "${this.sessionId}": loadOlder is not stubbed — supply it on the fixture's session face`)
+  }
+
+  /**
+   * Fail-loud stub; supply `loadThrough` on the fixture's session face to exercise it.
+   * @returns never — always throws.
+   */
+  loadThrough(): never {
+    throw new Error(`test session "${this.sessionId}": loadThrough is not stubbed — supply it on the fixture's session face`)
   }
 
   /**

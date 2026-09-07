@@ -205,21 +205,29 @@ describe('connection lifecycle', () => {
 
       await vi.waitFor(() => { expect(describeCalls).toBe(2) })
       await vi.waitFor(() => { expect(connected).toBe(1) })
-      expect(states).toEqual(['reconnecting', 'connected'])
+      expect(states).toEqual(['connecting', 'reconnecting', 'connected'])
     } finally {
       controller.stop()
       warnSpy.mockRestore()
     }
   })
 
-  it('proceeds as connected via the timeout guard when a carrier never fires onOpen', async () => {
+  it('reports a slow handshake as stalled without cancelling it', async () => {
     const api = new FakeApiClient()
-    api.suppressStreamOpen = true // misbehaving carrier: streams open but onOpen never fires
+    api.holdStreamOpen = true
+    const states: ConnectionState[] = []
     let connected = 0
-    const controller = new ConnectionController(api, { onConnected: () => { connected++ } }, { ...FAST, streamOpenTimeoutMs: 20 })
+    const controller = new ConnectionController(api, {
+      onConnected: () => { connected++ },
+      onStateChange: state => states.push(state),
+    }, { ...FAST, streamOpenTimeoutMs: 20 })
     controller.start()
     try {
-      await vi.waitFor(() => { expect(connected).toBe(1) }) // handshake resolved by the guard, not wedged
+      await vi.waitFor(() => { expect(states).toEqual(['connecting', 'stalled']) })
+      expect(connected).toBe(0)
+      api.releaseStreamOpens()
+      await vi.waitFor(() => { expect(connected).toBe(1) })
+      expect(states).toEqual(['connecting', 'stalled', 'connected'])
     } finally {
       controller.stop()
     }
@@ -237,10 +245,10 @@ describe('connection lifecycle', () => {
     controller.start()
     try {
       await vi.waitFor(() => { expect(connected).toBe(1) })
-      expect(states).toEqual(['connected'])
+      expect(states).toEqual(['connecting', 'connected'])
       api.failStreams(new Error('torn'))
       await vi.waitFor(() => { expect(connected).toBe(2) })
-      expect(states).toEqual(['connected', 'reconnecting', 'connected'])
+      expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'connected'])
     } finally {
       controller.stop()
       warnSpy.mockRestore()
@@ -260,7 +268,7 @@ describe('connection lifecycle', () => {
     }, FAST)
 
     controller.start()
-    await vi.waitFor(() => { expect(states).toEqual(['connected']) })
+    await vi.waitFor(() => { expect(states).toEqual(['connecting', 'connected']) })
     await vi.waitFor(() => { expect(api.openMuxCount).toBe(0) })
     expect(connected).toBe(0)
   })
@@ -285,7 +293,7 @@ describe('connection lifecycle', () => {
       await vi.waitFor(() => { expect(describeCalls).toBe(3) })
       gate.resolve(ok({ version: '0', cwd: '/f', attachedSessions: 0, canOpenPath: true }))
       await vi.waitFor(() => { expect(connected).toBe(1) })
-      expect(states).toEqual(['reconnecting', 'connected']) // two failures, one reconnecting emission
+      expect(states).toEqual(['connecting', 'reconnecting', 'connected'])
     } finally {
       controller.stop()
       warnSpy.mockRestore()
@@ -315,6 +323,28 @@ describe('connection lifecycle', () => {
       await vi.waitFor(() => { expect(connected).toBe(1) })
       expect(api.openMuxCount).toBe(1)
       expect(api.callsOf('host.describe')).toHaveLength(1)
+    } finally {
+      controller.stop()
+    }
+  })
+
+  it('manual reconnect replaces the live generation without waiting for backoff', async () => {
+    const api = new FakeApiClient()
+    const generations: number[] = []
+    const states: ConnectionState[] = []
+    const controller = new ConnectionController(api, {
+      onConnected: (_description, generation) => {
+        if (generation === undefined) throw new Error('controller omitted generation')
+        generations.push(generation)
+      },
+      onStateChange: state => states.push(state),
+    }, { ...FAST, backoffBaseMs: 5_000, backoffMaxMs: 5_000 })
+    controller.start()
+    try {
+      await vi.waitFor(() => { expect(generations).toEqual([1]) })
+      controller.reconnect()
+      await vi.waitFor(() => { expect(generations).toEqual([1, 2]) })
+      expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'connected'])
     } finally {
       controller.stop()
     }

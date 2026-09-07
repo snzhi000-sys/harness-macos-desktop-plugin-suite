@@ -30,7 +30,7 @@ import type {
   AgentSetupCommit,
   CreateAgentOptions,
 } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, contentHasImage, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -410,14 +410,19 @@ export class SubagentContinuationManager {
     const childDepth = resolveChildDepth(parent, request.maxDepth)
     // Snapshot before any await: invalid descriptor JSON rejects the call
     // before a child exists, and the detached value is what reaches the log.
-    const agentProvider = request.agentOptions?.provider ?? parent.options.provider
-    const agentModel = request.agentOptions?.model ?? parent.options.model
+    const agentOptions = resolveChildAgentOptions(parent, request.agentOptions, childDepth)
+    const agentProvider = agentOptions.provider
+    const agentModel = agentOptions.model
+    const agentReasoningEffort = agentOptions.reasoningEffort
+    const agentMaxTokens = agentOptions.maxTokens
     const descriptor = snapshotSubagentDescriptor({
       mode: 'continuable',
       provider: spec.provider,
       label: spec.label,
       ...agentProvider !== undefined ? { agentProvider } : {},
       ...agentModel !== undefined ? { agentModel } : {},
+      ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
+      ...agentMaxTokens !== undefined ? { agentMaxTokens } : {},
       ...request.persona !== undefined ? { persona: request.persona } : {},
       ...request.toolFilter !== undefined ? { toolFilter: request.toolFilter } : {},
     })
@@ -441,7 +446,7 @@ export class SubagentContinuationManager {
         provider: spec.provider,
         parent,
         create: { seed, meta: childSessionMeta(parent, childDepth, lineageSeedLength), delegatedPolicies },
-        agentOptions: resolveChildAgentOptions(parent, request.agentOptions, childDepth),
+        agentOptions,
         composition: { persona: request.persona, toolFilter: request.toolFilter },
         signal: spec.signal,
       })
@@ -492,6 +497,14 @@ export class SubagentContinuationManager {
          * "cold-resumes a delivery that lost the race with final disposal". */
         if (activation.disposal !== undefined) {
           return activation.disposal.then(() => undefined, () => undefined)
+        }
+        if (contentHasImage(content)) {
+          await this.assertImageCapable(activation.handle.agent, options.signal)
+          const disposal = this.activations.get(childId)?.disposal
+          if (disposal !== undefined) {
+            await disposal.catch(() => undefined)
+            return undefined
+          }
         }
         return this.submitAdmitted(activation, content, options.source, parent, options.signal)
       })
@@ -919,6 +932,10 @@ export class SubagentContinuationManager {
         agentOptions: {
           ...descriptor.agentProvider !== undefined ? { provider: descriptor.agentProvider } : {},
           ...descriptor.agentModel !== undefined ? { model: descriptor.agentModel } : {},
+          ...descriptor.agentReasoningEffort !== undefined
+            ? { reasoningEffort: descriptor.agentReasoningEffort }
+            : {},
+          ...descriptor.agentMaxTokens !== undefined ? { maxTokens: descriptor.agentMaxTokens } : {},
         },
         composition: { persona: descriptor.persona, toolFilter: descriptor.toolFilter },
         signal: options.signal,
@@ -948,12 +965,30 @@ export class SubagentContinuationManager {
     signal: AbortSignal,
   ): Promise<MessageId> {
     try {
+      if (contentHasImage(content)) {
+        await this.assertImageCapable(activation.handle.agent, signal)
+        if (activation.disposal !== undefined) {
+          throw new SubagentError(`subagent "${activation.childId}" is closing`, 'ACTIVATION_CLOSING')
+        }
+      }
       return this.submitAdmitted(activation, content, source, parent, signal)
     } catch (error: unknown) {
       /* v8 ignore next -- rollback disposal failures must not mask the
        * pre-acceptance signal, drain, or lifecycle failure. */
       await this.dispose(activation).catch(() => undefined)
       throw error
+    }
+  }
+
+  /** Refuse image delivery before it enters a text-only child's inbox. */
+  private async assertImageCapable(agent: Agent, signal: AbortSignal): Promise<void> {
+    const { provider, model } = agent.options
+    if (provider === undefined || model === undefined) return
+    const llm = this.ctx.get('llm')
+    if (llm === undefined) return
+    const info = await llm.resolveModelInfo(provider, model, signal)
+    if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+      throw new SubagentError(`Model "${model}" does not support image input.`, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
     }
   }
 

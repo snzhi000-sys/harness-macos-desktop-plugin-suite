@@ -1,0 +1,38 @@
+.indicator {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 3px 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 9px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+button.indicator {
+  cursor: pointer;
+  color: var(--dsw-alias-state-warn-label);
+}
+
+button.indicator:hover {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

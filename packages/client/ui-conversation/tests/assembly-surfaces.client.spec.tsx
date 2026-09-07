@@ -67,6 +67,7 @@ async function bench(opts?: { blank?: boolean }) {
     },
     session: {
       loadOlder: vi.fn<ISession['loadOlder']>(),
+      loadThrough: vi.fn<ISession['loadThrough']>(),
       prompt: vi.fn<ISession['prompt']>(async () => ({ ok: true, value: { accepted: true } })),
     },
   })
@@ -191,7 +192,12 @@ describe('prompt rejection through the assembled composer', () => {
     await runtime.sessions.add({
       id: SID,
       summary: { title: 'S', displayTitle: 'S', cwd: '/proj' },
-      session: { prompt, loadOlder: vi.fn<ISession['loadOlder']>() },
+      session: {
+        beginSubmission: vi.fn<ISession['beginSubmission']>(() => ({ abandon: vi.fn() })),
+        prompt,
+        loadOlder: vi.fn<ISession['loadOlder']>(),
+        loadThrough: vi.fn<ISession['loadThrough']>(),
+      },
     })
     await runtime.root.declare(LAYOUT_CHILDREN, AppRoot)
     await runtime.mount({ inject: [...inject], apply })

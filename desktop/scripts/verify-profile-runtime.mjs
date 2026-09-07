@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const desktopDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const suiteRoot = resolve(desktopDir, '..')
@@ -48,6 +48,29 @@ function bootManifest(html) {
   return JSON.parse(encoded)
 }
 
+async function verifyLarkCliTool(profileDir) {
+  const directory = packagePath(profileDir, 'dsh-lark-cli')
+  const installed = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+  const entry = typeof installed.main === 'string' ? installed.main : 'index.mjs'
+  const loaded = await import(`${pathToFileURL(join(directory, entry)).href}?profile-runtime-probe=${Date.now()}`)
+  const registered = []
+  const sections = []
+  const ctx = {
+    tools: { register: tool => { registered.push(tool); return () => {} } },
+    systemPrompt: { section: section => { sections.push(section); return () => {} } },
+    approval: {}, sandbox: {}, subprocess: {},
+    effect: callback => callback(),
+  }
+  loaded.default.apply(ctx, {})
+  const tool = registered.find(candidate => candidate?.name === 'lark_cli')
+  if (tool === undefined || tool.parameters?.properties?.args === undefined || tool.parameters?.properties?.purpose === undefined) {
+    throw new Error('Bundled dsh-lark-cli did not register the expected lark_cli schema')
+  }
+  if (!sections.some(section => section?.name === 'tool:lark-cli')) {
+    throw new Error('Bundled dsh-lark-cli did not register its model guidance')
+  }
+}
+
 for (const artifact of [runtimeArchive, profileArchive]) {
   if (!existsSync(artifact)) throw new Error(`Missing desktop artifact: ${artifact}`)
 }
@@ -83,6 +106,7 @@ try {
       throw new Error(`Required plugin client export is missing: ${required.package}`)
     }
   }
+  await verifyLarkCliTool(profileDir)
 
   const node = join(runtimeDir, 'bin', 'node')
   const dsh = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
@@ -94,6 +118,9 @@ try {
     if (!composition.includes(`- id: ${required.entryId}\n`) || !packageRow.test(composition)) {
       throw new Error(`Required plugin is absent from the effective Cordis composition: ${required.package}`)
     }
+  }
+  if (!composition.includes('shellTransactionLifecycle: true')) {
+    throw new Error('File Edit recoverable shell transaction lifecycle must be enabled in the product composition')
   }
 
   child = spawn(node, [dsh, 'web', '--host', '127.0.0.1', '--port', '0'], {

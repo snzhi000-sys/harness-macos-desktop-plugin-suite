@@ -12,6 +12,7 @@ import z from '@deepseek-ai/schemastery'
 import { StorageError, UNIT_NAME_RE, storageBackendServiceKey } from '@deepseek-ai/dsh-storage'
 import type { KvFacet, KvUnit, KvUnitDescriptor, StorageBackend } from '@deepseek-ai/dsh-storage'
 import { openJsonUnit } from './unit.ts'
+import { openPerRecordUnit } from './per-record-unit.ts'
 
 /** Cordis plugin name. */
 export const name = 'storage-json'
@@ -62,8 +63,13 @@ export class JsonStorageBackend implements StorageBackend {
 
   private async openUnit(descriptor: KvUnitDescriptor): Promise<KvUnit> {
     await mkdir(this.root, { recursive: true, mode: 0o700 })
-    const path = join(this.root, `${descriptor.name}.json`)
-    const unit = await openJsonUnit(descriptor, path, () => this.open.delete(descriptor.name))
+    const unit = descriptor.layout === 'per-record'
+      ? await openPerRecordUnit(descriptor, this.root, () => this.open.delete(descriptor.name))
+      : await openJsonUnit(
+        descriptor,
+        join(this.root, `${descriptor.name}.json`),
+        () => this.open.delete(descriptor.name),
+      )
     if (this.closed) {
       // The backend closed while this open was in flight: do not hand out a
       // live unit past close().

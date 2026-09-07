@@ -16,6 +16,14 @@ The resident shell uses the mirrored view when choosing its layout. Blank Chat r
 
 Explorer opens carry the target session id, resolved cwd, absolute path, and workspace-relative path. The file plugin switches its in-memory tab set to that session before opening and activates its view through the controller; tabs and the active file are cached separately per session.
 
+## Alternatives considered
+
+**Synthesize a chat message to leave blank state.** Rejected because opening a file must not alter model-visible Session history.
+
+**Find and click the rendered tab button.** Rejected because blank sessions do not render that button and localized DOM text is not a stable plugin interface.
+
+**Keep one global active file.** Rejected because it leaks navigation state across Sessions.
+
 ## Verification
 
 Focused UI tests cover unchanged blank Chat behavior and rendering an external view in a blank session. Coordinator tests cover pre-mount requests, persisted selections, and session isolation. The conversation client typecheck and focused test suites pass. Better Sidebar typecheck and build pass, and the file plugin client bundle builds.

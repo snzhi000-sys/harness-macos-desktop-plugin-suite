@@ -18,6 +18,9 @@
       "path": "../ui-conversation"
     },
     {
+      "path": "../ui-attachment"
+    },
+    {
       "path": "../web-react"
     },
     {
@@ -25,6 +28,9 @@
     },
     {
       "path": "../../core/agent"
+    },
+    {
+      "path": "../../attachment/attachment"
     },
     {
       "path": "../../core/tools"

@@ -1,5 +1,5 @@
 {"type":"session","version":0,"id":"{{sessionId}}","createdAt":0,"cwd":"{{cwd}}","parentSession":"{{sessionId}}","origin":"subagent","delegationDepth":1}
-{"type":"subagent/descriptor","seq":0,"time":0,"data":{"version":2,"mode":"continuable","provider":"spawn","label":"Return child result","agentProvider":"deepseek-official","agentModel":"deepseek-v4-flash"}}
+{"type":"subagent/descriptor","seq":0,"time":0,"data":{"version":3,"mode":"continuable","provider":"spawn","label":"Return child result","agentProvider":"deepseek-official","agentModel":"deepseek-v4-flash"}}
 {"type":"session/end-seed","seq":1,"time":0,"data":{}}
 {"type":"agent/inbox/spliced","seq":2,"time":0,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Reply with exactly CHILD_RESULT and nothing else. Do not call report."}],"source":{"kind":"user"},"role":"user","id":"{{sessionId}}"}]}}
 {"type":"turn/start","seq":3,"time":0,"data":{"turn":1}}

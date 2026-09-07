@@ -12,6 +12,7 @@ function run(label, command, args, cwd) {
 
 run('Better Sidebar', 'npm', ['test'], 'plugins/better-sidebar')
 run('File Edit', 'npm', ['test'], 'plugins/file-edit')
+run('Lark CLI', 'npm', ['test'], 'plugins/lark-cli')
 run('Workspace Lineage', resolve(root, 'node_modules/.bin/vitest'), ['run', '--config', 'vitest.config.ts'], 'plugins/workspace-lineage')
 run('Cowork', 'pnpm', ['test'], 'plugins/cowork')
 run('Message Edit Host snapshot', process.execPath, ['--check', 'index.mjs'], 'plugins/message-edit')

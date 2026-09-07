@@ -644,6 +644,18 @@ select.input {
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+.candidateToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.candidateSearch {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
 .candidateList {
   display: flex;
   flex-direction: column;
@@ -672,4 +684,12 @@ select.input {
   font-family: var(--ds-font-family-code);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.candidateEmpty {
+  margin: 24px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
 }

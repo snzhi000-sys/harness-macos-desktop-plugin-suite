@@ -1,8 +1,8 @@
 /**
  * Persisted projection cache (`ctx.sessionProjectionCache`): durable
  * checkpoints of every registered projection unit's state, one record per
- * session on the domain data form (`session_projcache` domain — the shipped
- * json backend lands it beside `workspace.json`). The cache is a fold
+ * session on the domain data form. The shipped JSON backend stores one
+ * independent record document per Session. The cache is a fold
  * shortcut, never an authority: a row is possibly stale (its `seq`
  * says how stale) but never wrong, so every write path is fail-soft (a lost
  * write costs a longer tail replay on the next cold read) and a
@@ -289,12 +289,24 @@ export class SessionProjectionCache extends Service {
 
 /** Project a header onto the identity fields a record is bound to. */
 function identityOf(header: SessionHeader): CheckpointIdentity {
-  return { createdAt: header.createdAt, ...header.cwd === undefined ? {} : { cwd: header.cwd } }
+  return {
+    createdAt: header.createdAt,
+    ...header.cwd === undefined ? {} : { cwd: header.cwd },
+    isSeeded: header.seedLength !== undefined,
+    inheritedEventCount: header.seedLength ?? 0,
+  }
 }
 
-/** Whether a stored record's bound identity names the caller's lifecycle. */
+/**
+ * Whether a stored record's bound identity names the caller's lifecycle.
+ * Missing lineage fields in compatible v3/v4 records mean an unseeded
+ * lifecycle; seeded Sessions reject those records and refold from the log.
+ */
 function identityMatches(stored: CheckpointIdentity, expected: CheckpointIdentity): boolean {
-  return stored.createdAt === expected.createdAt && stored.cwd === expected.cwd
+  return stored.createdAt === expected.createdAt
+    && stored.cwd === expected.cwd
+    && (stored.isSeeded ?? false) === expected.isSeeded
+    && (stored.inheritedEventCount ?? 0) === expected.inheritedEventCount
 }
 
 export default SessionProjectionCache

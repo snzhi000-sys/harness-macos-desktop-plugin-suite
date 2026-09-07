@@ -76,6 +76,24 @@ async function acceptedSocket(downlinks: WebSocketDownlinks): Promise<WebSocket>
 }
 
 describe('WebSocket downlinks', () => {
+  it('keeps an idle downlink alive with Ping control frames', async () => {
+    const downlinks = new WebSocketDownlinks(api(idle, idle), 20)
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+    await once(socket, 'open')
+    const accepted = await acceptedSocket(downlinks)
+    const message = vi.fn()
+    socket.on('message', message)
+
+    const ping = once(socket, 'ping')
+    const pong = once(accepted, 'pong')
+    expect((await ping)[0]).toEqual(Buffer.alloc(0))
+    expect((await pong)[0]).toEqual(Buffer.alloc(0))
+    expect(message).not.toHaveBeenCalled()
+    expect(socket.readyState).toBe(WebSocket.OPEN)
+  })
+
   it('carries mux and host over independent downstream sockets and cancels each source on close', async () => {
     let muxAborted = false
     let hostAborted = false

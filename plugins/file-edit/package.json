@@ -1,6 +1,6 @@
 {
   "name": "dsh-file-edit",
-  "version": "1.13.32-local",
+  "version": "1.13.40-local",
   "description": "Workspace file browser with whole-document CodeMirror editing, agent-change review, references and rendered markdown",
   "type": "module",
   "main": "host/index.mjs",

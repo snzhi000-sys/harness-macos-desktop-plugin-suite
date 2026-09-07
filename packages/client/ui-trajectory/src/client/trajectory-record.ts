@@ -1,6 +1,7 @@
 /** Shared trajectory record data and formatting contracts. */
 
 import type { HTMLAttributes } from 'react'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ConversationPromptSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 
 /** Closed set of trajectory record kinds. */
@@ -27,6 +28,8 @@ export interface AssistantMetricDetail {
 export interface TrajectorySourceBlock {
   type: string
   content: string
+  /** Session-authorized durable image reference. */
+  attachment?: ImageAttachmentRef
   imageSrc?: string
   imageAlt?: string
   callId?: string

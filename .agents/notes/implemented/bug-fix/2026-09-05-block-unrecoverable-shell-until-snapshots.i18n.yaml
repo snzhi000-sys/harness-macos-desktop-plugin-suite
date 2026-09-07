@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-05-block-unrecoverable-shell-until-snapshots.md
+2026-09-05-block-unrecoverable-shell-until-snapshots.md: f58f1095f6777abfb5e18fd1618d1b94900ff868
+2026-09-05-block-unrecoverable-shell-until-snapshots.zh.md: 7f12866afd6eba597646a42fd08c3b06735f6927

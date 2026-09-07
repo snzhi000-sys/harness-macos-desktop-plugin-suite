@@ -914,8 +914,13 @@ function subagentPromptError(
   if (signal.aborted) {
     return err(request, { code: 'cancelled', message: 'subagent prompt was cancelled', details: {} })
   }
+  if (error instanceof AttachmentError) {
+    return err(request, { code: 'attachment-error', message: error.message, details: { reason: error.code } })
+  }
   if (error instanceof SubagentError) {
     switch (error.code) {
+      case 'MODEL_DOES_NOT_SUPPORT_IMAGES':
+        return err(request, { code: 'attachment-error', message: error.message, details: { reason: error.code } })
       case 'NOT_RESUMABLE':
         return err(request, {
           code: 'subagent-not-resumable',
@@ -2804,7 +2809,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }, signal)
         if (verified.error !== undefined) return err(request, verified.error)
         try {
-          const messageId = await ctx.subagents.followup(parent, childSessionId, content, {
+          const durable = await durablePromptContent(ctx, content)
+          const messageId = await ctx.subagents.followup(parent, childSessionId, durable, {
             source: {
               kind: 'user',
               rpcId: request.rpcId,

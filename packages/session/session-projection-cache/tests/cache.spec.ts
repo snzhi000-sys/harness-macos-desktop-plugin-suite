@@ -16,7 +16,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
-import SessionProjectionCache from '../src/index.ts'
+import SessionProjectionCache, { projectionCacheDomainSpec } from '../src/index.ts'
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionMap {
@@ -99,7 +99,12 @@ const endTurn = (session: Session): SessionEvent =>
 function storedRecord(pool: MemoryMediaPool, id: Session['id']) {
   return pool.media.get('session_projcache')?.tables.get('sessions')?.get(String(id)) as
     {
-      identity: { createdAt: number; cwd?: string }
+      identity: {
+        createdAt: number
+        cwd?: string
+        isSeeded?: boolean
+        inheritedEventCount?: number
+      }
       rows: Record<string, { ver: number; seq: number; val: unknown }>
     } | undefined
 }
@@ -237,7 +242,7 @@ describe('SessionProjectionCache cold read', () => {
     row: { ver: number; seq: number; val: unknown },
     identity: { createdAt: number; cwd?: string } = { createdAt: 0 },
   ): void {
-    pool.versions.set('session_projcache', 3)
+    pool.versions.set('session_projcache', projectionCacheDomainSpec.version)
     pool.media.set('session_projcache', {
       tables: new Map([['sessions', new Map([[id, { identity, rows: { 'cache-test/marks': row } }]])]]),
       global: null,
@@ -312,7 +317,8 @@ describe('SessionProjectionCache cold read', () => {
     const snapshot = await cache.coldSnapshot(SessionId('reborn'))
     expect(snapshot.values['cache-test/marks']).toEqual({ marks: ['real'] })
     // The write-back rebinds the record to the actual log's identity.
-    expect(storedRecord(samePool, SessionId('reborn'))?.identity).toEqual({ createdAt: 0 })
+    expect(storedRecord(samePool, SessionId('reborn'))?.identity)
+      .toEqual({ createdAt: 0, isSeeded: false, inheritedEventCount: 0 })
   })
 
   it('cachedSnapshot returns undefined when every stored row is version-mismatched', async () => {

@@ -30,7 +30,14 @@ function mount({
     { id: 'welcome', order: -100 },
     { id: 'credential', order: 0 },
   ],
-}: { wide?: boolean; onboardingActive?: boolean; rows?: Row[]; steps?: Step[] } = {}) {
+  connectionState,
+}: {
+  wide?: boolean
+  onboardingActive?: boolean
+  rows?: Row[]
+  steps?: Step[]
+  connectionState?: 'connecting' | 'connected' | 'stalled' | 'reconnecting'
+} = {}) {
   // Mutable row source standing in for the bound useSections hook; bump()
   // plays a ledger change through the same observable contract.
   let current = rows
@@ -49,11 +56,15 @@ function mount({
       byId: { 'active-session': { blank: false } },
     })) as never
   const unusedHook = (() => { throw new Error('unused by SettingsRoot') }) as never
+  const reconnect = vi.fn()
   const props: SettingsRootComponentProps = {
     useSessions,
     useWorkspaces: unusedHook,
     wide,
     useOnboardingSteps: select => select(steps),
+    useConnectionState: select => select(connectionState),
+    reconnect,
+    t: (key: string) => key,
     useSections: (select) => {
       const [, force] = useState(0)
       useEffect(() => {
@@ -72,7 +83,7 @@ function mount({
       for (const fn of [...listeners]) fn()
     })
   }
-  return { view, renderSlot, bump, listeners }
+  return { view, renderSlot, bump, listeners, reconnect }
 }
 
 function openPanel() {
@@ -80,6 +91,12 @@ function openPanel() {
 }
 
 describe('SettingsRoot trigger', () => {
+  it('offers immediate reconnect for stalled and reconnecting states', () => {
+    const { reconnect } = mount({ connectionState: 'stalled' })
+    fireEvent.click(screen.getByRole('button', { name: 'connection.reconnect' }))
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
+
   it('renders the trigger seat content as the accessible name (no aria-label of its own)', () => {
     const { renderSlot } = mount()
     const trigger = screen.getByRole('button', { name: 'Settings' })

@@ -474,6 +474,42 @@ describe('paging', () => {
     await Promise.all([first, second])
     expect(api.callsOf('session.history')).toHaveLength(2) // open + one page, not two
   })
+
+  it('loads through an old turn sequence in bounded contiguous pages', async () => {
+    const pages = [
+      plainTurn(12, 2, '最新', '回答'),
+      plainTurn(6, 1, '中间', '回答'),
+      plainTurn(0, 0, '目标', '回答'),
+    ]
+    const { api, session } = makeSession()
+    api.onHistory = (payload) => {
+      if (payload.beforeSeq === undefined) return histResponse(pages[0]!, true)
+      if (payload.beforeSeq === 12) return histResponse(pages[1]!, true)
+      return histResponse(pages[2]!, false)
+    }
+    await session.open()
+    await session.loadThrough(0)
+    expect(api.callsOf('session.history')).toMatchObject([
+      { sessionId: SID },
+      { sessionId: SID, beforeSeq: 12, maxMessages: 250 },
+      { sessionId: SID, beforeSeq: 6, maxMessages: 250 },
+    ])
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([1, 3, 7, 9, 13, 15])
+    expect(session.getSnapshot()).toMatchObject({ hasMore: false, loadingOlder: false })
+  })
+
+  it('refuses a jump while a reader-owned page pull is in flight', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(6, 1, '新', '回答'), true)
+    await session.open()
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const pull = session.loadOlder()
+    await session.loadThrough(0)
+    expect(api.callsOf('session.history')).toHaveLength(2)
+    gate.resolve(ok({ events: entries(plainTurn(0, 0, '旧', '回答')) as never[], hasMore: false }))
+    await pull
+  })
 })
 
 describe('prompt and cancel errors', () => {
@@ -571,6 +607,52 @@ describe('prompt and cancel errors', () => {
     // First content lands (running turn): engaging → active.
     session.handleRunning(true)
     expect(session.getSnapshot().composerPhase).toBe('active')
+  })
+
+  it('publishes a submission echo synchronously and retires it only when the durable user message arrives', async () => {
+    const { session } = makeSession()
+    await session.open()
+    const retired = vi.fn()
+    const submission = session.beginSubmission({
+      text: '图文问题',
+      images: [{ previewUrl: 'blob:preview', name: 'shot.png', width: 10, height: 20 }],
+      onRetire: retired,
+    })
+    expect(session.getSnapshot().pendingSubmissions).toEqual([{
+      id: 'submission-1',
+      text: '图文问题',
+      images: [{ previewUrl: 'blob:preview', name: 'shot.png', width: 10, height: 20 }],
+    }])
+    session.handleMuxEnvelope('echo' as never, {
+      type: 'session/event', sessionId: SID, event: ev.user(0, '图文问题'),
+    })
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retired).toHaveBeenCalledWith('observed')
+    submission.abandon()
+    expect(retired).toHaveBeenCalledOnce()
+  })
+
+  it.each(['queue', 'steer'] as const)('keeps browser image bytes on the %s prompt wire', async (mode) => {
+    const { api, session } = makeSession()
+    const content = [
+      { type: 'image' as const, mediaType: 'image/png' as const, data: 'AQID', name: 'shot.png' },
+      { type: 'text' as const, text: '看图' },
+    ]
+    await expect(session.prompt(content, mode)).resolves.toMatchObject({ ok: true })
+    expect(api.callsOf('session.prompt')).toMatchObject([{
+      sessionId: SID,
+      mode,
+      content,
+    }])
+  })
+
+  it('abandons a failed submission echo without waiting for model feedback', () => {
+    const { session } = makeSession()
+    const retired = vi.fn()
+    const submission = session.beginSubmission({ text: '失败', images: [], onRetire: retired })
+    submission.abandon()
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retired).toHaveBeenCalledWith('failed')
   })
 
   it('business failure lands in promptError with op=send; the phase stays engaging (retry, no hero bounce)', async () => {
@@ -948,6 +1030,23 @@ describe('remaining branches', () => {
 })
 
 describe('resync', () => {
+  it('keeps the committed conversation visible while replacement history loads', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(0, 0, 'visible user', 'visible answer'))
+    await session.open()
+    const before = session.getSnapshot().nodes.map(node => node.seq)
+    const replacement = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => replacement.promise
+
+    const resync = session.resync()
+    expect(session.getSnapshot()).toMatchObject({ openState: 'loading' })
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual(before)
+
+    replacement.resolve(await histResponse([...plainTurn(0, 0, 'visible user', 'visible answer'), ...plainTurn(6, 1, 'next', 'done')]))
+    await resync
+    expect(session.getSnapshot().nodes).toHaveLength(4)
+  })
+
   it('rebuilds the window and clears pending; cold instances no-op', async () => {
     const { api, session } = makeSession()
     api.onHistory = () => histResponse(plainTurn(0, 0, 'a', 'b'))

@@ -6,7 +6,8 @@
     "dsh-workspace-lineage",
     "dsh-better-sidebar",
     "@dsh-cowork/plugin",
-    "dsh-message-edit"
+    "dsh-message-edit",
+    "dsh-lark-cli"
   ],
   "packages": [
     "dsh-file-edit"
@@ -15,6 +16,7 @@
     "dsh-better-sidebar": "plugins/better-sidebar",
     "dsh-file-edit": "plugins/file-edit",
     "dsh-message-edit": "plugins/message-edit",
+    "dsh-lark-cli": "plugins/lark-cli",
     "dsh-workspace-lineage": "plugins/workspace-lineage",
     "@dsh-cowork/plugin": "plugins/cowork/packages/dsh",
     "@dsh-cowork/core": "plugins/cowork/packages/core"
@@ -50,6 +52,11 @@
       "package": "dsh-file-edit",
       "entryId": "dsh-file-edit",
       "client": true
+    },
+    {
+      "package": "dsh-lark-cli",
+      "entryId": "lark-cli",
+      "client": false
     }
   ]
 }

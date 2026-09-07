@@ -13,17 +13,24 @@ const logPath = join(userData, 'logs', 'desktop.log')
 const child = spawn(executable, [`--user-data-dir=${userData}`], { stdio: 'ignore' })
 
 const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds))
+const childIsRunning = () => child.exitCode === null && child.signalCode === null
+const startupLogTail = () => {
+  if (!existsSync(logPath)) return '(desktop log was not created)'
+  return readFileSync(logPath, 'utf8').slice(-8_000).replaceAll(userData, '{{userData}}')
+}
 try {
   let ready = false
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    if (child.exitCode !== null) throw new Error(`candidate exited before startup with code ${String(child.exitCode)}`)
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    if (!childIsRunning()) {
+      throw new Error(`candidate exited before startup with code ${String(child.exitCode)} and signal ${String(child.signalCode)}\n${startupLogTail()}`)
+    }
     if (existsSync(logPath) && readFileSync(logPath, 'utf8').includes('backend ready at')) {
       ready = true
       break
     }
     await delay(2_000)
   }
-  if (!ready) throw new Error(`candidate did not become ready; log: ${logPath}`)
+  if (!ready) throw new Error(`candidate did not become ready within 300 seconds\n${startupLogTail()}`)
   if (existsSync(join(userData, 'harness', '.credentials.yaml'))) throw new Error('isolated launch imported credentials')
   if (!existsSync(join(userData, 'harness', 'profiles', '.web-bundled-profile-id'))) throw new Error('isolated launch did not install the bundled profile')
   const log = readFileSync(logPath, 'utf8')
@@ -44,8 +51,11 @@ try {
   if (typeof info?.version !== 'string' || !/^v\d+\.\d{2}\.\d{2}$/.test(info.version)) throw new Error('release-info API did not return a valid version')
   console.log(`isolated ${productName} launch verified with empty userData`)
 } finally {
-  if (child.exitCode === null) child.kill('SIGTERM')
-  for (let attempt = 0; child.exitCode === null && attempt < 40; attempt += 1) await delay(250)
-  if (child.exitCode === null) child.kill('SIGKILL')
-  rmSync(userData, { recursive: true, force: true })
+  if (childIsRunning()) child.kill('SIGTERM')
+  for (let attempt = 0; childIsRunning() && attempt < 40; attempt += 1) await delay(250)
+  if (childIsRunning()) {
+    child.kill('SIGKILL')
+    for (let attempt = 0; childIsRunning() && attempt < 40; attempt += 1) await delay(250)
+  }
+  rmSync(userData, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
 }

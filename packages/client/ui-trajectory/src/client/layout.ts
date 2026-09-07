@@ -785,11 +785,10 @@ function assistantSourceBlock(block: AssistantBlock): TrajectorySourceBlock {
       callId: block.callId,
       toolName: block.name,
     }
-    // Attachment refs carry no fetchable bytes, so the record shows the
-    // durable metadata instead of an inline preview.
     case 'image': return {
       type: 'image',
-      content: stringifySourceValue(block.attachment),
+      content: '',
+      attachment: block.attachment,
     }
     case 'other': return sourceBlock(block.block)
   }
@@ -803,6 +802,17 @@ function sourceBlock(value: unknown): TrajectorySourceBlock {
   const type = typeof block.type === 'string' ? block.type : 'unknown'
   if (typeof block.text === 'string') {
     return { type: type === 'reasoning' ? 'thinking' : type, content: block.text }
+  }
+  if (block.type === 'image' && block.attachment !== null
+    && typeof block.attachment === 'object' && !Array.isArray(block.attachment)) {
+    const attachment = block.attachment as Record<string, unknown>
+    if (typeof attachment.attachmentId === 'string'
+      && typeof attachment.mediaType === 'string'
+      && Number.isSafeInteger(attachment.bytes)
+      && Number.isSafeInteger(attachment.width)
+      && Number.isSafeInteger(attachment.height)) {
+      return { type, content: '', attachment: block.attachment as never }
+    }
   }
   const imageSrc = sourceImage(block)
   const imageAlt = typeof block.alt === 'string' ? block.alt : undefined

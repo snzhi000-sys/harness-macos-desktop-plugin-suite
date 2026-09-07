@@ -1,11 +1,8 @@
 /**
  * The session-projcache domain declaration: one `sessions` table keyed by
  * {@link SessionId}, each record the full projection checkpoint for one
- * session (`key → {ver, seq, val}` rows). The spec object
- * is the single source of the domain's identity, version, and record schema;
- * the storage-domain routing decides the medium (the shipped composition's
- * json backend lands it at `<root>/session_projcache.json`, beside
- * `workspace.json`).
+ * session (`key → {ver, seq, val}` rows). The shipped JSON backend stores
+ * one document per session under `<root>/session_projcache/sessions/`.
  * @module @deepseek-ai/dsh-session-projection-cache/src/spec
  */
 
@@ -39,6 +36,10 @@ export const checkpointRow = z.object({
 export const checkpointIdentity = z.object({
   createdAt: z.number().int().nonnegative(),
   cwd: z.string().optional(),
+  // v3/v4 records predate lineage binding. Absence means an unseeded cache;
+  // a seeded caller therefore rejects it and refolds from the Session log.
+  isSeeded: z.boolean().optional(),
+  inheritedEventCount: z.number().int().nonnegative().optional(),
 })
 
 /** The identity fields a record is bound to, inferred from {@link checkpointIdentity}. */
@@ -59,12 +60,15 @@ export const checkpointRecord = z.object({
 export type CheckpointRecord = z.infer<typeof checkpointRecord>
 
 /**
- * The session-projcache domain spec. Version bumps discard the whole medium
- * (cache semantics: a stale or unreadable cache costs a longer tail replay,
- * never a wrong value).
+ * The projection cache is disposable derived data. Current writes use v5;
+ * compatible v3/v4 records remain readable when their schema and identity
+ * validate, while an invalid independent record is backed up and skipped.
  */
 export const projectionCacheDomainSpec = defineDomain({
   name: 'session_projcache',
-  version: 3,
+  version: 5,
+  compatibleVersions: [3, 4],
+  invalidRecords: 'backup-and-skip',
+  layout: 'per-record',
   tables: { sessions: domainTable<SessionId, CheckpointRecord>(checkpointRecord) },
 })

@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createLaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import LlmRuntime, { createUserMessage,
   CONTEXT_WINDOW_EXCEEDED_CODE,
+  LlmError,
   ProviderRequestId,
   QUOTA_EXCEEDED_CODE,
   ReasoningEffortId,
@@ -14,6 +15,9 @@ import LlmRuntime, { createUserMessage,
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { getOrCreateAnonymousUserId, type AnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import DeepSeekLlmApiExtensionRegistry from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+import type { PreparedDeepSeekLlmApiExtensions } from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import { DeepSeekAdapter, resolveAdapterOptions } from '@deepseek-ai/dsh-llm-deepseek'
 import { httpErrorCode } from '../src/adapter.ts'
@@ -32,6 +36,7 @@ beforeEach(() => {
 afterEach(async () => {
   await closeMockServers()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
   rmSync(testHome, { recursive: true, force: true })
 })
@@ -42,8 +47,13 @@ async function harness(baseURL: string, config: object = {}) {
   vi.stubEnv('DEEPSEEK_API_KEY', 'test-key')
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
+  await ctx.plugin(DeepSeekLlmApiExtensionRegistry)
   await ctx.plugin(LlmDeepSeek, { baseURL, ...config })
   return ctx
+}
+
+function noExtensions(): Promise<PreparedDeepSeekLlmApiExtensions> {
+  return Promise.resolve({ fields: {}, accept: () => Promise.resolve() })
 }
 
 /** Direct adapter over the plugin's real resolve step, with a static key. */
@@ -53,10 +63,195 @@ function adapterOf(config: Partial<LlmDeepSeek.Config> & { apiKey?: string } = {
     options: () => resolveAdapterOptions(rest),
     resolveApiKey: () => Promise.resolve(apiKey ?? 'k'),
     resolveUserId: () => TEST_USER_ID,
+    prepareExtensions: noExtensions,
   })
 }
 
 describe('DeepSeekAdapter against a mock server', () => {
+  const imageRef = {
+    attachmentId: AttachmentId(`sha256:${'d'.repeat(64)}`),
+    mediaType: 'image/png' as const,
+    bytes: 3,
+    width: 1,
+    height: 1,
+  }
+  const imageMessage = createUserMessage({
+    content: [{ type: 'image' as const, attachment: imageRef }],
+    source: { kind: 'plugin' as const, plugin: 'test' },
+  })
+
+  function imageAdapter(baseURL: string, fileStore: object): DeepSeekAdapter {
+    return new DeepSeekAdapter({
+      options: () => resolveAdapterOptions({
+        baseURL,
+        models: [{ id: 'vision', inputModalities: ['text', 'image'] }],
+      }),
+      resolveApiKey: () => Promise.resolve('image-key'),
+      resolveUserId: () => TEST_USER_ID,
+      resolveAttachments: () => ({
+        readImage: async () => ({ ref: imageRef, data: Uint8Array.from([1, 2, 3]) }),
+      }) as never,
+      fileStore: fileStore as never,
+      prepareExtensions: noExtensions,
+    })
+  }
+
+  it('merges extension fields and accepts them exactly once after HTTP success', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    const accept = vi.fn()
+    const prepareExtensions = vi.fn(async () => ({
+      fields: { dsh_test: { version: 1 } },
+      accept: async () => { accept() },
+    }))
+    const adapter = new DeepSeekAdapter({
+      options: () => resolveAdapterOptions({ baseURL: server.url }),
+      resolveApiKey: () => Promise.resolve('k'),
+      resolveUserId: () => TEST_USER_ID,
+      prepareExtensions: prepareExtensions as never,
+    })
+
+    for await (const _chunk of adapter.stream({
+      provider: 'deepseek-official', model: 'm', messages: [], sessionId: SessionId('s'),
+    })) { /* drain */ }
+
+    expect(server.requests[0]).toMatchObject({ dsh_test: { version: 1 } })
+    expect(prepareExtensions).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's' }))
+    expect(accept).toHaveBeenCalledOnce()
+  })
+
+  it('fails before fetch when extension preparation fails or collides with a base field', async () => {
+    const server = await mockServer([])
+    const base = {
+      options: () => resolveAdapterOptions({ baseURL: server.url }),
+      resolveApiKey: () => Promise.resolve('k'),
+      resolveUserId: () => TEST_USER_ID,
+    }
+    const failed = new DeepSeekAdapter({
+      ...base,
+      prepareExtensions: () => Promise.reject(new Error('metadata unavailable')),
+    })
+    await expect((async () => {
+      for await (const _chunk of failed.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) { /* drain */ }
+    })()).rejects.toMatchObject({ code: 'REQUEST_EXTENSION' })
+
+    const collision = new DeepSeekAdapter({
+      ...base,
+      prepareExtensions: (() => Promise.resolve({
+        fields: { model: 'replacement' }, accept: () => Promise.resolve(),
+      })) as never,
+    })
+    await expect((async () => {
+      for await (const _chunk of collision.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) { /* drain */ }
+    })()).rejects.toMatchObject({ code: 'REQUEST_EXTENSION' })
+    expect(server.requests).toHaveLength(0)
+  })
+
+  it('accepts only 2xx requests and reports acceptance failures as request extensions', async () => {
+    const server = await mockServer([
+      { kind: 'http-error', status: 500, body: '{}' },
+      { kind: 'sse', events: textEvents },
+      { kind: 'sse', events: textEvents },
+    ])
+    const accept = vi.fn()
+    const adapter = new DeepSeekAdapter({
+      options: () => resolveAdapterOptions({ baseURL: server.url }),
+      resolveApiKey: () => Promise.resolve('k'),
+      resolveUserId: () => TEST_USER_ID,
+      prepareExtensions: () => Promise.resolve({ fields: { dsh_test: 1 }, accept: async () => { accept() } }) as never,
+    })
+    const request = { provider: 'deepseek-official', model: 'm', messages: [] }
+
+    await expect((async () => {
+      for await (const _chunk of adapter.stream(request)) { /* drain */ }
+    })()).rejects.toMatchObject({ code: 'SERVER' })
+    expect(accept).not.toHaveBeenCalled()
+    for await (const _chunk of adapter.stream(request)) { /* drain */ }
+    expect(accept).toHaveBeenCalledOnce()
+
+    const failure = new Error('inventory commit failed')
+    const failing = new DeepSeekAdapter({
+      options: () => resolveAdapterOptions({ baseURL: server.url }),
+      resolveApiKey: () => Promise.resolve('k'),
+      resolveUserId: () => TEST_USER_ID,
+      prepareExtensions: () => Promise.resolve({
+        fields: { dsh_test: 1 }, accept: () => Promise.reject(failure),
+      }) as never,
+    })
+    await expect((async () => {
+      for await (const _chunk of failing.stream(request)) { /* drain */ }
+    })()).rejects.toMatchObject({ code: 'REQUEST_EXTENSION', cause: failure })
+  })
+
+  it('prefers a reusable Files API id for image-capable models', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    const adapter = imageAdapter(server.url, { ensureUploaded: async () => 'file-reused' })
+    for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'vision', messages: [imageMessage] })) { /* drain */ }
+    expect(server.requests[0]).toMatchObject({
+      messages: [{ role: 'user', content: [{ type: 'file', file_id: 'file-reused' }] }],
+    })
+  })
+
+  it('falls back once to inline bytes when the Files API route is unavailable', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    const adapter = imageAdapter(server.url, {
+      ensureUploaded: async () => { throw new LlmError('files unavailable', 'FILES_API') },
+    })
+    for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'vision', messages: [imageMessage] })) { /* drain */ }
+    expect(server.requests[0]).toMatchObject({
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } }] }],
+    })
+  })
+
+  it('invalidates a stale file id and reuploads it exactly once', async () => {
+    const requests: unknown[] = []
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)))
+      return requests.length === 1
+        ? new Response(JSON.stringify({ error: { message: 'file id file-stale not found' } }), { status: 400 })
+        : new Response(textEvents.map(event => `data: ${event}\n\n`).join(''), {
+          status: 200, headers: { 'content-type': 'text/event-stream' },
+        })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const invalidate = vi.fn(async () => {})
+    const ensureUploaded = vi.fn()
+      .mockResolvedValueOnce('file-stale')
+      .mockResolvedValueOnce('file-fresh')
+    const adapter = imageAdapter('https://api.example', { ensureUploaded, invalidate })
+    for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'vision', messages: [imageMessage] })) { /* drain */ }
+    expect(invalidate).toHaveBeenCalledOnce()
+    expect(ensureUploaded).toHaveBeenCalledTimes(2)
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toMatchObject({
+      messages: [{ role: 'user', content: [{ type: 'file', file_id: 'file-fresh' }] }],
+    })
+  })
+
+  it('falls back inline when a stale file id cannot be reuploaded', async () => {
+    const requests: unknown[] = []
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)))
+      return requests.length === 1
+        ? new Response(JSON.stringify({ error: { message: 'file id file-stale expired' } }), { status: 400 })
+        : new Response(textEvents.map(event => `data: ${event}\n\n`).join(''), {
+          status: 200, headers: { 'content-type': 'text/event-stream' },
+        })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const ensureUploaded = vi.fn()
+      .mockResolvedValueOnce('file-stale')
+      .mockRejectedValueOnce(new LlmError('files temporarily unavailable', 'FILES_API'))
+    const adapter = imageAdapter('https://api.example', {
+      ensureUploaded,
+      invalidate: vi.fn(async () => {}),
+    })
+    for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'vision', messages: [imageMessage] })) { /* drain */ }
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toMatchObject({
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } }] }],
+    })
+  })
+
   it('streams a text generation end to end through the assembler', async () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
     const ctx = await harness(server.url)
@@ -660,6 +855,7 @@ describe('plugin registration and config', () => {
     await expect(ctx.llm.listModels('deepseek-official')).resolves.toEqual([
       { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
       { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text'] },
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', inputModalities: ['text', 'image'] },
     ])
     await expect(ctx.llm.resolveModelInfo('deepseek-official', 'deepseek-v4-flash'))
       .resolves.toMatchObject({
@@ -755,6 +951,7 @@ describe('plugin registration and config', () => {
     await expect(ctx.llm.listModels('deepseek-official')).resolves.toEqual([
       { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
       { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text'] },
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', inputModalities: ['text', 'image'] },
     ])
   })
 
@@ -918,7 +1115,7 @@ describe('plugin registration and config', () => {
     // First-boot onboarding: the route registers so models stay discoverable;
     // only the request itself needs a key.
     expect(ctx.llm.listProviders()).toEqual([{ id: 'deepseek-official', name: 'DeepSeek' }])
-    await expect(ctx.llm.listModels('deepseek-official')).resolves.toHaveLength(2)
+    await expect(ctx.llm.listModels('deepseek-official')).resolves.toHaveLength(3)
     const first = await assemble(ctx, { model: 'deepseek-v4-flash', messages: [] })
     expect(first.finish).toMatchObject({ kind: 'error', failure: { code: 'MISSING_CREDENTIAL' } })
     // The guidance leads with the managed credential store.
@@ -1006,7 +1203,7 @@ describe('plugin registration and config', () => {
     expect(adapter).toBeInstanceOf(DeepSeekAdapter)
     // Direct embedding shares the plugin's one resolve step, so it advertises
     // the same default catalog instead of a divergent empty one.
-    await expect(adapter.listModels('deepseek-official')).resolves.toHaveLength(2)
+    await expect(adapter.listModels('deepseek-official')).resolves.toHaveLength(3)
   })
 
   it('resolves connection facts and the credential exactly once per stream call', async () => {
@@ -1014,7 +1211,7 @@ describe('plugin registration and config', () => {
     const options = vi.fn(() => resolveAdapterOptions({ baseURL: server.url }))
     const resolveApiKey = vi.fn(() => Promise.resolve('per-request-key'))
     const resolveUserId = vi.fn(() => TEST_USER_ID)
-    const adapter = new DeepSeekAdapter({ options, resolveApiKey, resolveUserId })
+    const adapter = new DeepSeekAdapter({ options, resolveApiKey, resolveUserId, prepareExtensions: noExtensions })
 
     for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) { /* drain */ }
 

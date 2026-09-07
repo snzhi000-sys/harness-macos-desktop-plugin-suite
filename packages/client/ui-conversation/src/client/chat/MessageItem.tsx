@@ -6,7 +6,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type {
-  ModelRetryNode, TurnErrorNode, UserMessageNode,
+  ModelRetryNode, PendingSubmission, TurnErrorNode, UserMessageNode,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { JsonBlock, MessageText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
@@ -243,6 +243,31 @@ export function PendingSteeringBubble({ content, loadImage, t }: {
         />
       )}
     />
+  )
+}
+
+/** Immediate browser-local echo shown while image encoding/admission continues. */
+export function PendingSubmissionBubble({ submission }: { submission: PendingSubmission }): ReactNode {
+  return (
+    <div className={css.userRow} data-pending-submission data-time-hover-root>
+      <div className={css.userStack}>
+        {submission.images.length > 0 && (
+          <div className={css.pendingImages}>
+            {submission.images.map((image, index) => (
+              <img
+                className={css.pendingImage}
+                src={image.previewUrl}
+                alt={image.name ?? ''}
+                width={image.width}
+                height={image.height}
+                key={`${image.previewUrl}:${index}`}
+              />
+            ))}
+          </div>
+        )}
+        {submission.text !== '' && <div className={css.bubble}>{projectUserText(submission.text)}</div>}
+      </div>
+    </div>
   )
 }
 

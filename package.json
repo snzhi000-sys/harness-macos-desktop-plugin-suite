@@ -53,6 +53,7 @@
     "test:web:built": "vitest run --config vitest.web.config.ts",
     "test:web:perf": "npm run build && npm run test:web:perf:built",
     "test:web:perf:built": "DSH_SNAPSHOT=replay vitest run --config vitest.web.perf.config.ts",
+    "benchmark:stage3": "tsx scripts/benchmark-stage3-long-session.ts",
     "test:web:stress": "npm run build && vitest run --config vitest.web-stress.config.ts",
     "test:gui": "vitest run packages/client packages/host",
     "check:all": "tsx scripts/run-gates.ts check-all",

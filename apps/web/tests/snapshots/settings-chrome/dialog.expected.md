@@ -21,7 +21,7 @@
   - button "标准模式":
     - text: 标准模式
     - img
-  - text: 权限 选择新会话的默认权限模式
+  - text: 权限 设置新会话的执行权限；“全部权限”不等于可恢复文件审核能覆盖整个磁盘
   - button "Workspace Write":
     - text: Workspace Write
     - img

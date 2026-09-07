@@ -31,7 +31,7 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-shell-env'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import { ESCALATION_TARGETS, approveEscalation, validateEscalationArgs } from '@deepseek-ai/dsh-sandbox'
+import { ESCALATION_TARGETS, approveEscalation, canonicalPath, validateEscalationArgs } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import type { ShellRunResult } from '@deepseek-ai/dsh-shell'
 import { parseExitStatus } from '@deepseek-ai/dsh-shell'
@@ -52,11 +52,14 @@ export const inject = ['tools', 'shell', 'systemPrompt', 'shellEnv']
 export interface Config {
   /** Expose `run_in_background` (default true); disabled calls are also rejected. */
   enableRunInBackground?: boolean
+  /** Confine Full Access writes to a per-call audit root while retaining unrestricted reads. */
+  auditFullAccessWrites?: boolean
 }
 
 /** Runtime configuration schema for the pwsh tool plugin. */
 export const Config: z<Config> = z.object({
   enableRunInBackground: z.boolean().default(true),
+  auditFullAccessWrites: z.boolean().default(false),
 })
 
 /** Parsed tool args; execute validates value constraints absent from ParameterSchemaSpec. */
@@ -65,6 +68,7 @@ interface PwshToolArgs {
   description: string
   timeoutMs?: number
   workdir?: string
+  audit_root?: string
   run_in_background?: boolean
   sandbox_permissions?: string
   justification?: string
@@ -93,6 +97,9 @@ function validatePwshArgs(args: PwshToolArgs): void {
   }
   if (args.timeoutMs !== undefined && (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0)) {
     throw new Error(`invalid timeoutMs: expected a positive number, got ${JSON.stringify(args.timeoutMs)}`)
+  }
+  if (args.audit_root !== undefined && (args.audit_root.trim().length === 0 || !isAbsolute(args.audit_root))) {
+    throw new Error('invalid audit_root: expected an absolute directory path')
   }
   // The escalation pairing (sandbox_permissions ⇔ justification, non-empty) is
   // the shared rule both enforcing families validate identically.
@@ -195,6 +202,7 @@ const BACKGROUND_OUTPUT_PROPERTIES = {
 /* jscpd:ignore-start -- deliberate mirror of dsh-tool-bash's apply() preamble (pwsh-tool-and-executor Agent Note). */
 export function apply(ctx: Context, config: Config = {}): void {
   const backgroundEnabled = config.enableRunInBackground ?? true
+  const auditFullAccessWrites = config.auditFullAccessWrites ?? false
   const defaultMode = ctx.shell.sandboxMode
   const escalationModes: readonly SandboxMode[] = defaultMode === undefined ? [] : ESCALATION_TARGETS
   const sandboxPolicy: SandboxPolicyService | undefined = defaultMode === undefined ? undefined : ctx.get('sandboxPolicy')
@@ -246,7 +254,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     name: 'tool:pwsh',
     order: 105,
     text: 'Non-zero exits are reported as `[exit code: N]` markers; investigate failures before moving on. '
-      + 'On Windows a killed process settles as `[exit code: 1]` without a signal marker; treat a bare exit 1 after an interruption as a termination, not a command failure.',
+      + 'On Windows a killed process settles as `[exit code: 1]` without a signal marker; treat a bare exit 1 after an interruption as a termination, not a command failure.'
+      + (auditFullAccessWrites ? ' Under Full Access, set audit_root to the narrowest existing directory containing every local path the command may change; it defaults to workdir and does not limit reads.' : ''),
   })
 
   ctx.tools.register(defineTool({
@@ -264,6 +273,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
       timeoutMs: { type: 'number', description: 'Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.' },
       workdir: { type: 'string', description: 'Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.' },
+      ...auditFullAccessWrites ? {
+        audit_root: { type: 'string' as const, description: 'Full Access only: absolute path of an existing directory containing every local path this foreground command may change. May be anywhere on disk; defaults to workdir. Reads remain unrestricted, while writes outside this directory are denied so file review can snapshot and recover changes.' },
+      } : {},
       ...backgroundEnabled ? {
         run_in_background: { type: 'boolean' as const, description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.' },
       } : {},
@@ -352,10 +364,14 @@ export function apply(ctx: Context, config: Config = {}): void {
       const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
         ? await approvePwshEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
         : undefined
-      const policy = approvedMode === undefined
+      const requestedPolicy = approvedMode === undefined
         ? standingPolicy
         : { ...(standingPolicy as SandboxExecutionPolicy), mode: approvedMode }
       const workdir = resolveWorkdir(args.workdir, exec)
+      const auditRoot = args.audit_root === undefined ? workdir : canonicalPath(args.audit_root)
+      const policy = auditFullAccessWrites && requestedPolicy?.mode === 'danger-full-access'
+        ? { ...requestedPolicy, mode: 'workspace-write' as const, workspaceRoot: auditRoot ?? requestedPolicy.workspaceRoot }
+        : requestedPolicy
       const request = {
         command: args.command,
         ...workdir !== undefined ? { workdir } : {},

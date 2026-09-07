@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/process/2026-09-01-desktop-product-build-pipeline.md
-2026-09-01-desktop-product-build-pipeline.md: ef526a46cbac5ea583571374513e1edfb7468709
-2026-09-01-desktop-product-build-pipeline.zh.md: 577ba3fb0519f09e14633d9f8d932091be077430
+2026-09-01-desktop-product-build-pipeline.md: 1db1d6dd693200dc9e5d6489f91bb8cbf01092a9
+2026-09-01-desktop-product-build-pipeline.zh.md: 9c85535a1d50eae925dad6594bd3883537fb23f5

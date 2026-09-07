@@ -8,23 +8,31 @@
  * @module dsh-llm-deepseek/adapter
  */
 
-import { attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE, isContextWindowExceededError, isQuotaExceededError, LlmAdapter, LlmError, ProviderRequestId, QUOTA_EXCEEDED_CODE, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, contentHasImage, CONTEXT_WINDOW_EXCEEDED_CODE, isContextWindowExceededError, isQuotaExceededError, LlmAdapter, LlmError, ProviderRequestId, QUOTA_EXCEEDED_CODE, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  ModelModality,
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import type { AttachmentStore, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
-import { serializeRequest } from './serialize.ts'
+import type {
+  DeepSeekLlmApiExtensionRequest,
+  DeepSeekLlmApiJson,
+  PreparedDeepSeekLlmApiExtensions,
+} from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+import { serializeRequest, serializeRequestWithImages } from './serialize.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { parseSse } from './sse.ts'
 import { translate } from './translate.ts'
 import type { WireError } from './types.ts'
+import { DeepSeekFileStore } from './file-store.ts'
 
 /** One optional model entry advertised by the direct-fetch adapter. */
 export interface DeepSeekCatalogModel {
@@ -38,6 +46,8 @@ export interface DeepSeekCatalogModel {
   contextWindow?: number
   /** Per-request output cap for this model; omission falls back to the profile's {@link DeepSeekConnectionOptions.maxTokens}. */
   maxTokens?: number
+  /** Accepted request modalities; omission is deliberately text-only. */
+  inputModalities?: ModelModality[]
 }
 
 /**
@@ -66,6 +76,10 @@ export interface DeepSeekConnectionOptions {
   models: readonly DeepSeekCatalogModel[]
   /** Maximum provider idle time while one stream read is outstanding. */
   streamIdleTimeoutMs: number
+  /** Maximum accumulated inline image payload in one request. */
+  maxRequestImageBytes: number
+  /** Files API upload lifetime and proactive refresh window. */
+  filePolicy: { expiresAfterSeconds: number; refreshMarginSeconds: number }
   /** Provider-owned model-request retry policy, already resolved. */
   retryPolicy: ResolvedRetryPolicy
 }
@@ -83,6 +97,12 @@ export interface DeepSeekAdapterOptions {
   resolveApiKey: (connection: DeepSeekConnectionOptions) => Promise<string>
   /** Resolve the harness-home anonymous id shared with telemetry and feedback. */
   resolveUserId: () => AnonymousUserId
+  /** Resolve durable image bytes only for image-bearing calls. */
+  resolveAttachments?: () => AttachmentStore | undefined
+  /** Process-wide provider upload cache; primarily injectable for tests. */
+  fileStore?: DeepSeekFileStore
+  /** Prepare plugin-owned top-level fields for one exact serialized request. */
+  prepareExtensions: (request: DeepSeekLlmApiExtensionRequest) => Promise<PreparedDeepSeekLlmApiExtensions>
 }
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
@@ -91,6 +111,7 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 export const DEFAULT_CONTEXT_WINDOW = 1_000_000
 /** Default per-request output-token cap. */
 export const DEFAULT_MAX_TOKENS = 256_000
+export const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 const OFF_REASONING_EFFORT = ReasoningEffortId('off')
 const HIGH_REASONING_EFFORT = ReasoningEffortId('high')
@@ -103,6 +124,39 @@ const REASONING_EFFORTS = [
 const OFF_ONLY_REASONING_EFFORTS = [
   { id: OFF_REASONING_EFFORT, name: 'Off' },
 ] as const
+const FILES_API_FALLBACK_CODES = new Set([
+  'FILES_API', 'INVALID_RESPONSE', 'TRANSPORT', 'SERVER', 'RATE_LIMIT',
+])
+
+interface UsedRequestFile {
+  image: StoredImageAttachment
+  fileId: string
+}
+
+function providerRejectedFileId(detail: string): boolean {
+  const file = /\bfile(?:[_ -]?(?:id|api|not[_ -]?found|deleted|expired))?/iu.test(detail)
+  const missing = /(?:expired|not[_ -]?found|deleted|do(?:es)? not exist|not created under (?:this|your) account)/iu.test(detail)
+  const invalidId = /(?:invalid.{0,20}file[_ -]?(?:id|api)|file[_ -]?(?:id|api).{0,20}invalid)/iu.test(detail)
+  return file && (missing || invalidId)
+}
+
+function detailNamesFileId(detail: string, fileId: string): boolean {
+  let index = detail.indexOf(fileId)
+  while (index >= 0) {
+    const before = detail[index - 1]
+    const after = detail[index + fileId.length]
+    if ((before === undefined || !/[\p{L}\p{N}_-]/u.test(before))
+      && (after === undefined || !/[\p{L}\p{N}_-]/u.test(after))) return true
+    index = detail.indexOf(fileId, index + 1)
+  }
+  return false
+}
+
+function staleMappings(files: readonly UsedRequestFile[], detail: string): UsedRequestFile[] {
+  const unique = [...new Map(files.map(file => [`${file.image.ref.attachmentId}\0${file.fileId}`, file])).values()]
+  const exact = unique.filter(file => detailNamesFileId(detail, file.fileId))
+  return exact.length > 0 ? exact : unique
+}
 
 function modelInfo(provider: string, model: DeepSeekCatalogModel): LlmModelInfo {
   return {
@@ -110,7 +164,7 @@ function modelInfo(provider: string, model: DeepSeekCatalogModel): LlmModelInfo 
     id: model.id,
     name: model.name ?? model.id,
     ...model.description === undefined ? {} : { description: model.description },
-    inputModalities: ['text'],
+    inputModalities: model.inputModalities ?? ['text'],
   }
 }
 
@@ -156,8 +210,11 @@ export function httpErrorCode(status: number, error?: WireError['error']): strin
  * map to `ABORTED`; the configured per-read idle watchdog maps to `TIMEOUT`.
  */
 export class DeepSeekAdapter extends LlmAdapter {
+  private readonly fileStore: DeepSeekFileStore
+
   constructor(private readonly config: DeepSeekAdapterOptions) {
     super()
+    this.fileStore = config.fileStore ?? new DeepSeekFileStore()
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
@@ -182,10 +239,8 @@ export class DeepSeekAdapter extends LlmAdapter {
     const contextWindow = configured?.contextWindow
       ?? connection.defaultContextWindow
     return Promise.resolve({
-      // The chat-completions wire route is text-only regardless of catalog
-      // membership, so the uncatalogued fallback declares the same negative
-      // capability — "unknown" here would let the host accept and persist
-      // images the serializer must then reject.
+      // Uncatalogued endpoints remain text-only: image capability must be an
+      // explicit model fact before the durable prompt is admitted.
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : modelInfo(provider, configured),
@@ -218,6 +273,18 @@ export class DeepSeekAdapter extends LlmAdapter {
     // The key resolves *from this snapshot*, so an endpoint and the secret
     // sent to it can never come from different configuration generations.
     const connection = this.config.options()
+    const hasImages = options.messages.some(message => contentHasImage(message.content))
+    let attachments: AttachmentStore | undefined
+    if (hasImages) {
+      const model = connection.models.find(entry => entry.id === options.model)
+      if (model?.inputModalities?.includes('image') !== true) {
+        throw new LlmError(`DeepSeek model "${options.model}" does not accept image input.`, 'UNSUPPORTED_CONTENT')
+      }
+      attachments = this.config.resolveAttachments?.()
+      if (attachments === undefined) {
+        throw new LlmError('DeepSeek image conversion requires the durable attachment service.', 'UNSUPPORTED_CONTENT')
+      }
+    }
     const apiKey = await this.config.resolveApiKey(connection)
     const userId = this.config.resolveUserId()
     const consumer = new AbortController()
@@ -231,6 +298,7 @@ export class DeepSeekAdapter extends LlmAdapter {
       connection,
       apiKey,
       userId,
+      attachments,
       () => { watchdog.pulse() },
     )[Symbol.asyncIterator]()
     let exhausted = false
@@ -274,12 +342,76 @@ export class DeepSeekAdapter extends LlmAdapter {
     connection: DeepSeekConnectionOptions,
     apiKey: string,
     userId: AnonymousUserId,
+    attachments: AttachmentStore | undefined,
     onComment: () => void,
   ): AsyncIterable<StreamChunk> {
-    const body = serializeRequest(options, connection.defaults)
-    // Prepared outside the try so the TRANSPORT label below covers exactly the
-    // transport boundary, never a serialization failure.
-    const payload = JSON.stringify(body)
+    let usedFiles: UsedRequestFile[] = []
+    const inlineBody = (): Promise<ReturnType<typeof serializeRequest>> => attachments === undefined
+      ? Promise.resolve(serializeRequest(options, connection.defaults))
+      : serializeRequestWithImages(options, {
+        attachments,
+        representation: { kind: 'base64' },
+        maxRequestImageBytes: connection.maxRequestImageBytes,
+        signal,
+      }, connection.defaults)
+    const fileBody = async (): Promise<ReturnType<typeof serializeRequest>> => {
+      if (attachments === undefined) return serializeRequest(options, connection.defaults)
+      const nextFiles: UsedRequestFile[] = []
+      const next = await serializeRequestWithImages(options, {
+        attachments,
+        representation: {
+          kind: 'file',
+          resolveFileId: async (image) => {
+            const fileId = await this.fileStore.ensureUploaded(
+              image,
+              { baseURL: connection.baseURL, apiKey },
+              connection.filePolicy,
+              signal,
+            )
+            nextFiles.push({ image, fileId })
+            return fileId
+          },
+        },
+        maxRequestImageBytes: connection.maxRequestImageBytes,
+        signal,
+      }, connection.defaults)
+      usedFiles = nextFiles
+      return next
+    }
+    let usedFileRepresentation = attachments !== undefined
+    let body
+    if (attachments === undefined) {
+      body = serializeRequest(options, connection.defaults)
+    } else {
+      try {
+        body = await fileBody()
+      } catch (error: unknown) {
+        const code = error instanceof LlmError ? error.code : undefined
+        if (!FILES_API_FALLBACK_CODES.has(code ?? '')) throw error
+        usedFileRepresentation = false
+        body = await inlineBody()
+      }
+    }
+    let extensions: PreparedDeepSeekLlmApiExtensions
+    try {
+      extensions = await this.config.prepareExtensions({
+        body: body as unknown as Readonly<Record<string, DeepSeekLlmApiJson>>,
+        signal,
+        ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+        ...options.purpose === undefined ? {} : { purpose: options.purpose },
+      })
+    } catch (error) {
+      throw new LlmError('DeepSeek request extension preparation failed', 'REQUEST_EXTENSION', { cause: error })
+    }
+    for (const field of Object.keys(extensions.fields)) {
+      if (Object.hasOwn(body, field)) {
+        throw new LlmError(
+          `DeepSeek request extension field ${JSON.stringify(field)} collides with the base request`,
+          'REQUEST_EXTENSION',
+        )
+      }
+    }
+    let payload = JSON.stringify({ ...body, ...extensions.fields })
     const headers = {
       'authorization': `Bearer ${apiKey}`,
       'content-type': 'application/json',
@@ -296,29 +428,27 @@ export class DeepSeekAdapter extends LlmAdapter {
 
     // TODO(http): adopt the Cordis HTTP service when shared transport configuration
     // outweighs its additional runtime dependencies.
-    let response: Response
-    try {
-      response = await fetch(`${connection.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: payload,
-        signal,
-      })
-    } catch (error: unknown) {
-      // The outer stream distinguishes caller cancellation and watchdog expiry.
-      if (signal.aborted) throw error
-      // fetch wraps every transport failure (DNS, refused connection, TLS,
-      // proxy) in a bare `TypeError: fetch failed` whose actionable detail
-      // lives on `cause`. Wrapping with the endpoint and chaining the cause
-      // lets `errorChain` render the full diagnosis at every reporting boundary.
-      throw new LlmError(
-        `DeepSeek API request to ${connection.baseURL} failed`,
-        'TRANSPORT',
-        { cause: error },
-      )
-    }
-
-    if (!response.ok) {
+    const send = async (): Promise<Response> => fetch(`${connection.baseURL}/chat/completions`, {
+      method: 'POST', headers, body: payload, signal,
+    })
+    let response: Response | undefined
+    for (let fileAttempt = 0; fileAttempt < 2; fileAttempt += 1) {
+      try {
+        response = await send()
+      } catch (error: unknown) {
+        // The outer stream distinguishes caller cancellation and watchdog expiry.
+        if (signal.aborted) throw error
+        // fetch wraps every transport failure (DNS, refused connection, TLS,
+        // proxy) in a bare `TypeError: fetch failed` whose actionable detail
+        // lives on `cause`. Wrapping with the endpoint and chaining the cause
+        // lets `errorChain` render the full diagnosis at every reporting boundary.
+        throw new LlmError(
+          `DeepSeek API request to ${connection.baseURL} failed`,
+          'TRANSPORT',
+          { cause: error },
+        )
+      }
+      if (response.ok) break
       let message = `DeepSeek API error (HTTP ${response.status})`
       let providerError: WireError['error']
       try {
@@ -329,6 +459,24 @@ export class DeepSeekAdapter extends LlmAdapter {
         // Only swallow error-body parsing: the HTTP status still identifies the
         // failure, so malformed gateway JSON must not mask it.
       }
+      const detail = [providerError?.code, providerError?.type, providerError?.message].filter(Boolean).join(' ')
+      if (usedFileRepresentation && fileAttempt === 0 && usedFiles.length > 0
+        && providerRejectedFileId(detail)) {
+        await Promise.all(staleMappings(usedFiles, detail).map(({ image, fileId }) => this.fileStore.invalidate(
+          image,
+          fileId,
+          { baseURL: connection.baseURL, apiKey },
+        )))
+        try {
+          payload = JSON.stringify(await fileBody())
+        } catch (error: unknown) {
+          const code = error instanceof LlmError ? error.code : undefined
+          if (!FILES_API_FALLBACK_CODES.has(code ?? '')) throw error
+          usedFileRepresentation = false
+          payload = JSON.stringify(await inlineBody())
+        }
+        continue
+      }
       const delay = providerRetryAfterMs(response.headers.get('retry-after'))
       const id = requestId(response.headers)
       throw new LlmError(message, httpErrorCode(response.status, providerError), {
@@ -336,6 +484,12 @@ export class DeepSeekAdapter extends LlmAdapter {
         ...delay === undefined ? {} : { providerRetryAfterMs: delay },
         ...id === undefined ? {} : { requestId: id },
       })
+    }
+    if (response === undefined) throw new LlmError('DeepSeek API request did not run', 'TRANSPORT')
+    try {
+      await extensions.accept()
+    } catch (error) {
+      throw new LlmError('DeepSeek request extension acceptance failed', 'REQUEST_EXTENSION', { cause: error })
     }
     if (!response.body) {
       throw new LlmError('DeepSeek API returned no response body', 'EMPTY_RESPONSE')

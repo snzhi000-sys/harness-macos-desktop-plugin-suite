@@ -56,6 +56,25 @@ describe('TrajectoryTurn', () => {
 })
 
 describe('deriveTrajectoryLayout', () => {
+  it('preserves durable image references instead of exposing attachment metadata as text', () => {
+    const attachment = {
+      attachmentId: 'sha256:image' as never,
+      mediaType: 'image/png' as const,
+      bytes: 3,
+      width: 10,
+      height: 20,
+    }
+    const nodes = [{
+      kind: 'assistant', seq: 2, time: 2_000, turn: 1, step: 1,
+      blocks: [{ kind: 'image', attachment }],
+    }] as unknown as ConversationSnapshot['nodes']
+    const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
+    const message = turns[0]?.groups[0]?.cells[0]
+
+    expect(message?.sourceBlocks).toEqual([{ type: 'image', content: '', attachment }])
+    expect(message?.outputDetail).toBeUndefined()
+  })
+
   it('expands assistant blocks, hangs usage on Message, and folds call+result into Tool', () => {
     const nodes = [
       { kind: 'user', seq: 1, time: 1_000, content: [{ type: 'text', text: 'hello' }], source: null },

@@ -1,3 +1,5 @@
 - insert:
     - id: dsh-file-edit
       name: dsh-file-edit
+      config:
+        shellTransactionLifecycle: true

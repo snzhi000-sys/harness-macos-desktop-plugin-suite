@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { CallId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
 import { assembleContextFor, type Agent } from '@deepseek-ai/dsh-agent'
@@ -35,6 +35,20 @@ const testToolSignal = new AbortController().signal
 /** A minimal parent Agent passed through to the provider request. */
 function fakeAgent(id = 'parent-1'): Agent {
   return { id: SessionId(id) } as unknown as Agent
+}
+
+/** Parent with enough durable route state for model-selection preflight. */
+function modelParent(id = 'parent-model'): Agent {
+  return {
+    id: SessionId(id),
+    options: {
+      provider: 'parent-provider',
+      model: 'parent-model',
+      reasoningEffort: ReasoningEffortId('high'),
+      maxTokens: 4_096,
+    },
+    session: { requestHeader: () => undefined },
+  } as unknown as Agent
 }
 
 async function setup(toolConfig: tool.Config, mockConfig: Partial<mock.Config> = {}) {
@@ -103,6 +117,99 @@ describe('dsh-tool-subagent', () => {
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
     expect(Object.keys(props).sort()).toEqual(['description', 'prompt', 'run_in_background'])
     expect(schema!.description).toContain('job_output')
+  })
+
+  it('exposes and forwards only Profile-authorized child model creation fields', async () => {
+    let seen: SubagentStartRequest | undefined
+    const ctx = await setup({
+      provider: 'mock',
+      selectableModels: [{ provider: 'allowed-provider', model: 'allowed-model' }],
+    }, { onStart: (request) => { seen = request } })
+    const resolveCallConfig = vi.fn(async (options: unknown) => options)
+    ctx.provide('llm', {
+      resolveCallConfig,
+      listProviders: () => [
+        { id: 'allowed-provider', name: 'Allowed' },
+        { id: 'hidden-provider', name: 'Hidden' },
+      ],
+      listModels: async () => [{ id: 'allowed-model', name: 'Allowed model' }],
+      resolveModelInfo: async () => ({
+        provider: 'allowed-provider',
+        id: 'allowed-model',
+        name: 'Allowed model',
+        reasoning: { efforts: [{ id: ReasoningEffortId('max'), name: 'Max' }] },
+      }),
+    } as never)
+
+    const schema = ctx.tools.schemas().find(candidate => candidate.name === 'subagent')
+    const props = (schema?.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props).sort()).toEqual([
+      'description', 'max_tokens', 'model', 'prompt', 'provider', 'reasoning_effort', 'run_in_background',
+    ])
+    const result = await callSubagent(ctx, {
+      description: 'specialist',
+      prompt: 'work',
+      provider: 'allowed-provider',
+      model: 'allowed-model',
+      reasoning_effort: 'max',
+      max_tokens: 8_192,
+    }, { agent: modelParent() })
+    expect(result.isError).toBe(false)
+    expect(resolveCallConfig).toHaveBeenCalledWith({
+      provider: 'allowed-provider',
+      model: 'allowed-model',
+      reasoningEffort: ReasoningEffortId('max'),
+      maxTokens: 8_192,
+    }, testToolSignal)
+    expect(seen?.agentOptions).toEqual({
+      provider: 'allowed-provider',
+      model: 'allowed-model',
+      reasoningEffort: ReasoningEffortId('max'),
+      maxTokens: 8_192,
+    })
+  })
+
+  it('rejects an unauthorized child route before provider startup', async () => {
+    const onStart = vi.fn()
+    const ctx = await setup({
+      provider: 'mock',
+      selectableModels: [{ provider: 'allowed-provider', model: 'allowed-model' }],
+    }, { onStart })
+    ctx.provide('llm', { resolveCallConfig: vi.fn() } as never)
+
+    const result = await callSubagent(ctx, {
+      description: 'guess route',
+      prompt: 'work',
+      provider: 'hidden-provider',
+      model: 'hidden-model',
+    }, { agent: modelParent() })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('is not allowed for this Session')
+    expect(onStart).not.toHaveBeenCalled()
+  })
+
+  it('filters child-model discovery to Profile routes plus the parent route', async () => {
+    const ctx = await setup({
+      provider: 'mock',
+      selectableModels: [{ provider: 'allowed-provider', model: 'allowed-model' }],
+    })
+    ctx.provide('llm', {
+      listProviders: () => [
+        { id: 'allowed-provider', name: 'Allowed' },
+        { id: 'parent-provider', name: 'Parent' },
+        { id: 'hidden-provider', name: 'Hidden' },
+      ],
+    } as never)
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('list-authorized-models'),
+      name: 'list_subagent_models',
+      arguments: {},
+      agent: modelParent(),
+    })
+    expect(text(result)).toContain('allowed-provider')
+    expect(text(result)).toContain('parent-provider')
+    expect(text(result)).not.toContain('hidden-provider')
   })
 
   it('omits run_in_background entirely when the instance disables it (schema and capability never disagree)', async () => {
@@ -238,7 +345,7 @@ describe('dsh-tool-subagent', () => {
     await ctx.plugin(SubagentRuntime)
     ctx.subagents.registerProvider({
       name: 'capture',
-      capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false },
+      capabilities: { agentOptions: true, outputSchema: false, depthLimit: false, toolFilter: false, persona: false },
       inheritsParentContext: false,
       start: async (request) => {
         seen = request

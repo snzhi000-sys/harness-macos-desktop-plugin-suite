@@ -119,6 +119,8 @@ The adapter forces pi-ai's SDK `maxRetries` to zero so one `stream()` call makes
 
 ## Endpoint interrogation
 
+For a configured route, model discovery reuses that route's Profile `headers` as well as its stored credential. A key typed into the form overrides the stored bearer token while retaining deployment headers. Discovery forces JSON `Accept` and the Harness attribution headers after Profile merging, so Profile values cannot replace those controlled fields. Browser-side discovery does not receive Profile headers.
+
 The plugin offers `ctx.llm.registerModelDiscovery('llm-pi-ai', …)`, which answers "which models can this provider serve?" for a route a configuration surface is editing or drafting. It is deliberately *not* a catalog refresh: nothing is stored, and the reply is candidates the surface offers for adoption. `settings.yaml` remains the only thing that decides what a route serves.
 
 A request naming a route the **installed catalog ships is answered from that catalog**, with no network call: pi-ai's registry is the authoritative list for its own providers, and it carries the context windows and output caps a listing endpoint would not disclose. Such a route needs no `baseURL` at all. Only a route the catalog does not describe — a gateway, a self-hosted server — is interrogated over the wire, and one that names no endpoint is told to set one or enter its models by hand.

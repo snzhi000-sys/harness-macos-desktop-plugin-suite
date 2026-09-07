@@ -44,7 +44,7 @@ interface StorageBackend {
 }
 ```
 
-一个后端拥有一个介质（一棵文件树的根目录、一个数据库文件），并提供可选的操作组；目前 `kv` 是唯一一组。`KvFacet.open(descriptor)` 打开一个具名 unit——`KvUnitDescriptor` 携带名称、格式版本、表名清单，以及是否存在全局单例 slot——并返回提供 `loadAll`、`putRecord`、`deleteRecord`、`setGlobal` 和 `close` 的 `KvUnit`。unit 名与表名必须匹配 `UNIT_NAME_RE`（既可安全用作文件名，也可安全用作 SQL 标识符片段）；记录键是任意字符串，绝不进入文件路径。unit 不对并发写入做串行化——顺序由调用方负责——但每次单独调用在介质上都是原子的，且 resolve 后即已持久。介质上记录的版本与之不同时拒绝 `version-mismatch`；无法按该 unit 解析的介质拒绝 `malformed-medium`（不做迁移：预发布立场）。[`backend.ts`](../../packages/storage/storage/src/backend.ts) 是逐条款的规范性约定，[`tests/contract.ts`](../../packages/storage/storage/tests/contract.ts) 中的共享一致性套件会针对每个后端检查每项条款。[json 后端](../../packages/storage/storage-json/README.md)以原子方式为每个 unit 整文件重新发布一份人类可读文件；[sqlite 后端](../../packages/storage/storage-sqlite/README.md)在单个数据库中每行存储一份文档，用于频繁更新的数据。
+一个后端拥有一个介质（一棵文件树的根目录、一个数据库文件），并提供可选的操作组；目前 `kv` 是唯一一组。`KvFacet.open(descriptor)` 打开一个具名 unit——`KvUnitDescriptor` 携带名称、格式版本、表名清单、全局 slot 标记、可选布局和可接受的旧版本——并返回提供 `loadAll`、`putRecord`、`deleteRecord`、可选 `backupRecord`、`setGlobal` 和 `close` 的 `KvUnit`。unit 名与表名必须匹配 `UNIT_NAME_RE`（既可安全用作文件名，也可安全用作 SQL 标识符片段）。单 unit 后端仍让任意记录键不进入文件路径；JSON `per-record` 布局要求路径安全的键。unit 不对并发写入做串行化——顺序由调用方负责——但每次单独调用在介质上都是原子的，且 resolve 后即已持久。单 unit 介质保持精确版本拒绝；per-record 拥有方可显式接受当前 schema 仍能校验的旧版本。[`backend.ts`](../../packages/storage/storage/src/backend.ts) 是逐条款的规范性约定，[`tests/contract.ts`](../../packages/storage/storage/tests/contract.ts) 中的共享一致性套件会针对每个后端检查每项条款。[json 后端](../../packages/storage/storage-json/README.md)同时支持原子整 unit 文件和独立逐记录文档；[sqlite 后端](../../packages/storage/storage-sqlite/README.md)在单个数据库中每行存储一份文档，用于频繁更新的数据。
 
 ## 声明领域
 
@@ -57,6 +57,15 @@ interface DomainSpec {
   readonly name: string
   /** Domain format version; a medium stamped with a different version rejects at open. */
   readonly version: number
+  /** Backend medium layout; absent means one document for the complete unit. */
+  readonly layout?: 'single' | 'per-record'
+  /** Older per-record versions accepted by the current record schemas. */
+  readonly compatibleVersions?: readonly number[]
+  /**
+   * Invalid-record policy for disposable derived data. The backend must
+   * support record backup or opening continues to fail loudly.
+   */
+  readonly invalidRecords?: 'backup-and-skip'
   /** Optional global singleton slot. */
   readonly global?: DomainGlobalSpec<unknown>
   /** Table declarations keyed by table name; each name must match `UNIT_NAME_RE`. */
@@ -172,7 +181,8 @@ The mounted domain facility. Opens declared domains over routed backends; one fa
  * (`facet-unsupported`); open the unit projected from the spec (backend
  * `version-mismatch`/`malformed-medium` pass through); load and validate
  * every stored record against the spec's zod schemas (`invalid-record`
- * with the offending table and key); construct the domain.
+ * with the offending table and key). A disposable domain may instead back
+ * up and skip one invalid independent record; construct the domain.
  *
  * Lifecycle: the CALLER owns the returned handle and closes it via
  * `Domain.close()` (typically as its own `ctx.effect` disposer) — the

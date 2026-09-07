@@ -17,6 +17,25 @@ function workspace(id: string, sessionIds: SessionId[] = [], createdAt = '2026-0
 }
 
 describe('WorkspaceManager', () => {
+  it('ignores a workspace baseline from a superseded connection generation', async () => {
+    const api = new FakeApiClient()
+    const oldGeneration = deferred<Awaited<ReturnType<FakeApiClient['onWorkspaceList']>>>()
+    const newGeneration = deferred<Awaited<ReturnType<FakeApiClient['onWorkspaceList']>>>()
+    let calls = 0
+    api.onWorkspaceList = () => ++calls === 1 ? oldGeneration.promise : newGeneration.promise
+    const manager = new WorkspaceManager(api)
+
+    manager.handleConnected()
+    manager.handleConnected()
+    newGeneration.resolve(ok({ items: [workspace('new')] as never[] }))
+    await vi.waitFor(() => { expect(manager.getSnapshot().items.map(item => item.workspaceId)).toEqual(['new']) })
+    oldGeneration.resolve(ok({ items: [workspace('old')] as never[] }))
+    await oldGeneration.promise
+    await Promise.resolve()
+
+    expect(manager.getSnapshot().items.map(item => item.workspaceId)).toEqual(['new'])
+  })
+
   it('replays changed frames over hydration and adopts the durable order on refresh', async () => {
     const api = new FakeApiClient()
     const gate = deferred<Awaited<ReturnType<FakeApiClient['onWorkspaceList']>>>()

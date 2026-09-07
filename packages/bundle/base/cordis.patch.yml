@@ -24,6 +24,9 @@
     - id: llm
       name: '@deepseek-ai/dsh-llm'
 
+    - id: deepseek-llm-api-extensions
+      name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+
     - id: session
       name: '@deepseek-ai/dsh-session'
 
@@ -57,6 +60,9 @@
 
     - id: agent
       name: '@deepseek-ai/dsh-agent'
+
+    - id: plugin-package-inventory-deepseek
+      name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
 
     # The transport-independent default for Agents created by entry points.
     # Settings may supply a saved selection; consumers read it at creation time.
@@ -197,12 +203,15 @@
           read-only:
             sandbox: read-only
             approval: ask
+            description: Read files without workspace writes; approval may still apply to other operations.
           workspace-write:
             sandbox: workspace-write
             approval: ask
+            description: Write inside the workspace with approval for wider operations; the product file reviewer can audit bounded foreground Shell changes.
           danger-full-access:
             sandbox: danger-full-access
             approval: never
+            description: Read or write any path without approval prompts; recoverable file review remains enabled for agent changes.
 
     - id: shell-env
       name: '@deepseek-ai/dsh-shell-env'
@@ -316,6 +325,16 @@
         provider: spawn
         toolName: subagent
         backgroundMode: continuable
+        # Explicit Profile authorization. The parent's current route is also
+        # eligible, so custom configured providers keep inherited delegation
+        # without exposing unrelated global adapters.
+        selectableModels:
+          - provider: deepseek-official
+            model: deepseek-v4-flash
+          - provider: deepseek-official
+            model: deepseek-v4-pro
+          - provider: deepseek-official
+            model: deepseek-v4-flash-vision-exp
 
     # Fork stays one-shot: a continuable child's `report` tool and prompt
     # section precede the inherited history a fork exists to reuse; one-shot
@@ -397,8 +416,10 @@
     # resolves the same DEEPSEEK_API_KEY credential the Models page manages for
     # chat, at each search; its Messages endpoint is separate from the
     # chat-completions endpoint, so it takes its own base-URL override. Fetch stays
-    # disabled and no fetch provider is mounted: that provider defers SSRF
-    # protection and the model would choose the request target. Search is a full
+    # disabled and no fetch provider is mounted. The provider now validates and
+    # pins public destinations, but Dev and Stable still share this base Profile;
+    # channel-specific activation must exist before Dev can enable it independently.
+    # Search is a full
     # auxiliary model request with server-side retrieval, so this shipped DeepSeek
     # route gets 60s while the provider-neutral tool default remains 30s.
     - id: web

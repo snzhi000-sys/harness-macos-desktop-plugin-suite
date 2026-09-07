@@ -3,7 +3,7 @@
   - button "Close":
     - img
   - img
-  - paragraph: 启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。
+  - paragraph: Full access 控制执行权限并关闭审批提示，但不会扩大可恢复文件审核的覆盖范围。无界原始 Shell 仍可能被审核层拒绝；仅建议在你信任当前任务时使用。
   - checkbox "我已了解风险，并愿意继续"
   - text: 我已了解风险，并愿意继续
   - button "取消"

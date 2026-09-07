@@ -30,7 +30,14 @@ const profileArchive = join(appPath, 'Contents', 'Resources', 'profile-bootstrap
 const runtimeArchive = join(appPath, 'Contents', 'Resources', 'runtime-bootstrap', 'runtime.tar.gz')
 const extracted = mkdtempSync(join(tmpdir(), 'dsh-product-app-verify-'))
 try {
-  execFileSync('/usr/bin/tar', ['-xzf', profileArchive, '-C', extracted, './node_modules/dsh-better-sidebar/lib/client.js'])
+  execFileSync('/usr/bin/tar', [
+    '-xzf', profileArchive, '-C', extracted,
+    './cordis.patch.yml',
+    './node_modules/dsh-better-sidebar/lib/client.js',
+    './node_modules/dsh-file-edit/package.json',
+    './node_modules/dsh-file-edit/host/index.mjs',
+    './node_modules/dsh-file-edit/host/shell-snapshot-transaction.mjs',
+  ])
   const client = readFileSync(join(extracted, 'node_modules', 'dsh-better-sidebar', 'lib', 'client.js'), 'utf8')
   if (client.includes('openBrowserPanel') || client.includes('打开网页浏览器')) throw new Error('packaged Better Sidebar still contains the removed titlebar browser entry')
   if (!client.includes('openContentPanel') || !client.includes('aboutBuiltAt')) throw new Error('packaged Better Sidebar is missing current titlebar or release-info UI')
@@ -39,12 +46,49 @@ try {
     throw new Error('packaged Better Sidebar is missing the fixed About App author information')
   }
 
+  const fileEditHost = readFileSync(join(
+    extracted, 'node_modules', 'dsh-file-edit', 'host', 'index.mjs',
+  ), 'utf8')
+  const fileEditManifest = JSON.parse(readFileSync(join(
+    extracted, 'node_modules', 'dsh-file-edit', 'package.json',
+  ), 'utf8'))
+  if (fileEditManifest.version !== '1.13.40-local') {
+    throw new Error('packaged File Edit version does not include the stage-7 shell audit closure')
+  }
+  if (!fileEditHost.includes('function settleAcceptedHunk(f, hunk)')
+    || !fileEditHost.includes('JSON.stringify({ version: 7')
+    || fileEditHost.includes('f.decisions.set(hunkId, action)')) {
+    throw new Error('packaged File Edit host is missing durable partial-review settlement')
+  }
+  const snapshotTransaction = readFileSync(join(
+    extracted, 'node_modules', 'dsh-file-edit', 'host', 'shell-snapshot-transaction.mjs',
+  ), 'utf8')
+  const firstScreenSnapshot = fileEditHost.slice(
+    fileEditHost.indexOf('async getModifiedSnapshot(args)'),
+    fileEditHost.indexOf('async listTree(args)'),
+  )
+  const cordisPatch = readFileSync(join(extracted, 'cordis.patch.yml'), 'utf8')
+  if (!fileEditHost.includes('captureTransactionalShell(exec, next)')
+    || !snapshotTransaction.includes("failure: 'snapshot-finalize-stale'")
+    || !snapshotTransaction.includes('changes = calculateChanges(')
+    || !snapshotTransaction.includes("['-cR', source, destination]")
+    || !snapshotTransaction.includes('version: 2')
+    || !snapshotTransaction.includes('withRootLock(roots')
+    || !snapshotTransaction.includes('committedRetentionMs')
+    || !fileEditHost.includes('stageShellDeletion(st, sid, settled')
+    || !fileEditHost.includes('recoverShellTransactions(sid)')
+    || firstScreenSnapshot.includes('recoverShellTransactions')
+    || !cordisPatch.includes('shellTransactionLifecycle: true')) {
+    throw new Error('packaged File Edit host is missing the complete recoverable shell transaction lifecycle')
+  }
+
   execFileSync('/usr/bin/tar', [
     '-xzf', runtimeArchive, '-C', extracted,
     './node_modules/@deepseek-ai/dsh-client-runtime/lib/client.js',
     './node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js',
     './node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js',
     './node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js',
+    './node_modules/@deepseek-ai/dsh-bash-local/lib/index.js',
   ])
   const runtimeClient = readFileSync(join(
     extracted, 'node_modules', '@deepseek-ai', 'dsh-client-runtime', 'lib', 'client.js',
@@ -67,6 +111,12 @@ try {
   const deepseekRuntime = readFileSync(join(
     extracted, 'node_modules', '@deepseek-ai', 'dsh-llm-deepseek', 'lib', 'index.js',
   ), 'utf8')
+  const bashRuntime = readFileSync(join(
+    extracted, 'node_modules', '@deepseek-ai', 'dsh-bash-local', 'lib', 'index.js',
+  ), 'utf8')
+  if (!bashRuntime.includes('SHELL_PROCESS_TREE_SURVIVED')) {
+    throw new Error('packaged Bash runtime is missing foreground process-tree settlement')
+  }
   if (deepseekRuntime.includes('toolCalls.length > 0 && reasoning.length > 0')
     || !deepseekRuntime.includes('thinkingEnabled ? { reasoning_content: reasoning }')) {
     throw new Error('packaged DeepSeek adapter is missing complete thinking-history passback')

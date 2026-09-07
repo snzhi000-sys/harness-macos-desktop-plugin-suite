@@ -12,12 +12,14 @@
 // ChatNodeSeat subscribes to one Node key, so Assistant deltas and Tool
 // lifecycle updates replace only their own row without remounting it.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ConversationTimelineSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatViewSlotProps } from '../contract/slots.ts'
-import { PendingSteeringBubble } from './MessageItem.tsx'
+import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
+import { TurnNavigator } from './TurnNavigator.tsx'
+import { turnRailItems, type TurnRailItem } from './turn-rail-items.ts'
 import { formatRunDuration } from './message-chrome.ts'
 import css from './ChatView.module.css'
 
@@ -144,13 +146,19 @@ function TurnStatus({ startTime, t }: {
  * ordered business Node crosses the keyed renderer seat.
  */
 export function ChatView({
-  useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadImage, inspectCall, chatScroll, forkAt,
+  useSession, useProjection, useSessions, useStore, renderSlot, sessionId,
+  openFile, loadOlder, loadThrough, loadImage, inspectCall, chatScroll, forkAt,
   fileMentions, t,
 }: ChatViewSlotProps) {
   const order = useSession(s => s.chat.order)
   const nodeStore = useSession(s => s.chat.nodes)
   const timeline = useSession(s => s.chat.timeline)
+  const locations = useSession(s => s.chat.locations)
+  const turnOutline = useProjection('turnOutline')
   const inbox = useSession(s => s.queue)
+  // Fixture/third-party snapshot producers compiled against the older face
+  // degrade to no local echoes instead of crashing the whole conversation.
+  const pendingSubmissions = useSession(s => s.pendingSubmissions ?? [])
   // Workspace root off the session list row: path summaries display relative to it.
   const cwd = useSessions(s => s.byId[sessionId]?.cwd)
   const running = useSession(s => s.running)
@@ -164,17 +172,48 @@ export function ChatView({
     () => inbox.filter(item => item.placement === 'steering'),
     [inbox],
   )
+  const mirroredSubmissionIds = useRef(new Set<string>())
+  const visiblePendingSubmissions = useMemo(() => {
+    // Once Host admission publishes the same pure-text occurrence through the
+    // Queue mirror, that authoritative row/bubble owns its presentation. Keep
+    // only unmatched local echoes so a slow admission is still immediate while
+    // queued and steering messages never render twice. Consume as a multiset:
+    // repeated equal prompts correspond to distinct queue occurrences.
+    const mirrored = new Map<string, number>()
+    for (const item of inbox) {
+      if (item.text === null) continue
+      mirrored.set(item.text, (mirrored.get(item.text) ?? 0) + 1)
+    }
+    return pendingSubmissions.filter((submission) => {
+      const scopedId = `${sessionId}:${submission.id}`
+      if (mirroredSubmissionIds.current.has(scopedId)) return false
+      if (submission.images.length > 0) return true
+      const count = mirrored.get(submission.text) ?? 0
+      if (count === 0) return true
+      mirrored.set(submission.text, count - 1)
+      mirroredSubmissionIds.current.add(scopedId)
+      return false
+    })
+  }, [inbox, pendingSubmissions, sessionId])
   const runningTurnStart = useMemo(() => runningTurnStartTime(timeline), [timeline])
+  const railItems = useMemo(
+    () => turnRailItems(turnOutline, locations),
+    [turnOutline, locations, timeline],
+  )
 
   const listRef = useRef<HTMLDivElement | null>(null)
   const columnRef = useRef<HTMLDivElement | null>(null)
   const atBottomRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
+  const [activeTurn, setActiveTurn] = useState<number | null>(null)
+  const [busyTurn, setBusyTurn] = useState<number | null>(null)
+  const [jumpSettleTick, setJumpSettleTick] = useState(0)
   /** Last position delivered or written on the main thread. */
   const observedTopRef = useRef(0)
   /** Paging anchor: semantic row/position at click, updated by reader scrolls
    * while the request is pending and restored after the prepend lands. */
   const anchorRef = useRef<PagingAnchor | null>(null)
+  const pendingJumpRef = useRef<{ turn: number; seq: number; requested: boolean } | null>(null)
   const firstSeqRef = useRef<number | null>(null)
   const openedRef = useRef(false)
   const lastKeyRef = useRef<string | null>(null)
@@ -193,12 +232,32 @@ export function ChatView({
 
   const toBottom = (el: HTMLElement): void => {
     anchorRef.current = null
+    pendingJumpRef.current = null
+    setBusyTurn(null)
     el.scrollTop = el.scrollHeight
     observedTopRef.current = el.scrollTop
     atBottomRef.current = true
     setAtBottom(true)
     chatScroll.save(null)
+    setActiveTurn(railItems.at(-1)?.turn ?? null)
   }
+
+  const landTurn = useCallback((local: HTMLElement, el: HTMLElement, turn: number): boolean => {
+    const row = [...local.querySelectorAll<HTMLElement>('[data-chat-turn]')]
+      .find(candidate => Number(candidate.dataset.chatTurn) === turn)
+    if (row === undefined) return false
+    el.scrollTop += flowTop(row, el) - 24
+    observedTopRef.current = el.scrollTop
+    atBottomRef.current = false
+    setAtBottom(false)
+    setActiveTurn(turn)
+    const position = scrollPosition(local, el)
+    if (position !== null) chatScroll.save(position)
+    pendingJumpRef.current = null
+    setBusyTurn(null)
+    anchorRef.current = null
+    return true
+  }, [chatScroll])
 
   useLayoutEffect(() => {
     const local = listRef.current
@@ -240,6 +299,10 @@ export function ChatView({
       const row = anchorElement(local, anchor.key)
       if (row !== null) el.scrollTop += flowTop(row, el) - anchor.top
       observedTopRef.current = el.scrollTop
+      const pending = pendingJumpRef.current
+      if (pending !== null && !landTurn(local, el, pending.turn) && row !== null) {
+        anchorRef.current = { key: anchor.key, top: flowTop(row, el) }
+      }
       firstSeqRef.current = firstSeq
       /* v8 ignore next -- ?? arm: a prepend adds nodes, so the flow list here is never empty. */
       lastKeyRef.current = lastKey
@@ -259,6 +322,7 @@ export function ChatView({
     // Follow new flow content while pinned; do NOT re-pin on every render
     // merely because atBottomRef is true (scroll threshold → setState → snap).
     if (appendedUser || appendedSteering || (tipMoved && atBottomRef.current)) toBottom(el)
+    else if (pendingJumpRef.current !== null) landTurn(local, el, pendingJumpRef.current.turn)
   })
 
   const onScrollRef = useRef(() => {})
@@ -286,6 +350,9 @@ export function ChatView({
     atBottomRef.current = isAtBottom
     setAtBottom(isAtBottom)
     const position = isAtBottom ? null : scrollPosition(local, el)
+    const activeRow = pagingAnchor(local, el)
+    const visibleTurn = Number(activeRow?.dataset.chatTurn)
+    if (Number.isSafeInteger(visibleTurn)) setActiveTurn(visibleTurn)
     if (isAtBottom) {
       anchorRef.current = null
     } else if (anchorRef.current !== null && position !== null) {
@@ -346,6 +413,29 @@ export function ChatView({
     if (!loadingOlder) anchorRef.current = null
   }, [loadingOlder])
 
+  useEffect(() => {
+    const pending = pendingJumpRef.current
+    const local = listRef.current
+    if (pending === null || local === null) return
+    const el = scrollerOf(local)
+    if (landTurn(local, el, pending.turn)) return
+    // A reader-owned page keeps the target pending. Its snapshot edge reruns
+    // this effect after ownership is released, without issuing a competing
+    // history request in the meantime.
+    if (loadingOlder) return
+    if (!pending.requested && hasMore && (firstSeq === null || firstSeq > pending.seq)) {
+      const held = pagingAnchor(local, el)
+      if (held?.dataset.chatAnchorKey !== undefined) {
+        anchorRef.current = { key: held.dataset.chatAnchorKey, top: flowTop(held, el) }
+      }
+      pending.requested = true
+      void loadThrough(pending.seq).finally(() => { setJumpSettleTick(value => value + 1) })
+      return
+    }
+    pendingJumpRef.current = null
+    setBusyTurn(null)
+  }, [firstSeq, hasMore, jumpSettleTick, landTurn, loadingOlder, loadThrough, railItems])
+
   const loadOlderAnchored = (): void => {
     const local = listRef.current
     /* v8 ignore next -- ref-null guard: the paging button renders inside the list tree. */
@@ -362,9 +452,37 @@ export function ChatView({
     loadOlder()
   }
 
+  const navigateToTurn = useCallback((item: TurnRailItem): void => {
+    const local = listRef.current
+    if (local === null) return
+    const el = scrollerOf(local)
+    if (item.anchor.kind === 'loaded') {
+      pendingJumpRef.current = null
+      setBusyTurn(null)
+      landTurn(local, el, item.turn)
+      return
+    }
+    const held = pagingAnchor(local, el)
+    if (held?.dataset.chatAnchorKey !== undefined) {
+      anchorRef.current = { key: held.dataset.chatAnchorKey, top: flowTop(held, el) }
+    }
+    pendingJumpRef.current = { turn: item.turn, seq: item.anchor.seq, requested: !loadingOlder }
+    setBusyTurn(item.turn)
+    if (!loadingOlder) {
+      void loadThrough(item.anchor.seq).finally(() => { setJumpSettleTick(value => value + 1) })
+    }
+  }, [landTurn, loadingOlder, loadThrough])
+
   return (
     <div className={css.root}>
       <div ref={listRef} className={css.scroll}>
+        <TurnNavigator
+          items={railItems}
+          activeTurn={activeTurn}
+          busyTurn={busyTurn}
+          onNavigate={navigateToTurn}
+          t={t}
+        />
         <div ref={columnRef} className={css.column} data-chat-flow="">
           {openState === 'loading' && <div className={css.hint}>{t('chat.loadingHistory')}</div>}
           {openState === 'error' && openError !== null && (
@@ -394,6 +512,9 @@ export function ChatView({
               renderSlot={renderSlot}
               t={t}
             />
+          ))}
+          {visiblePendingSubmissions.map(submission => (
+            <PendingSubmissionBubble key={submission.id} submission={submission} />
           ))}
           {/* No pending placeholders: questions (ui-user-questions) and approvals
               (ApprovalPanel) both take over the composer, so a flow card would

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -51,6 +51,97 @@ describe('json backend specifics', () => {
     const backend = new JsonStorageBackend(root)
     await backend.kv.open(descriptor)
     await expect(readFile(join(root, 'shape.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await backend.close()
+  })
+
+  it('stores per-record values independently and accepts declared older versions', async () => {
+    const root = await freshRoot()
+    const backend = new JsonStorageBackend(root)
+    const descriptor = {
+      name: 'records',
+      version: 5,
+      compatibleVersions: [3, 4],
+      layout: 'per-record' as const,
+      tables: ['items'],
+      hasGlobal: false,
+    }
+    const unit = await backend.kv.open(descriptor)
+    await unit.putRecord('items', 'first', { value: 1 })
+    await writeFile(
+      join(root, 'records', 'items', 'older.json'),
+      JSON.stringify({ version: 4, record: { value: 2 } }),
+    )
+    expect(await unit.loadAll()).toEqual({
+      tables: { items: { first: { value: 1 }, older: { value: 2 } } },
+      global: null,
+    })
+    expect(JSON.parse(await readFile(join(root, 'records', 'items', 'first.json'), 'utf8')))
+      .toEqual({ version: 5, record: { value: 1 } })
+    await backend.close()
+  })
+
+  it('ignores malformed and unknown per-record documents without affecting siblings', async () => {
+    const root = await freshRoot()
+    const dir = join(root, 'records', 'items')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'good.json'), JSON.stringify({ version: 5, record: { value: 1 } }))
+    await writeFile(join(dir, 'malformed.json'), '{')
+    await writeFile(join(dir, 'future.json'), JSON.stringify({ version: 99, record: { value: 99 } }))
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open({
+      name: 'records', version: 5, compatibleVersions: [4], layout: 'per-record', tables: ['items'], hasGlobal: false,
+    })
+    expect((await unit.loadAll()).tables['items']).toEqual({ good: { value: 1 } })
+    await backend.close()
+  })
+
+  it('bootstraps an accepted legacy unit once and retains the source file', async () => {
+    const root = await freshRoot()
+    const legacy = join(root, 'records.json')
+    await writeFile(legacy, JSON.stringify({
+      unit: { name: 'records', version: 3 },
+      global: null,
+      tables: { items: { first: { value: 1 } } },
+    }))
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open({
+      name: 'records', version: 5, compatibleVersions: [3, 4], layout: 'per-record', tables: ['items'], hasGlobal: false,
+    })
+    expect((await unit.loadAll()).tables['items']).toEqual({ first: { value: 1 } })
+    expect(await readFile(legacy, 'utf8')).toContain('"version":3')
+    expect(JSON.parse(await readFile(join(root, 'records', 'items', 'first.json'), 'utf8')))
+      .toEqual({ version: 5, record: { value: 1 } })
+    await backend.close()
+  })
+
+  it('does not bootstrap an undeclared legacy version', async () => {
+    const root = await freshRoot()
+    await writeFile(join(root, 'records.json'), JSON.stringify({
+      unit: { name: 'records', version: 2 },
+      global: null,
+      tables: { items: { stale: { value: 1 } } },
+    }))
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open({
+      name: 'records', version: 5, compatibleVersions: [3, 4], layout: 'per-record', tables: ['items'], hasGlobal: false,
+    })
+    expect((await unit.loadAll()).tables['items']).toEqual({})
+    await expect(readdir(join(root, 'records'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await backend.close()
+  })
+
+  it('backs up one per-record document and rejects unsafe record keys', async () => {
+    const root = await freshRoot()
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open({
+      name: 'records', version: 1, layout: 'per-record', tables: ['items'], hasGlobal: false,
+    })
+    await unit.putRecord('items', 'safe-key', { value: 1 })
+    await expect(unit.putRecord('items', '../escape', {})).rejects.toThrow(/path-safe/)
+    const moved = await unit.backupRecord?.('items', 'safe-key')
+    expect(moved).toMatch(/safe-key\.json\.bak\.\d{17}-[0-9a-f-]{36}$/)
+    expect((await unit.loadAll()).tables['items']).toEqual({})
+    expect(await readFile(moved!, 'utf8')).toContain('"value": 1')
     await backend.close()
   })
 

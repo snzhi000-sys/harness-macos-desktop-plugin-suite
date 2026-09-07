@@ -13,6 +13,7 @@ function run(label, command, args, cwd) {
 
 run('Better Sidebar', 'npm', ['run', 'build'], 'plugins/better-sidebar')
 run('File Edit', 'npm', ['run', 'build:client'], 'plugins/file-edit')
+run('Lark CLI', 'npm', ['run', 'build'], 'plugins/lark-cli')
 run('Workspace Lineage', 'npm', ['run', 'build'], 'plugins/workspace-lineage')
 run('Cowork', 'pnpm', ['build'], 'plugins/cowork')
 

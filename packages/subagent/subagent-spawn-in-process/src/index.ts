@@ -39,7 +39,13 @@ export const Config: z<Config> = z.object({
  * creation window).
  */
 class SpawnInProcessProvider implements SubagentProvider {
-  readonly capabilities: SubagentCapabilities = { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }
+  readonly capabilities: SubagentCapabilities = {
+    agentOptions: true,
+    outputSchema: true,
+    depthLimit: true,
+    toolFilter: true,
+    persona: true,
+  }
   // Context contract: a spawned child starts fresh — it never sees the parent conversation.
   readonly inheritsParentContext = false
 

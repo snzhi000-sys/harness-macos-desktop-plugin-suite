@@ -5,7 +5,7 @@ import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { RequestPayload, ResponseValue } from './rpc-map.ts'
 import type { Wire } from './rpc.schema.ts'
 import {
-  contentBlockSchema, historyEntrySchema, sessionIdSchema, sessionProjectionsBlockSchema,
+  historyEntrySchema, promptContentPartSchema, sessionIdSchema, sessionProjectionsBlockSchema,
 } from './sessions.schema.ts'
 import type { SubagentListEntry } from './subagents.ts'
 
@@ -66,7 +66,7 @@ export const subagentPromptRequestSchema = z.object({
   parentSessionId: sessionIdSchema,
   childSessionId: sessionIdSchema,
   mode: z.literal('continuable'),
-  content: z.array(contentBlockSchema),
+  content: z.array(promptContentPartSchema),
   clientTimeZone: z.string().optional(),
 }) as unknown as z.ZodType<RequestPayload<'subagent.prompt'>>
 

@@ -10,7 +10,7 @@ Dev 与 Stable 命令原本是一长串 Shell 步骤，不会强制重建产品�
 
 ## Decision
 
-`desktop/scripts/build-product-app.mjs` 统一负责两个通道。它会在准备 Runtime 前重建 Harness Host 和 Client 库，再重建并测试产品插件，执行桌面与隐私检查，准备 Runtime 和 Profile，验证真实 Cordis 与 Client 组成，写入发行信息，复用已校验的本机 Electron 发行文件，并在每个通道唯一的固定暂存目录构建。`verify-product-app.mjs` 校验 Bundle ID、产品名、包内通道、版本、构建时间、签名、当前 Better Sidebar 功能标记和选定的 Harness Client Runtime 行为标记。`verify-product-launch.mjs` 使用 `--user-data-dir=<绝对路径>` 启动候选，要求包内 Runtime 与 Profile 成功启动，拒绝迁移凭据，最后只终止自己启动的进程并删除临时数据。
+`desktop/scripts/build-product-app.mjs` 统一负责两个通道。它会在准备 Runtime 前重建 Harness Host 和 Client 库，再重建并测试产品插件，执行桌面与隐私检查，准备 Runtime 和 Profile，验证真实 Cordis 与 Client 组成，写入发行信息，复用已校验的本机 Electron 发行文件，并在每个通道唯一的固定暂存目录构建。`verify-product-app.mjs` 校验 Bundle ID、产品名、包内通道、版本、构建时间、签名、当前 Better Sidebar 标记、选定的 Harness Client Runtime 行为，以及 File Edit 包版本与已启用的 v2 Shell 事务、递归 COW、工作区串行化、保留策略、删除结算和首屏不恢复标记。`verify-product-launch.mjs` 使用 `--user-data-dir=<绝对路径>` 启动候选，要求包内 Runtime 与 Profile 成功启动，拒绝迁移凭据，最后只终止自己启动的进程并删除临时数据。`exitCode` 或 `signalCode` 任一完成才代表信号退出已结算；强制终止后还需再次有限等待，递归清理则重试瞬时 `ENOTEMPTY`。干净首次启动最多允许 300 秒完成 Runtime/Profile 解压；超时或提前退出错误只保留已脱敏日志尾部，不能只指向随后被删除的日志路径。
 
 所有检查通过后才覆盖固定 `dist/dev` 或 `dist/stable`。目标 App 正在运行时拒绝替换，并保留唯一固定暂存候选供检查。关闭该 App 后，可使用 `product:publish:candidate:dev` 或 `product:publish:candidate:stable` 重新执行候选隐私、身份/功能与隔离启动验证，再发布已保留的包，无需重建无关依赖。Stable 构建与显式安装继续分离。
 

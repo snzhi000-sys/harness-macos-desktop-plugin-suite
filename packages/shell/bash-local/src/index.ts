@@ -72,6 +72,18 @@ function assertPositiveFinite(name: string, value: number): void {
   }
 }
 
+/** Refuse a foreground result while a helper from its managed process tree remains alive. */
+async function assertForegroundTreeSettled(handle: SubprocessHandle, graceMs: number): Promise<void> {
+  if (await handle.waitForExit(AbortSignal.timeout(graceMs))) return
+  handle.terminate()
+  const terminated = await handle.waitForExit(AbortSignal.timeout(Math.min(MAX_TIMER_DELAY_MS, graceMs * 2)))
+  throw Object.assign(new Error(
+    terminated
+      ? 'bash-local: foreground command left a live child process; the managed tree was terminated'
+      : 'bash-local: foreground command left a process tree that did not terminate within the bounded grace period',
+  ), { code: 'SHELL_PROCESS_TREE_SURVIVED' })
+}
+
 /**
  * Reject a resolved section this executor could not run with. The schema
  * expresses neither "positive and finite" nor the timer bound `graceMs` has to
@@ -225,6 +237,7 @@ export class LocalBashExecutor extends ShellExecutor {
     using d = deadline(spec.signal, spec.timeoutMs, 'BASH_TIMEOUT')
     const handle = this.ctx.subprocess.spawn(this.spawnSpec(spec, argv, spec.stdoutMaxBytes, d.signal))
     const outcome = await handle.done
+    await assertForegroundTreeSettled(handle, this.config.graceMs)
     const collected = LocalBashExecutor.collected(handle)
     // Only this executor's timeout reason counts as timedOut; outer deadlines count as aborts.
     const timedOut = timeoutOf(d.signal, 'BASH_TIMEOUT') !== undefined

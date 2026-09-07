@@ -3,10 +3,11 @@
 // Browser RPC arrives at POST /dsh-file-edit/api (registered on ctx.webServer).
 // Per-session review state (baseline + pending decisions) is persisted under
 // ~/.dsh/dsh-file-edit-state/<sessionId>.json so accept/reject survives restarts.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, readdirSync, rmSync, lstatSync, realpathSync, statSync, watch as watchFs, copyFileSync, readlinkSync, symlinkSync, openSync, closeSync, readSync, fsyncSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, readdirSync, rmSync, lstatSync, realpathSync, statSync, watch as watchFs, copyFileSync, readlinkSync, symlinkSync, openSync, closeSync, readSync, fsyncSync, chmodSync } from 'node:fs'
 import { join, dirname, basename, relative as relativePath, resolve as resolvePath, parse as parsePath, isAbsolute as isAbsolutePath } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
+import { createShellSnapshotTransactions } from './shell-snapshot-transaction.mjs'
 
 const STATE_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-file-edit-state')
 // v1.10.0 rename migration: the plugin used to live under dsh-files with its
@@ -22,13 +23,18 @@ const STATE_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-fil
   }
 }
 mkdirSync(STATE_DIR, { recursive: true })
+// The product enables this transaction manager for foreground Shell calls.
+// Workspace Write snapshots the session workspace. Full Access may select any
+// existing directory as one call's audit root; the Shell consumer confines
+// writes to that root while preserving full-disk reads.
+const SHELL_SNAPSHOT_TRANSACTIONS = createShellSnapshotTransactions({ stateRoot: STATE_DIR })
 
 export default {
   // Hard dependencies: the loader waits for these host services to become
   // ACTIVE before apply runs (ctx.get is strict about fiber state and can
   // return undefined when the bundle layer is still settling).
   inject: ['fs', 'sandboxPolicy', 'sessions', 'webServer', 'shell', 'tools', 'systemPrompt'],
-  apply(ctx) {
+  apply(ctx, config = {}) {
     const fs = ctx.fs
     const sandboxPolicy = ctx.sandboxPolicy
     const sessions = ctx.sessions
@@ -46,22 +52,87 @@ export default {
     const MAX_ENTRIES = 8000
     const MAX_DEPTH = 16
     const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.next', '.dsh', '.idea', '.vscode', '.cache', '.turbo', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.eslintcache', '.DS_Store'])
-    // Raw shell-family tools cannot express "allow writes, deny unlink" in
-    // Harness' current sandbox vocabulary. They are therefore denied before
-    // dispatch and replaced by shell_readonly below. This is intentionally a
-    // tool-name gate, not command parsing: dynamic Python/Node scripts,
-    // background jobs and sandbox escalation arguments all hit the same gate.
+    // Shell policy is resolved for every call, including explicit one-shot
+    // escalation. File Edit consumes that result; it does not infer a mode
+    // from commands or duplicate the permission preset state.
     const DIRECT_CONTENT_TOOLS = new Set(['write', 'edit'])
     const SHELL_TOOLS = new Set(['bash', 'shell', 'pwsh'])
-    const RAW_SHELL_TOOLS = new Set([
-      ...SHELL_TOOLS,
+    const UNTRACKED_SHELL_TOOLS = new Set([
       'powershell',
       'shell_command',
       'terminal_open',
       'terminal_send',
     ])
-    const RAW_SHELL_DENIAL = '严格文件审核已禁止 AI 使用可写原始 Shell。只读检查请使用 shell_readonly；文本创建或修改请使用 write/edit；删除文件或目录请使用 file_delete。'
+    const UNTRACKED_SHELL_DENIAL = '[审核范围不足] 可恢复文件审核无法覆盖后台 Shell、持久终端或未受托管的兼容 Shell。命令未执行；请使用前台 bash/shell/pwsh、shell_readonly 或结构化工具。'
+    const POLICY_SHELL_DENIAL = '[权限拒绝] 无法解析当前会话的 Shell 权限，命令未执行。请确认会话权限模式后重试。'
+    const AUDIT_DISABLED_SHELL_DENIAL = '[审核不可用] 当前构建未启用完整的 Shell 修改前事务，命令未执行。请使用 shell_readonly 或结构化文件工具。'
+    const INVALID_ROOT_SHELL_DENIAL = '[审核范围不足] 工作区可写策略没有提供可快照的绝对工作区根目录，命令未执行。请重新打开有效工作区，或使用 shell_readonly。'
+    const SHELL_UNRECOVERABLE_DELETE_NOTE = 'shell-delete-unrecoverable'
     const SHELL_EVENT_SETTLE_MS = 140
+    const MAX_SHELL_AUDIT_ENTRIES = 50_000
+    const shellTransactionLifecycleEnabled = config.shellTransactionLifecycle === true
+
+    function resolvedShellAccess(exec) {
+      const name = exec && exec.name ? exec.name : ''
+      if (UNTRACKED_SHELL_TOOLS.has(name)) return { allowed: false, reason: UNTRACKED_SHELL_DENIAL }
+      if (!SHELL_TOOLS.has(name)) return { allowed: true, audit: 'none' }
+      if (exec?.arguments?.run_in_background === true) return { allowed: false, reason: UNTRACKED_SHELL_DENIAL }
+      const session = exec?.agent?.session
+      if (!session) return { allowed: false, reason: POLICY_SHELL_DENIAL }
+      try {
+        const requestedMode = exec?.arguments && Object.prototype.hasOwnProperty.call(exec.arguments, 'sandbox_permissions')
+          ? exec.arguments.sandbox_permissions
+          : undefined
+        const policy = sandboxPolicy.resolve({ session, ...requestedMode === undefined ? {} : { mode: requestedMode } })
+        if (!policy || typeof policy.mode !== 'string') return { allowed: false, reason: POLICY_SHELL_DENIAL }
+        if (policy.mode === 'read-only') return { allowed: true, audit: 'none', policy }
+        if (!['workspace-write', 'danger-full-access'].includes(policy.mode)) return { allowed: false, reason: POLICY_SHELL_DENIAL, policy }
+        if (!shellTransactionLifecycleEnabled) return { allowed: false, reason: AUDIT_DISABLED_SHELL_DENIAL, policy }
+        const requestedRoot = policy.mode === 'danger-full-access'
+          ? (exec?.arguments?.audit_root ?? exec?.arguments?.workdir ?? policy.workspaceRoot)
+          : policy.workspaceRoot
+        const rooted = isAbsoluteDiskPath(requestedRoot)
+          ? requestedRoot
+          : resolvePath(policy.workspaceRoot, String(requestedRoot || ''))
+        if (!isAbsoluteDiskPath(rooted)) return { allowed: false, reason: INVALID_ROOT_SHELL_DENIAL, policy }
+        let auditRoot
+        try {
+          auditRoot = realpathSync(resolvePath(rooted))
+          if (!lstatSync(auditRoot).isDirectory()) throw new Error('audit root is not a directory')
+        } catch (error) {
+          return { allowed: false, reason: INVALID_ROOT_SHELL_DENIAL, policy }
+        }
+        return { allowed: true, audit: 'transaction', policy, auditRoot }
+      } catch (error) {
+        return { allowed: false, reason: POLICY_SHELL_DENIAL }
+      }
+    }
+    function assertAgentFileMutationAllowed(exec) {
+      const session = exec?.agent?.session
+      if (!session) throw new Error('[权限拒绝] 无法确定当前会话，文件未修改')
+      const policy = sandboxPolicy.resolve({ session })
+      if (policy?.mode === 'read-only') throw new Error('[权限拒绝] Read Only 模式禁止删除、移动或重命名文件，文件未修改')
+      if (!['workspace-write', 'danger-full-access'].includes(policy?.mode)) {
+        throw new Error('[权限拒绝] 无法解析当前文件操作权限，文件未修改')
+      }
+    }
+    function shellGateReason(exec) {
+      const access = resolvedShellAccess(exec)
+      return access.allowed ? undefined : access.reason
+    }
+    function shellAuditError(error, fallbackPhase = 'finalize') {
+      const code = error && typeof error.code === 'string' ? error.code : ''
+      const phase = error && error.snapshotPhase ? error.snapshotPhase : fallbackPhase
+      const detail = error && error.message ? error.message : String(error)
+      const beforeDispatch = phase === 'prepare'
+      const limit = code === 'snapshot-entry-limit' || code === 'snapshot-byte-limit' || code === 'snapshot-depth-limit'
+      const prefix = limit ? '[审计超限]' : (beforeDispatch ? '[快照失败]' : '[结算冲突]')
+      const timing = beforeDispatch ? '命令未执行' : '命令可能已经修改文件，事务证据已保留'
+      const wrapped = new Error(`${prefix} ${timing}：${detail}`, { cause: error })
+      wrapped.code = limit ? 'file-edit-shell-audit-limit' : (beforeDispatch ? 'file-edit-shell-snapshot-failed' : 'file-edit-shell-settlement-conflict')
+      wrapped.auditCauseCode = code || null
+      return wrapped
+    }
     const knownSessions = new Set()
     // Undo safety: reject overwrites disk with baseline content, so every
     // reject snapshots the pre-reject bytes first (one undo level per
@@ -350,6 +421,7 @@ export default {
     }
     function reviewStatus(f) {
       if (isCreatedThenDeleted(f)) return 'deleted'
+      if (f && f.cur && !f.cur.present && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE) return 'deleted'
       return !f.base || !f.base.present ? 'added' : (!f.cur.present ? 'deleted' : 'modified')
     }
 
@@ -450,6 +522,30 @@ export default {
       return out
     }
 
+    // A hunk decision must be settled into durable content immediately.
+    // Positional ids (h0/h1/...) are only valid for one exact diff topology;
+    // retaining them after another hunk or tool edit can hide the wrong hunk.
+    function settleAcceptedHunk(f, hunk) {
+      const baseLines = entryLines(f.base)
+      const curLines = entryLines(f.cur)
+      const next = baseLines.slice()
+      next.splice(hunk.oldStart, hunk.oldLen, ...hunk.newLines)
+      const touchesEnd = hunk.oldStart + hunk.oldLen === baseLines.length &&
+        hunk.newStart + hunk.newLen === curLines.length
+      const trailingNL = touchesEnd ? f.cur.eol === true : f.base.eol === true
+      const normalized = joinLines(next, trailingNL, false)
+      f.base = {
+        ...cloneEntry(f.base),
+        present: true,
+        content: normalized,
+        eol: trailingNL,
+        size: Buffer.byteLength(f.base.crlf ? normalized.replace(/\n/g, '\r\n') : normalized, 'utf8'),
+        note: undefined,
+        binRef: null,
+        binSize: 0,
+      }
+    }
+
     // ---------- per-session state (with disk persistence) ----------
     function sidSafe(sid) {
       return sid.replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -483,7 +579,7 @@ export default {
         }
       } catch (e) {}
     }
-    function saveState(st) {
+    function saveState(st, strict = false) {
       try {
         const files = {}
         for (const entry of st.files) {
@@ -503,13 +599,19 @@ export default {
             rev: f.rev,
             decisions: Object.fromEntries(f.decisions),
             deletion,
+            deletedPreview: f.deletedPreview ?? null,
           }
         }
         // A compact persisted map is intentionally incomplete. On restart the
         // Host hydrates only these durable review targets; it must not rebuild
         // a clean-file baseline by walking the whole workspace on the startup
         // path. This has no effect on the live in-memory state.
-        writeFileSync(stateFile(st.sid), JSON.stringify({ version: 5, root: st.root, baseReady: false, files, lastReject: st.lastReject ?? null }))
+        const target = stateFile(st.sid)
+        const temporary = target + '.tmp-' + randomBytes(5).toString('hex')
+        writeFileSync(temporary, JSON.stringify({ version: 7, root: st.root, baseReady: false, files, lastReject: st.lastReject ?? null }))
+        const fd = openSync(temporary, 'r')
+        try { fsyncSync(fd) } finally { closeSync(fd) }
+        renameSync(temporary, target)
         // GC: drop binary blob files no longer referenced by any entry.
         try {
           const dir = blobRoot(st.sid)
@@ -527,6 +629,7 @@ export default {
         } catch (e) {}
       } catch (e) {
         console.error('[dsh-file-edit] saveState failed:', e)
+        if (strict) throw e
       }
     }
     function loadState(sid) {
@@ -534,6 +637,7 @@ export default {
         const raw = readFileSync(stateFile(sid), 'utf8')
         const data = JSON.parse(raw)
         if (!data || typeof data !== 'object') return null
+        const persistedVersion = Number(data.version) || 1
         const files = new Map()
         for (const key of Object.keys(data.files ?? {})) {
           const f = data.files[key]
@@ -551,19 +655,39 @@ export default {
               deletion.deletionFileCount = readDeletionBatchManifest({ sid }, deletionId(deletion)).manifest.entries.filter((entry) => entry && entry.kind === 'file').length
             } catch (error) {}
           }
-          files.set(key, {
+          const decisions = new Map(Object.entries(f.decisions ?? {}))
+          const restoredFile = {
             base: base,
             cur: cur,
             rev: f.rev ?? 0,
-            decisions: new Map(Object.entries(f.decisions ?? {})),
+            decisions,
             deletion,
-          })
+            deletedPreview: f.deletedPreview ?? null,
+          }
+          // v5 and earlier persisted transient hunk ids. Pure accept states
+          // can be reconstructed against their exact saved base/cur images;
+          // fold them into the baseline. Reject or mixed states are
+          // ambiguous because reject already rewrote cur and reindexed the
+          // remaining hunks, so preserve disk content and expose the entire
+          // base->cur delta for review instead of silently accepting data.
+          if (persistedVersion < 6 && decisions.size > 0) {
+            const values = [...decisions.values()]
+            if (values.every((value) => value === 'accept') && base.content !== null && cur && cur.content !== null) {
+              const hunks = computeHunks(entryLines(base), entryLines(cur))
+              for (const hunk of hunks.slice().reverse()) {
+                if (decisions.get(hunk.id) === 'accept') settleAcceptedHunk(restoredFile, hunk)
+              }
+            }
+            restoredFile.decisions.clear()
+            restoredFile.rev++
+          }
+          files.set(key, restoredFile)
         }
         const lr = data.lastReject
         const lastReject = lr && typeof lr.opId === 'string' && Array.isArray(lr.files)
           ? { opId: lr.opId, ts: lr.ts ?? 0, files: lr.files }
           : null
-        return { version: Number(data.version) || 1, root: data.root ?? null, baseReady: data.baseReady === true, files, lastReject }
+        return { version: persistedVersion, root: data.root ?? null, baseReady: data.baseReady === true, files, lastReject }
       } catch (e) {
         return null
       }
@@ -582,7 +706,7 @@ export default {
         lastReject: restored?.lastReject ?? null,
         // v2 persistence keeps pending files only. Compact a legacy full-map
         // state the first time this session is read; no review action needed.
-        needsCompact: !!restored && restored.version < 3,
+        needsCompact: !!restored && restored.version < 7,
         // Agent changes are written directly into the review ledger from
         // successful tool results. Scanning is now discovery-only: it may
         // refresh Explorer/external disk truth, but may never claim an
@@ -800,6 +924,41 @@ export default {
       }
     }
 
+    function snapshotShellWorkspacePaths(st) {
+      const files = new Map()
+      let saturated = false
+      const walk = (diskDir, relDir, depth) => {
+        if (saturated || depth > MAX_DEPTH) return
+        let entries
+        try {
+          entries = readdirSync(diskDir, { withFileTypes: true })
+        } catch (error) {
+          return
+        }
+        for (const entry of entries) {
+          if (saturated) return
+          if (SKIP_DIRS.has(entry.name)) continue
+          const rel = relDir ? `${relDir}/${entry.name}` : entry.name
+          const disk = join(diskDir, entry.name)
+          let info
+          try { info = lstatSync(disk) } catch (error) { continue }
+          if (info.isSymbolicLink()) continue
+          if (info.isDirectory()) {
+            walk(disk, rel, depth + 1)
+            continue
+          }
+          if (!info.isFile() || ignoredReviewPath(rel)) continue
+          files.set(rel, `${info.size}:${info.mtimeMs}:${info.ctimeMs}`)
+          if (files.size > MAX_SHELL_AUDIT_ENTRIES) {
+            saturated = true
+            return
+          }
+        }
+      }
+      walk(st.root, '', 0)
+      return files
+    }
+
     function shellBirthWasInsideCall(st, rel, startedAt) {
       try {
         const info = statSync(reviewDiskPath(st, rel))
@@ -822,6 +981,7 @@ export default {
       const callId = String(exec.callId || `call-${startedAt}`)
       const changed = new Set()
       const before = new Map()
+      const beforeWorkspace = snapshotShellWorkspacePaths(st)
       for (const rel of explicitShellPaths(exec, st)) {
         before.set(rel, await snapshotKnownShellPath(st, rel))
       }
@@ -872,6 +1032,13 @@ export default {
       if (watcherError) {
         console.error('[dsh-file-edit] shell audit watcher degraded:', watcherError && watcherError.message ? watcherError.message : watcherError)
       }
+      const afterWorkspace = snapshotShellWorkspacePaths(st)
+      for (const [rel, signature] of beforeWorkspace) {
+        if (afterWorkspace.get(rel) !== signature) changed.add(rel)
+      }
+      for (const [rel, signature] of afterWorkspace) {
+        if (beforeWorkspace.get(rel) !== signature) changed.add(rel)
+      }
       // Explicitly named targets are cheap to re-check and must not depend on
       // the platform watcher delivering an overwrite event within its settle
       // window. Unchanged entries are filtered by the version/content checks
@@ -900,7 +1067,9 @@ export default {
         if (!oldPending && prior.version === after.version) continue
         const stamp = (st.mutationStamp || 0) + 1
         st.mutationStamp = stamp
-        stageEntries(st, rel, prior, after)
+        if (oldPending && prior.present && !after.present) after.note = SHELL_UNRECOVERABLE_DELETE_NOTE
+        const stagedFile = stageEntries(st, rel, prior, after)
+        if (after.note === SHELL_UNRECOVERABLE_DELETE_NOTE) stagedFile.deletedPreview = cloneEntry(prior)
         staged++
       }
       if (staged > 0) {
@@ -913,6 +1082,245 @@ export default {
       }
       if (thrown) throw thrown
       return result
+    }
+
+    async function captureTransactionalShell(exec, next) {
+      const session = exec?.agent?.session
+      const sid = reviewOwnerSessionId(session?.id)
+      const args = exec && exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {}
+      if (!sid || args.run_in_background === true) return next()
+      const access = resolvedShellAccess(exec)
+      if (!access.allowed || access.audit !== 'transaction') return next()
+      const policy = access.policy
+      const auditRoot = access.auditRoot
+      await recoverShellTransactions(sid)
+      const candidates = new Set()
+      let watcherError = null
+      let settled
+      let commandError
+      try {
+        settled = await SHELL_SNAPSHOT_TRANSACTIONS.run({
+          sessionId: sid,
+          roots: [auditRoot],
+          candidatePaths: () => candidates,
+        }, async () => {
+          let watcher = null
+          try {
+            watcher = watchFs(auditRoot, { recursive: true }, (_event, filename) => {
+              if (filename === null || filename === undefined) {
+                watcherError = new Error('shell transaction watcher omitted the changed path')
+                return
+              }
+              const rel = normalizeRelPath(auditRoot, String(filename))
+              if (rel && !ignoredReviewPath(rel)) candidates.add(rel)
+            })
+            watcher.on('error', (error) => { watcherError = error })
+          } catch (error) {
+            watcherError = error
+          }
+          try {
+            return await next()
+          } finally {
+            await new Promise((resolve) => setTimeout(resolve, SHELL_EVENT_SETTLE_MS))
+            try { watcher?.close() } catch (error) { /* watcher close is best-effort after command settlement */ }
+          }
+        }, async (captured) => {
+          try { await settleTransactionalShellLedger(sid, captured) } catch (error) {
+            throw shellAuditError(error, 'ledger')
+          }
+        })
+      } catch (error) {
+        commandError = error
+        settled = error && error.snapshotSettlement
+      }
+      if (watcherError) {
+        console.error('[dsh-file-edit] shell transaction watcher degraded:', watcherError && watcherError.message ? watcherError.message : watcherError)
+      }
+      if (commandError?.snapshotFinalizeError) {
+        const conflict = shellAuditError(commandError.snapshotFinalizeError, 'finalize')
+        conflict.commandError = commandError
+        throw conflict
+      }
+      if (commandError?.snapshotPhase === 'prepare' || (commandError?.code && String(commandError.code).startsWith('snapshot-'))) {
+        throw shellAuditError(commandError, commandError.snapshotPhase || 'finalize')
+      }
+      if (commandError) throw commandError
+      return settled.result
+    }
+
+    function shellSnapshotPath(transaction, rootIndex, relativePath) {
+      const root = join(transaction.path, 'payload', `root-${String(rootIndex).padStart(4, '0')}`)
+      const target = relativePath ? resolvePath(root, relativePath) : root
+      if (!diskPathInside(root, target)) throw new Error('Shell 快照路径越界')
+      return target
+    }
+
+    function shellSnapshotEntry(st, key, transaction, manifestEntry) {
+      const source = shellSnapshotPath(transaction, manifestEntry.rootIndex, manifestEntry.relativePath)
+      const version = `shell:${transaction.id}:before:${manifestEntry.sha256 || manifestEntry.kind}`
+      if (manifestEntry.kind !== 'file') {
+        return { present: true, content: null, eol: false, crlf: false, version, size: manifestEntry.size || 0, note: manifestEntry.kind, binRef: null, binSize: 0, md: false }
+      }
+      const bytes = readFileSync(source)
+      if (bytes.length <= MAX_CONTENT_BYTES && !bytes.includes(0)) {
+        try { return textEntry(new TextDecoder('utf-8', { fatal: true }).decode(bytes), reviewDisplayPath(st, key), version) } catch (error) {}
+      }
+      let binRef = null
+      if (bytes.length <= MAX_BACKUP_BYTES) {
+        binRef = createHash('sha1').update(key).update(version).digest('hex')
+        mkdirSync(blobRoot(st.sid), { recursive: true })
+        if (!existsSync(join(blobRoot(st.sid), binRef))) writeFileSync(join(blobRoot(st.sid), binRef), bytes)
+      }
+      return { present: true, content: null, eol: false, crlf: false, version, size: bytes.length, note: bytes.length > MAX_CONTENT_BYTES ? 'large' : 'binary', binRef, binSize: binRef ? bytes.length : 0, md: isMarkdownPath(reviewDisplayPath(st, key)) }
+    }
+
+    function topLevelShellDeletions(changes) {
+      const deleted = changes.filter((change) => change.kind === 'deleted').sort((left, right) => left.relativePath.length - right.relativePath.length)
+      const roots = []
+      for (const change of deleted) {
+        if (!change.relativePath) throw new Error('Shell 不得删除工作区根目录')
+        if (roots.some((root) => change.relativePath.startsWith(root.relativePath + '/'))) continue
+        roots.push(change)
+      }
+      return roots
+    }
+
+    function shellDeletionEntries(snapshotManifest, deletionRoot) {
+      const prefix = deletionRoot.relativePath + '/'
+      const entries = snapshotManifest.entries
+        .filter((entry) => entry.rootIndex === deletionRoot.rootIndex && (entry.relativePath === deletionRoot.relativePath || entry.relativePath.startsWith(prefix)))
+        .map((entry) => ({
+          relativePath: entry.relativePath === deletionRoot.relativePath ? '.' : entry.relativePath.slice(prefix.length),
+          kind: entry.kind,
+          size: entry.size || 0,
+          mode: entry.mode,
+          sha256: entry.sha256,
+          linkTarget: entry.linkTarget,
+        }))
+        .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+      if (entries.length === 0 || entries[0].relativePath !== '.') throw new Error('Shell 删除快照缺少根条目')
+      return entries
+    }
+
+    function createShellDeletionBatch(st, sid, settled, snapshotManifest, deletionRoot) {
+      const entries = shellDeletionEntries(snapshotManifest, deletionRoot)
+      const rootEntry = entries.find((entry) => entry.relativePath === '.')
+      if (!rootEntry || !['file', 'directory'].includes(rootEntry.kind)) throw new Error('Shell 删除了暂不支持单独审核的文件类型')
+      const batchId = `batch-shell-${createHash('sha256').update(settled.transaction.id).update('\0').update(deletionRoot.relativePath).digest('hex').slice(0, 12)}`
+      const batchRoot = join(quarantineRoot(sid), batchId)
+      const targetPath = canonicalExternalPath(resolvePath(settled.transaction.roots[deletionRoot.rootIndex], deletionRoot.relativePath))
+      const payloadRelativePath = join('payload', basename(targetPath)).split('\\').join('/')
+      const payloadPath = join(batchRoot, payloadRelativePath)
+      const source = shellSnapshotPath(settled.transaction, deletionRoot.rootIndex, deletionRoot.relativePath)
+      const reviewKey = reviewKeyFromRaw(st, targetPath)
+      const manifest = {
+        version: 1,
+        batchId,
+        sessionId: sid,
+        targetPath,
+        reviewKey,
+        external: reviewTargetIsExternal(reviewKey),
+        kind: rootEntry.kind,
+        createdAt: new Date().toISOString(),
+        transport: 'shell-snapshot-copy',
+        shellTransactionId: settled.transaction.id,
+        payloadRelativePath,
+        entryCount: entries.length,
+        totalBytes: entries.reduce((sum, entry) => sum + (entry.kind === 'file' ? entry.size : 0), 0),
+        entries,
+      }
+      if (existsSync(join(batchRoot, 'manifest.json'))) {
+        const existing = JSON.parse(readFileSync(join(batchRoot, 'manifest.json'), 'utf8'))
+        if (existing.batchId !== batchId || existing.sessionId !== sid || existing.shellTransactionId !== settled.transaction.id || !sameDiskPath(existing.targetPath, targetPath)) {
+          throw new Error('Shell 删除恢复发现冲突的持久隔离批次')
+        }
+        verifyDeletePayload(source, join(batchRoot, existing.payloadRelativePath), existing.entries)
+        return { batchId, batchRoot, payloadPath: join(batchRoot, existing.payloadRelativePath), payloadRelativePath: existing.payloadRelativePath, manifest: existing }
+      }
+      mkdirSync(batchRoot, { recursive: true, mode: 0o700 })
+      writeDeleteManifest(batchRoot, manifest)
+      try {
+        copyDeletePayload(source, payloadPath, entries)
+        verifyDeletePayload(source, payloadPath, entries)
+      } catch (error) {
+        try { rmSync(batchRoot, { recursive: true, force: true }) } catch (cleanupError) {}
+        throw new Error('Shell 删除快照无法转入持久隔离区：' + (error && error.message ? error.message : String(error)))
+      }
+      return { batchId, batchRoot, payloadPath, payloadRelativePath, manifest }
+    }
+
+    async function stageShellDeletion(st, sid, settled, snapshotManifest, deletionRoot) {
+      const batch = createShellDeletionBatch(st, sid, settled, snapshotManifest, deletionRoot)
+      const deletedAt = new Date().toISOString()
+      const deletionRootPath = canonicalExternalPath(resolvePath(settled.transaction.roots[deletionRoot.rootIndex], deletionRoot.relativePath))
+      const deletionRootKey = reviewKeyFromRaw(st, deletionRootPath)
+      const deletionRootDisplay = reviewTargetIsExternal(deletionRootKey) ? deletionRootPath : deletionRoot.relativePath
+      const files = batch.manifest.entries.filter((entry) => entry.kind === 'file')
+      const recordCount = Math.max(1, files.length)
+      const records = files.length > 0 ? files : [batch.manifest.entries.find((entry) => entry.relativePath === '.')]
+      for (const entry of records) {
+        const fullRelativePath = entry.relativePath === '.' ? deletionRoot.relativePath : `${deletionRoot.relativePath}/${entry.relativePath}`
+        const key = reviewKeyFromRaw(st, resolvePath(settled.transaction.roots[deletionRoot.rootIndex], fullRelativePath))
+        if (!key) throw new Error(`Shell 删除无法建立审核标识：${fullRelativePath}`)
+        const previous = st.files.get(key)
+        const previousPending = !!(previous && previous.base && previous.cur && isChanged(previous))
+        const beforeManifestEntry = snapshotManifest.entries.find((item) => item.rootIndex === deletionRoot.rootIndex && item.relativePath === fullRelativePath)
+        if (!beforeManifestEntry) throw new Error(`Shell 删除快照缺少文件：${fullRelativePath}`)
+        const deletedFrom = previousPending ? (previous.base.present ? 'modified-in-session' : 'created-in-session') : 'baseline'
+        const staged = stageEntries(st, key, shellSnapshotEntry(st, key, settled.transaction, beforeManifestEntry), absentEntry(), {
+          batchId: batch.batchId,
+          deletionBatchId: batch.batchId,
+          deletedFrom,
+          deletedAt,
+          deleteTarget: reviewDisplayPath(st, key),
+          root: deletionRootDisplay,
+          rootKind: batch.manifest.kind,
+          deletionFileCount: recordCount,
+          manifestRelativePath: entry.relativePath,
+          quarantineRelativePath: entry.relativePath === '.' ? batch.payloadRelativePath : join(batch.payloadRelativePath, entry.relativePath).split('\\').join('/'),
+          ...(files.length === 0 ? { directoryAnchor: true } : {}),
+        })
+        if (files.length === 0) staged.base.note = 'directory'
+      }
+    }
+
+    async function settleTransactionalShellLedger(sid, settled) {
+      const st = initializeEventState(sid)
+      const manifest = SHELL_SNAPSHOT_TRANSACTIONS.manifestOf(settled.transaction)
+      const deletionRoots = topLevelShellDeletions(settled.changes)
+      for (const deletionRoot of deletionRoots) await stageShellDeletion(st, sid, settled, manifest, deletionRoot)
+      const coveredByDeletion = (relativePath) => deletionRoots.some((root) => relativePath === root.relativePath || relativePath.startsWith(root.relativePath + '/'))
+      for (const change of settled.changes) {
+        if (!change.relativePath || coveredByDeletion(change.relativePath) || !['added', 'modified'].includes(change.kind)) continue
+        const key = reviewKeyFromRaw(st, resolvePath(settled.transaction.roots[change.rootIndex], change.relativePath))
+        if (!key) throw new Error(`Shell 变更无法建立审核标识：${change.relativePath}`)
+        if (change.kind === 'added') {
+          if (change.after?.kind !== 'file') continue
+          stageEntries(st, key, absentEntry(), await loadFileEntry(st, key))
+          continue
+        }
+        if (change.before?.kind !== 'file' || change.after?.kind !== 'file') throw new Error(`Shell 改变了暂不支持审核的文件类型：${change.relativePath}`)
+        const beforeManifestEntry = manifest.entries.find((entry) => entry.rootIndex === change.rootIndex && entry.relativePath === change.relativePath)
+        if (!beforeManifestEntry) throw new Error(`Shell 修改快照缺少文件：${change.relativePath}`)
+        stageEntries(st, key, shellSnapshotEntry(st, key, settled.transaction, beforeManifestEntry), await loadFileEntry(st, key))
+      }
+      st.mutationStamp = (st.mutationStamp || 0) + 1
+      st.dirty = false
+      saveState(st, true)
+      scheduleNotify(sid, 80)
+      if (settled.failed) SHELL_SNAPSHOT_TRANSACTIONS.markLedgerCommitted(settled.transaction)
+      else SHELL_SNAPSHOT_TRANSACTIONS.discard(settled.transaction)
+    }
+
+    const shellRecoveryTasks = new Map()
+    async function recoverShellTransactions(sid) {
+      let task = shellRecoveryTasks.get(sid)
+      if (task) return task
+      task = (async () => {
+        await SHELL_SNAPSHOT_TRANSACTIONS.recover(sid, async (settled) => settleTransactionalShellLedger(sid, settled))
+      })()
+      shellRecoveryTasks.set(sid, task)
+      try { await task } finally { if (shellRecoveryTasks.get(sid) === task) shellRecoveryTasks.delete(sid) }
     }
 
     // ---------- scanning ----------
@@ -1205,7 +1613,7 @@ export default {
           continue
         }
         if (note) {
-          files.push({ ...common, status: status, note: note, restorable: note !== 'shell-unknown' && note !== 'write-before-unknown', pending: 1, added: 0, removed: 0 })
+          files.push({ ...common, status: status, note: note, restorable: note !== 'shell-unknown' && note !== 'write-before-unknown' && note !== SHELL_UNRECOVERABLE_DELETE_NOTE, pending: 1, added: 0, removed: 0 })
           continue
         }
         const baseLines = entryLines(f.base)
@@ -1217,7 +1625,6 @@ export default {
         const hunks = computeHunks(baseLines, curLines)
         let added = 0, removed = 0, pending = 0
         for (const h of hunks) {
-          if (f.decisions.has(h.id)) continue
           pending++
           added += h.newLen
           removed += h.oldLen
@@ -1233,6 +1640,7 @@ export default {
     // binary/large changes (content is null), so the version axis is the
     // single truth that also covers those.
     function isChanged(f) {
+      if (f && f.cur && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE) return true
       return isCreatedThenDeleted(f) || !f.base || !f.cur || f.base.present !== f.cur.present || f.base.version !== f.cur.version
     }
 
@@ -1255,7 +1663,9 @@ export default {
       const changed = isChanged(f)
       const retainedDeletion = !changed && f && f.deletedPreview && f.cur && !f.cur.present
       const status = retainedDeletion ? 'deleted' : reviewStatus(f)
-      const restorable = !(f.base && (f.base.note === 'shell-unknown' || f.base.note === 'write-before-unknown'))
+      const unrecoverableShellDeletion = !!(f.cur && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE)
+      const restorable = !unrecoverableShellDeletion && !(f.base && (f.base.note === 'shell-unknown' || f.base.note === 'write-before-unknown'))
+      const note = (f.base && f.base.note) || f.cur.note || null
       if (prevRev !== undefined && prevRev !== null && prevRev === f.rev) {
         return { ok: true, same: true, rev: f.rev, ...meta }
       }
@@ -1263,7 +1673,7 @@ export default {
       // noise. Ship a banner payload; the client offers accept (confirm the
       // deletion) / reject (restore from baseline) instead.
       if (status === 'deleted') {
-        return { ok: true, rev: f.rev, status: status, changed: changed, restorable: restorable, deleted: true, readOnly: true, hunks: [], current: null, baseline: null, ...deletedPreviewPayload(st, f), ...meta }
+        return { ok: true, rev: f.rev, status: status, changed: changed, note: note, restorable: restorable, deleted: true, readOnly: true, hunks: [], current: null, baseline: null, ...deletedPreviewPayload(st, f), ...meta }
       }
       // Created and deleted again within the session: nothing on disk now,
       // nothing in the baseline — net zero vs the baseline. Banner payload
@@ -1279,7 +1689,6 @@ export default {
         const curLines = entryLines(f.cur)
         return { ok: true, rev: f.rev, status: status, changed: false, hunks: [], current: curLines, baseline: null, trailingNL: f.cur.eol === true, crlf: f.cur.crlf === true, ...meta }
       }
-      const note = (f.base && f.base.note) || f.cur.note || null
       if (note) {
         // Large-but-text files (≤512KB, >8000 lines): content is already in
         // memory (loadFileEntry reads anything ≤512KB), so ship a read-only
@@ -1297,7 +1706,7 @@ export default {
             }
           }
         }
-        return { ok: true, rev: f.rev, status: status, changed: changed, note: note, restorable: note !== 'shell-unknown' && note !== 'write-before-unknown', hunks: [], current: null, baseline: null, ...meta }
+        return { ok: true, rev: f.rev, status: status, changed: changed, note: note, restorable: note !== 'shell-unknown' && note !== 'write-before-unknown' && note !== SHELL_UNRECOVERABLE_DELETE_NOTE, hunks: [], current: null, baseline: null, ...meta }
       }
       const baseLines = entryLines(f.base)
       const curLines = entryLines(f.cur)
@@ -1306,7 +1715,7 @@ export default {
       }
       const all = computeHunks(baseLines, curLines)
       const hunks = []
-      for (const h of all) if (!f.decisions.has(h.id)) hunks.push(h)
+      for (const h of all) hunks.push(h)
       return {
         ok: true, rev: f.rev, status: status, changed: changed, hunks: hunks,
         baseline: hunks.length > 0 ? baseLines : null,
@@ -1402,11 +1811,12 @@ export default {
       if (depth > MAX_DELETE_DEPTH) throw new Error(`删除目录超过安全深度限制（${MAX_DELETE_DEPTH} 层）`)
       const info = lstatSync(diskPath)
       const rel = diskPath === root ? '.' : relativePath(root, diskPath).split('\\').join('/')
+      const mode = info.mode & 0o7777
       if (info.isSymbolicLink()) {
-        return { relativePath: rel, kind: 'symlink', size: info.size, linkTarget: readlinkSync(diskPath) }
+        return { relativePath: rel, kind: 'symlink', size: info.size, mode, linkTarget: readlinkSync(diskPath) }
       }
-      if (info.isFile()) return { relativePath: rel, kind: 'file', size: info.size }
-      if (info.isDirectory()) return { relativePath: rel, kind: 'directory', size: 0 }
+      if (info.isFile()) return { relativePath: rel, kind: 'file', size: info.size, mode, sha256: hashFile(diskPath) }
+      if (info.isDirectory()) return { relativePath: rel, kind: 'directory', size: 0, mode }
       throw new Error(`删除目标包含不支持的特殊文件：${rel}`)
     }
     function buildDeleteManifestEntries(root) {
@@ -1449,16 +1859,22 @@ export default {
         const suffix = entry.relativePath === '.' ? '' : entry.relativePath
         const from = suffix ? join(source, suffix) : source
         const to = suffix ? join(destination, suffix) : destination
-        if (entry.kind === 'directory') mkdirSync(to, { recursive: true })
+        if (entry.kind === 'directory') mkdirSync(to, { recursive: true, mode: 0o700 })
         else if (entry.kind === 'file') {
           mkdirSync(dirname(to), { recursive: true })
           copyFileSync(from, to)
+          if (Number.isInteger(entry.mode)) chmodSync(to, entry.mode)
           const fd = openSync(to, 'r')
           try { fsyncSync(fd) } finally { closeSync(fd) }
         } else {
           mkdirSync(dirname(to), { recursive: true })
           symlinkSync(entry.linkTarget, to)
         }
+      }
+      for (const entry of entries.slice().reverse()) {
+        if (entry.kind !== 'directory' || !Number.isInteger(entry.mode)) continue
+        const suffix = entry.relativePath === '.' ? '' : entry.relativePath
+        chmodSync(suffix ? join(destination, suffix) : destination, entry.mode)
       }
     }
     function verifyDeletePayload(source, destination, expectedEntries) {
@@ -1467,12 +1883,13 @@ export default {
       for (let index = 0; index < expectedEntries.length; index++) {
         const expected = expectedEntries[index]
         const found = actual.entries[index]
-        if (expected.relativePath !== found.relativePath || expected.kind !== found.kind || expected.size !== found.size || expected.linkTarget !== found.linkTarget) {
-          throw new Error(`隔离区校验失败：${expected.relativePath}`)
+        if (expected.relativePath !== found.relativePath || expected.kind !== found.kind || (expected.kind === 'file' && expected.size !== found.size) || expected.linkTarget !== found.linkTarget || (expected.kind !== 'symlink' && Number.isInteger(expected.mode) && expected.mode !== found.mode)) {
+          throw new Error(`隔离区校验失败：${expected.relativePath}（期望 ${expected.kind}/${expected.size}/${expected.linkTarget || ''}，实际 ${found.kind}/${found.size}/${found.linkTarget || ''}）`)
         }
         if (expected.kind === 'file') {
           const suffix = expected.relativePath === '.' ? '' : expected.relativePath
-          if (hashFile(suffix ? join(source, suffix) : source) !== hashFile(suffix ? join(destination, suffix) : destination)) {
+          const expectedHash = expected.sha256 || hashFile(suffix ? join(source, suffix) : source)
+          if (expectedHash !== hashFile(suffix ? join(destination, suffix) : destination)) {
             throw new Error(`隔离区校验失败：${expected.relativePath} 内容不一致`)
           }
         }
@@ -1548,7 +1965,12 @@ export default {
     }
     function cleanupCompletedFileDeletion(st, deletion) {
       const batchId = deletionId(deletion)
-      if (!batchId || deletion.rootKind !== 'file') return
+      if (!batchId) return
+      if (deletion.rootKind === 'directory') {
+        for (const [, file] of st.files) {
+          if (deletionId(file.deletion) === batchId) return
+        }
+      } else if (deletion.rootKind !== 'file') return
       try { rmSync(join(quarantineRoot(st.sid), batchId), { recursive: true, force: true }) } catch (error) {}
     }
     function readDeletionBatchManifest(st, rawBatchId) {
@@ -1589,13 +2011,15 @@ export default {
       }
       records.sort((left, right) => left.key.localeCompare(right.key))
       const expectedFiles = batch.manifest.entries.filter((entry) => entry && entry.kind === 'file').length
+      const expectedRecords = Math.max(1, expectedFiles)
       if (records.length === 0) throw new Error('删除批次已处理或不存在')
-      if (records.length !== expectedFiles) {
+      if (records.length !== expectedRecords) {
         const error = new Error('该目录批次已有文件被单独处理，请按剩余文件逐个审核')
         error.code = 'batch-partial'
         throw error
       }
       const expectedRelativePaths = new Set(batch.manifest.entries.filter((entry) => entry.kind === 'file').map((entry) => entry.relativePath))
+      if (expectedFiles === 0) expectedRelativePaths.add('.')
       for (const record of records) {
         const deletion = record.f.deletion
         if (!expectedRelativePaths.has(deletion.manifestRelativePath)) throw new Error('删除批次文件清单与审核账本不一致')
@@ -1660,6 +2084,10 @@ export default {
       restoreDirectoryBatchPayload(batch)
       for (const record of batch.records) {
         const deletion = record.f.deletion
+        if (deletion.directoryAnchor === true) {
+          st.files.delete(record.key)
+          continue
+        }
         record.f.cur = await loadFileEntry(st, record.key)
         if (!record.f.cur.present) throw new Error(`目录恢复后缺少文件：${reviewDisplayPath(st, record.key)}`)
         if (deletion.deletedFrom === 'baseline') {
@@ -1849,6 +2277,7 @@ export default {
         async execute(args, exec) {
           exec.signal.throwIfAborted()
           if (!args || typeof args.file_path !== 'string' || args.file_path.trim() === '') throw new Error('file_path 不能为空')
+          assertAgentFileMutationAllowed(exec)
           const { sid, st } = toolSessionState(exec)
           const item = validateDeleteTarget(st, args.file_path)
           const inventory = buildDeleteManifestEntries(item.diskPath)
@@ -1865,6 +2294,7 @@ export default {
               : 'baseline'
             beforeEntries.set(manifestEntry.relativePath, { key, before: await loadFileEntry(st, key), deletedFrom })
           }
+          assertAgentFileMutationAllowed(exec)
           const transaction = await quarantineDelete(st, sid, item, inventory)
           const deletedAt = new Date().toISOString()
           const deletionFileCount = inventory.entries.filter((entry) => entry.kind === 'file').length
@@ -1916,6 +2346,7 @@ export default {
           exec.signal.throwIfAborted()
           if (!args || typeof args.source_path !== 'string' || args.source_path.trim() === '') throw new Error('source_path 不能为空')
           if (typeof args.destination_path !== 'string' || args.destination_path.trim() === '') throw new Error('destination_path 不能为空')
+          assertAgentFileMutationAllowed(exec)
           const { sid, st } = toolSessionState(exec)
           const source = await validatedRegularFile(st, args.source_path, '源路径')
           const destinationRel = normalizeRelPath(st.root, args.destination_path)
@@ -1926,6 +2357,7 @@ export default {
           if (existsSync(destinationDiskPath)) throw new Error('目标路径已存在，禁止覆盖')
           assertRealPathInsideRoot(st, destinationDiskPath, false)
           const before = await loadFileEntry(st, source.rel)
+          assertAgentFileMutationAllowed(exec)
           renameSync(source.diskPath, destinationDiskPath)
           const after = await loadFileEntry(st, destinationRel)
           const stamp = (st.mutationStamp || 0) + 1
@@ -1943,14 +2375,13 @@ export default {
 
     ctx.effect(registerAgentFileTools, 'dsh-file-edit: agent file tools')
     // The pre-execute listener below provides early feedback and compatibility,
-    // while the monotonic runtime guard is the security boundary. Guards run
-    // after the complete extensible pre-execute waterfall, so another plugin
-    // cannot short-circuit with an allow decision and resurrect raw shell.
-    ctx.effect(() => tools.guard((exec) => RAW_SHELL_TOOLS.has(exec.name) ? RAW_SHELL_DENIAL : undefined), 'dsh-file-edit: strict raw shell guard')
+    // while the monotonic runtime guard keeps untrackable shell lifetimes
+    // denied after the complete extensible policy waterfall.
+    ctx.effect(() => tools.guard(shellGateReason), 'dsh-file-edit: raw shell safety guard')
     ctx.effect(() => systemPrompt.section({
       name: 'tool:file-review-ledger',
       order: 103,
-      text: 'Strict file review is enabled. Use write/edit for text creation and edits, file_delete for deleting any file or directory (including absolute paths outside the workspace), and file_move for moving or renaming a workspace file. file_delete quarantines content before removal. Writable raw shell tools are blocked before execution; use shell_readonly for inspection and diagnostics. Never try to bypass this gate with Python, Node, PowerShell, a background command, a persistent terminal, or sandbox escalation.',
+      text: 'File review is enabled. Execution permission and recoverable file review are separate controls. Use write/edit for precise text changes, file_delete for explicit recoverable deletion, and file_move for moving or renaming a file. Foreground bash/shell/pwsh calls run directly in read-only mode. Workspace Write snapshots the session workspace before each foreground Shell call. Full Access permits an arbitrary existing directory per call: set audit_root to the narrowest directory containing every local path the command may change; it defaults to workdir, then the session workspace. That root is snapshotted before execution, writes outside it are denied, and captured changes enter the same review ledger. Background Shell, persistent terminals, and unmanaged compatibility entries remain blocked. Use dedicated structured tools for external services such as Lark.',
     }), 'dsh-file-edit: file tool guidance')
     // Copy the file's current bytes into the undo dir before a reject
     // overwrites or deletes them. Returns the record entry (afterVersion is
@@ -1972,6 +2403,9 @@ export default {
       }
     }
     async function doReject(st, f, path, rec) {
+      if (f && f.cur && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE) {
+        throw new Error('Shell 删除发生前未建立隔离备份，无法自动恢复；请手动恢复或接受该事故记录')
+      }
       const wasAbsent = !f.cur || !f.cur.present
       const completedDeletion = f.deletion
       if (completedDeletion && wasAbsent && f.base) {
@@ -2049,6 +2483,7 @@ export default {
     }
     async function doAccept(st, f, path) {
       const completedDeletion = f.deletion
+      const acceptingUnrecoverableShellDeletion = !!(f.cur && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE)
       if (completedDeletion && f.cur && f.cur.present) throw new Error('文件已重新出现，请刷新后重新审核，未确认删除')
       // A binary baseline needs its bytes for a future reject; snapshot them
       // now that this content becomes the new baseline.
@@ -2069,7 +2504,9 @@ export default {
           }
         } catch (e) {}
       }
+      if (f.cur && f.cur.note === SHELL_UNRECOVERABLE_DELETE_NOTE) delete f.cur.note
       f.base = cloneEntry(f.cur)
+      if (acceptingUnrecoverableShellDeletion) f.deletedPreview = null
       f.decisions.clear()
       f.deletion = null
       cleanupCompletedFileDeletion(st, completedDeletion)
@@ -2130,6 +2567,7 @@ export default {
         const st = requireState(args)
         if (!st) return { ok: false, error: 'no-session' }
         const sid = String(args.sessionId)
+        if (shellTransactionLifecycleEnabled) await recoverShellTransactions(sid)
         if (!st.baseReady) await hydrateReviewLedger(sid)
         if (st.baseReady && st.dirty) await reconcileReviewTargets(st, sid)
         if (st.error) return { ok: false, error: st.error }
@@ -2306,8 +2744,9 @@ export default {
         let hunk = null
         for (const h of all) if (h.id === hunkId) hunk = h
         if (hunk === null) return { ok: false, code: 'stale', message: '修订已变化，请刷新后重试' }
-        f.decisions.set(hunkId, action)
-        if (action === 'reject') {
+        if (action === 'accept') {
+          settleAcceptedHunk(f, hunk)
+        } else {
           const rec = newUndoRec()
           if (!f.base || !f.base.present) {
             const snap = await snapshotForUndo(st, path, rec)
@@ -2316,7 +2755,7 @@ export default {
             if (snap) { snap.afterVersion = null; rec.files.push(snap) }
           } else {
             const snap = await snapshotForUndo(st, path, rec)
-            const merged = mergeHunks(baseLines, all, f.decisions)
+            const merged = mergeHunks(baseLines, all, new Map([[hunkId, 'reject']]))
             const text = joinLines(merged, f.base.eol, f.base.crlf)
             const outcome = await writeFile(st, path, text)
             f.cur = { present: true, content: text.replace(/\r\n/g, '\n'), eol: f.base.eol, crlf: f.base.crlf, version: outcome.version, size: outcome.size !== undefined ? outcome.size : text.length, binRef: null, binSize: 0 }
@@ -2324,11 +2763,13 @@ export default {
           }
           commitUndo(st, rec)
         }
-        let pendingCount = 0
-        for (const h of all) if (!f.decisions.has(h.id)) pendingCount++
-        if (pendingCount === 0) {
+        // Every action changes either base or cur, invalidating all positional
+        // hunk ids. Recompute from the two durable images and keep no hidden
+        // decision state between requests.
+        f.decisions.clear()
+        const pending = computeHunks(entryLines(f.base), entryLines(f.cur))
+        if (pending.length === 0) {
           f.base = cloneEntry(f.cur)
-          f.decisions.clear()
         }
         f.rev++
         saveState(st)
@@ -2454,7 +2895,7 @@ export default {
         f.cur = { present: true, content: textOut.replace(/\r\n/g, '\n'), eol: f.cur.eol, crlf: f.cur.crlf, version: outcome.version, size: outcome.size !== undefined ? outcome.size : textOut.length }
         // changed-flag hygiene: with no pending hunks the file IS the
         // baseline now — align versions so the toolbar hides.
-        const newPending = newAll.filter((h) => !f.decisions.has(h.id))
+        const newPending = newAll
         if (newPending.length === 0 && f.base && f.base.present) {
           f.base = { ...cloneEntry(f.base), version: outcome.version, size: outcome.size !== undefined ? outcome.size : textOut.length }
         }
@@ -2713,14 +3154,15 @@ export default {
 
     // ---------- change triggers ----------
     ctx.on('tools/pre-execute', async (exec, next) => {
-      const name = exec && exec.name ? exec.name : ''
-      if (RAW_SHELL_TOOLS.has(name)) return { kind: 'deny', reason: RAW_SHELL_DENIAL }
+      const reason = shellGateReason(exec)
+      if (reason !== undefined) return { kind: 'deny', reason }
       return next()
     })
 
     ctx.on('tools/execute', async (exec, next) => {
       const name = exec && exec.name ? exec.name : ''
       if (!SHELL_TOOLS.has(name)) return next()
+      if (shellTransactionLifecycleEnabled) return captureTransactionalShell(exec, next)
       return captureForegroundShell(exec, next)
     })
 

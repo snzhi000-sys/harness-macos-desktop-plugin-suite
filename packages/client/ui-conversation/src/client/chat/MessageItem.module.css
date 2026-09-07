@@ -28,6 +28,24 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.pendingImages {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 100%;
+  opacity: 0.92;
+}
+
+.pendingImage {
+  width: auto;
+  max-width: min(240px, 100%);
+  height: auto;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
 .contextRow {
   padding: 2px 0;
 }
