@@ -86,7 +86,7 @@ function snapshotWith(
     runningCalls: nestedRunningCalls,
     pending: [], queue: [], running: runningCalls.length > 0, composerPhase: 'active', removed: false,
     openState: 'open', openError: null,
-    hasMore: false, loadingOlder: false, promptError: null, blank: false, subagent: null, lastAgentError: null,
+    hasMore: false, loadingOlder: false, historyError: null, promptError: null, blank: false, subagent: null, lastAgentError: null,
   }
 }
 

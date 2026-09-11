@@ -85,12 +85,9 @@ function probeDimensions(attachment: ComposerAttachment): void {
   probe.src = attachment.previewUrl
 }
 
-/** Yield one paint so the optimistic text/image echo is visible before encoding starts. */
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { setTimeout(resolve, 0) })
-    else setTimeout(resolve, 0)
-  })
+/** Yield one browser task so the optimistic text/image echo can render before encoding starts. */
+function yieldForOptimisticEcho(): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, 0) })
 }
 
 interface ImageUrlEntry {
@@ -199,7 +196,7 @@ export class ConversationController extends Service implements IConversation {
       },
     })
     try {
-      await nextPaint()
+      await yieldForOptimisticEcho()
       const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
       const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
       const result = await session.prompt(content, mode)

@@ -193,12 +193,15 @@ export function digestLine(session: Session): string {
 // Delivery
 // ---------------------------------------------------------------------------
 
-/** Send text to the current peer, chunked and throttled. */
-export async function sendTextToPeer(node: WechatConversationNode, text: string): Promise<void> {
-  const peer = node.peerId
-  if (!peer) return
-  const chunks = splitForWechat(text, node.config.maxMessageChars)
-  if (chunks.length === 0) return
+/** Per-node delivery tail: event listeners may enqueue without awaiting. */
+const outboundTails = new WeakMap<WechatConversationNode, Promise<void>>()
+
+/** Deliver one already-addressed message after earlier node messages settle. */
+async function deliverText(
+  node: WechatConversationNode,
+  peer: string,
+  chunks: readonly string[],
+): Promise<void> {
   await node.ctx.wechat.sendTyping(peer, 1).catch(() => {})
   try {
     for (let i = 0; i < chunks.length; i++) {
@@ -213,6 +216,25 @@ export async function sendTextToPeer(node: WechatConversationNode, text: string)
     }
   } finally {
     await node.ctx.wechat.sendTyping(peer, 2).catch(() => {})
+  }
+}
+
+/** Send text to the current peer, chunked, throttled, and ordered per node. */
+export async function sendTextToPeer(node: WechatConversationNode, text: string): Promise<void> {
+  // Capture routing at enqueue time. A later inbound peer/session switch must
+  // not redirect a message that was produced for the previous conversation.
+  const peer = node.peerId
+  if (!peer) return
+  const chunks = splitForWechat(text, node.config.maxMessageChars)
+  if (chunks.length === 0) return
+
+  const previous = outboundTails.get(node) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(async () => deliverText(node, peer, chunks))
+  outboundTails.set(node, current)
+  try {
+    await current
+  } finally {
+    if (outboundTails.get(node) === current) outboundTails.delete(node)
   }
 }
 

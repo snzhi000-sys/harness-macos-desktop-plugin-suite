@@ -3,7 +3,7 @@
   - button "Close":
     - img
   - img
-  - paragraph: 启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。
+  - paragraph: Full access 允许 AI 在系统权限范围内读取和修改任意路径，并关闭权限审批提示；Shell 审核可能不完整，未记录的修改可能无法恢复。仅建议在你信任当前任务时使用。
   - checkbox "我已了解风险，并愿意继续"
   - text: 我已了解风险，并愿意继续
   - button "取消"

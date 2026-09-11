@@ -25,7 +25,7 @@
   gap: 4px;
 }
 
-/* Desktop titlebar controls. Explorer and Browser share one right-aligned
+/* Desktop titlebar controls. Explorer and content-panel visibility share one right-aligned
    cluster so their geometry, hover treatment and click behaviour stay in
    lockstep. The shell titlebar is a high-z-index drag surface, therefore the
    cluster must sit above it and explicitly opt out of window dragging. */
@@ -50,9 +50,9 @@
   display: block;
 }
 
-/* The packaged app uses the dedicated titlebar controls for Explorer,
-   right-surface visibility, and Browser creation. Keep the legacy cluster
-   available only to the ordinary web shell. */
+/* The packaged app uses the dedicated titlebar controls for Explorer and
+   right-surface visibility. Keep the legacy cluster available only to the
+   ordinary web shell. */
 :global(html[data-dsh-desktop-titlebar]) .toggleCluster {
   display: none;
 }

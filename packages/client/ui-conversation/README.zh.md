@@ -48,6 +48,8 @@ Host 带 placement 的 `session/queue` 快照也会携带待处理 steering。Qu
 
 完成的一轮会物化一个有序的 `turn-tail` Conversation Node。它由引擎维护的 `TurnLocation` 提供收尾 Assistant 和 Turn data；renderer 在该 Node 的 IconActions 之前渲染 `conversation.chat.turnTail` chain，并派发包含 Turn、收尾 seq 和 `openFile` 的 `TurnTailOwnerProps`。本包只拥有空位；`@deepseek-ai/dsh-client-ui-deliverables` 把改写工具的 `locations` 累积到 Turn data，并拥有产物行、chip 上限和文案，因此把该插件从 cordis.yml 中组合掉即可关闭该交互面，空位以零成本渲染为空。收尾正文经由同一个开关参与其中：chat 视图向可选的 `chatFileMentions` service（ctx.get；由同一插件提供）索取收尾消息的行内代码词表，并把结果接进 MarkdownText 的 `fileMentions` seam——service 缺席时正文保持死文本。
 
+Chat 在用户主动上翻到顶部后请求一页旧消息；首次布局和程序化恢复不会触发分页。固定高度的顶部提示区用 150ms 淡入淡出加载指示器，快速响应保留短暂完成过渡，失败时原位提供重试。结算后必须再次出现上翻输入才能继续加载。旧页插入保持真实行锚点，后续媒体撑高也保持该锚点，直到用户滚动或导航。减少动态效果模式禁用旋转和透明度动画。显式加载按钮保留为无障碍备用入口；回合导航共享数据分页器，但不显示用户翻页专属动画。
+
 ## 模型体验
 
 无。会话 UI 在浏览器中渲染会话历史与流；这里没有任何内容进入模型请求。

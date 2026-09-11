@@ -106,7 +106,7 @@ function historySnapshot(
     openState: 'open',
     openError: null,
     hasMore: false,
-    loadingOlder: false,
+    loadingOlder: false, historyError: null,
     promptError: null,
     blank: nodes.length === 0,
     lastAgentError: null,

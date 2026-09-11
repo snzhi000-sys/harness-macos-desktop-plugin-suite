@@ -1,0 +1,4 @@
+file-relative: 资料/测试 文件.md
+file-absolute: /workspace/资料/测试 文件.md
+folder-relative: 资料/子目录
+folder-absolute: /workspace/资料/子目录

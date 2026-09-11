@@ -16,6 +16,13 @@ Chat renders a memoized rail from that projection. A loaded turn points at a sta
 
 Streaming events continue through the existing animation-frame notifier, incremental Markdown parser, and keyed node store. Stable real row geometry remains mounted because intrinsic-size paint containment makes restored reader anchors drift before the browser has measured an off-screen row.
 
+## Paging ownership
+
+Ordinary history requests use ten append-origin messages per page while explicit jumps retain 250-message batches. Both operations publish retryable failures through `historyError` without marking history exhausted or discarding the window. Reconnect invalidates responses and cleanup from the previous generation; reopening a resident Session preserves its loaded pages. Empty nonterminal pages are errors, not automatic retry triggers. Host message grouping and complete cold-log validation remain authoritative.
+
+
+Chat requests one earlier page after upward reader input reaches the top; initial layout and programmatic restoration do not trigger paging. A fixed-height top seat fades its spinner over 150 ms, retains a brief completion phase for fast responses, and offers inline retry on failure. Reader input is required again after settlement. Prepending holds a real row anchor; subsequent media growth preserves that anchor until the reader scrolls or navigates. Reduced motion disables spinner rotation and opacity transitions. The explicit load button remains an accessible fallback; turn navigation shares the data pager without displaying the reader-owned spinner.
+
 ## Alternatives considered
 
 **Replace the local conversation UI with upstream `ui-chat`.** The local package still owns product-specific slots, immediate authoritative message display, Better Sidebar turn-tail integration, and File Edit hooks. A wholesale replacement would widen compatibility risk beyond turn navigation.

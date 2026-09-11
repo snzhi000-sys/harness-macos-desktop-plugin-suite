@@ -262,14 +262,14 @@ test('/new creates an agent+session and follows up the prompt', async () => {
   await waitFor(() => followedUp.length === 1)
   const text = (followedUp[0]!.content[0] as { text: string }).text
   assert.equal(text, '写一个 hello world')
-  assert.ok(sentTexts().some((t) => t.includes('已创建新会话')))
+  await waitFor(() => sentTexts().some((t) => t.includes('已创建新会话')), 3000)
 })
 
 test('/stop cancels the active agent', async () => {
   await mountNode()
   server.enqueue(textMessage('/stop'))
   await waitFor(() => cancelled === true, 3000)
-  assert.ok(sentTexts().some((t) => t.includes('已请求停止')))
+  await waitFor(() => sentTexts().some((t) => t.includes('已请求停止')), 3000)
 })
 
 test('/status reports the active session', async () => {

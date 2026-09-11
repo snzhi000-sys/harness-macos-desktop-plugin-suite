@@ -371,7 +371,7 @@ describe('subagent catalogs', () => {
     await manager.get(S2).open()
     await manager.get(S2).prompt([{ type: 'text', text: 'continue' }], 'queue')
     expect(api.callsOf('subagent.history')).toEqual([
-      { parentSessionId: S1, childSessionId: S2, mode: 'continuable', maxMessages: 50 },
+      { parentSessionId: S1, childSessionId: S2, mode: 'continuable', maxMessages: 10 },
     ])
     expect(api.callsOf('subagent.prompt')).toEqual([
       {

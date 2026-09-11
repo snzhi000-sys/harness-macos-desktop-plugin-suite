@@ -1,13 +1,14 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, powerMonitor, screen, shell } from 'electron'
 import { executablePath, readyUrl } from './runtime-paths.mjs'
 import { readWindowBounds, writeWindowBounds } from './window-state.mjs'
 import { readAppearanceScheme, writeAppearanceScheme } from './appearance-state.mjs'
-import { fadeStartupDocument, startupDocument } from './startup-document.mjs'
+import { fadeStartupDocument, startupDocument, updateStartupDocument } from './startup-document.mjs'
 import { installBundledProfile } from './profile-bootstrap.mjs'
+import { migrateLegacyDevData } from './dev-data-migration.mjs'
 import { backendPort, backendRecoveryDelay } from './backend-recovery.mjs'
 
 const STARTUP_TIMEOUT_MS = 60_000
@@ -20,13 +21,26 @@ let backend
 let backendUrl
 let backendRecovery
 let quitting = false
+let disposePetWindow
 const execFileAsync = promisify(execFile)
 
-// Source development is isolated from the installed Stable app. Packaged apps
-// obtain their channel-specific name and userData directory from the builder.
-if (!app.isPackaged) app.setName(process.env.DSH_DESKTOP_APP_NAME ?? 'DeepSeek Harness Dev')
+// Electron derives userData from its internal app name, not macOS's visible
+// product name. Read the packaged channel before the first getPath('userData')
+// call so Dev never falls back to this package's npm name and shares neither
+// Stable state nor an accidental @deepseek-ai directory.
+const packagedChannel = app.isPackaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).dshDesktopChannel
+  : process.env.DSH_DESKTOP_CHANNEL
+const desktopChannel = packagedChannel === 'stable' ? 'stable' : 'dev'
+const desktopPetEnabled = app.isPackaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).dshDesktopPet === true
+  : desktopChannel === 'dev'
+app.setName(desktopChannel === 'stable' ? 'DeepSeek Harness' : 'DeepSeek Harness Dev')
+const legacyDevUserData = join(app.getPath('appData'), '@deepseek-ai', 'dsh-desktop-builder')
+const defaultChannelUserData = join(app.getPath('appData'), app.getName())
+const releaseInfo = JSON.parse(readFileSync(join(app.getAppPath(), 'release-info.json'), 'utf8'))
 
-async function runtimeDirectory() {
+async function runtimeDirectory(onExtractStart) {
   if (!app.isPackaged) return join(import.meta.dirname, '..', '..', '.desktop-runtime')
 
   const bootstrap = join(process.resourcesPath, 'runtime-bootstrap')
@@ -41,6 +55,7 @@ async function runtimeDirectory() {
   mkdirSync(runtimes, { recursive: true })
   rmSync(staging, { recursive: true, force: true })
   mkdirSync(staging, { recursive: true })
+  await onExtractStart?.()
   log(`extracting packaged runtime ${runtimeId}`)
   try {
     await execFileAsync('/usr/bin/tar', ['-xzf', join(bootstrap, 'runtime.tar.gz'), '-C', staging])
@@ -94,6 +109,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       preload: join(import.meta.dirname, 'preload.cjs'),
+      additionalArguments: desktopPetEnabled ? ['--dsh-desktop-pet'] : [],
     },
   })
   let stateWriteTimer
@@ -184,19 +200,33 @@ async function recoverBackend(window, previousUrl) {
 }
 
 async function startBackend(window, port = 0) {
-  const runtimeDir = await runtimeDirectory()
+  const showStartupPhase = message => updateStartupDocument(window.webContents, message)
+  const userData = app.getPath('userData')
+  if (resolve(userData) === resolve(defaultChannelUserData) && migrateLegacyDevData({ channel: desktopChannel, userData, legacyUserData: legacyDevUserData })) {
+    log('migrated legacy Dev settings into channel-specific userData')
+  }
+  const runtimeDir = await runtimeDirectory(() => showStartupPhase('正在解压 Runtime'))
   const node = join(runtimeDir, 'bin', 'node')
   const cli = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-  const dshHome = join(app.getPath('userData'), 'harness')
+  const dshHome = join(userData, 'harness')
   mkdirSync(dshHome, { recursive: true })
-  if (await installBundledProfile({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, userData: app.getPath('userData') })) {
-    log('installed bundled clean plugin profile')
+  if (await installBundledProfile({
+    channel: desktopChannel,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    runtimeDir,
+    userData,
+    onInstallStart: () => showStartupPhase('正在安装/替换插件 Profile'),
+  })) {
+    log('installed or upgraded bundled clean plugin profile')
   }
+  await showStartupPhase('正在启动 Harness Web 后端')
   const child = spawn(node, [cli, 'web', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: dshHome,
     env: {
       ...process.env,
       DSH_HOME: dshHome,
+      DSH_DESKTOP_RELEASE_INFO: JSON.stringify(releaseInfo),
       PATH: executablePath(runtimeDir, process.env.PATH),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -263,6 +293,10 @@ async function stopBackend() {
 }
 
 async function boot() {
+  if (desktopPetEnabled) {
+    const { installPetWindow } = await import('./pet-window.mjs')
+    disposePetWindow = installPetWindow({ app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, getMainWindow: () => mainWindow, getBackendUrl: () => backendUrl, log })
+  }
   const window = createWindow()
   await window.loadURL(startupDocument())
   try {
@@ -305,6 +339,7 @@ else {
     if (quitting) return
     event.preventDefault()
     quitting = true
+    disposePetWindow?.()
     void stopBackend().finally(() => app.exit(0))
   })
 }

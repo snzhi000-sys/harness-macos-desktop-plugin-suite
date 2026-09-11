@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -102,12 +102,14 @@ async function callUntilText(
 
 class RecordingSandboxExecutor extends ShellExecutor {
   readonly modes: Array<string | undefined> = []
+  readonly requests: ShellExecRequest[] = []
 
   override get sandboxMode() {
     return 'read-only' as const
   }
 
   resolve(request: ShellExecRequest): ShellExecSpec {
+    this.requests.push(request)
     return {
       command: request.command,
       workdir: request.workdir ?? process.cwd(),
@@ -181,7 +183,7 @@ class CountingStartExecutor extends ShellExecutor {
   }
 }
 
-async function setupSandboxed(withApproval = false) {
+async function setupSandboxed(withApproval = false, toolConfig: Partial<ToolBash.Config> = {}) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
@@ -192,7 +194,7 @@ async function setupSandboxed(withApproval = false) {
   await ctx.plugin(RecordingSandboxExecutor)
   if (withApproval) await ctx.plugin(ApprovalService)
   await ctx.plugin(BashEnvPlugin)
-  await ctx.plugin(ToolBash)
+  await ctx.plugin(ToolBash, toolConfig)
   return { ctx, bash: ctx.shell as RecordingSandboxExecutor }
 }
 
@@ -599,6 +601,33 @@ describe('sandbox escalation through the generic task producer', () => {
     ]) {
       expect((await call(ctx, 'bash', args)).isError).toBe(true)
     }
+  })
+
+  it('accepts redundant full-access requests without another approval', async () => {
+    const { ctx, bash } = await setupSandboxed(false, { auditFullAccessWrites: true })
+    const result = await call(ctx, 'bash', {
+      command: 'echo ok', description: 'same permission',
+      sandbox_permissions: 'danger-full-access', justification: 'already allowed',
+    }, sandboxAgent('danger-full-access'))
+    expect(result.isError).toBe(false)
+    expect(bash.modes).toEqual(['danger-full-access'])
+  })
+
+  it('preserves full-access permission independently of the optional audit root', async () => {
+    const { ctx, bash } = await setupSandboxed(false, { auditFullAccessWrites: true })
+    const auditRoot = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-bash-audit-root-')))
+    const schema = ctx.tools.schemas().find(item => item.name === 'bash')!
+    expect(schema.parameters.properties).toHaveProperty('audit_root')
+    const result = await call(ctx, 'bash', {
+      command: 'printf captured > file.txt',
+      description: 'write outside session workspace',
+      audit_root: auditRoot,
+    }, sandboxAgent('danger-full-access'))
+    expect(result.isError).toBe(false)
+    expect(bash.modes).toEqual(['danger-full-access'])
+    expect(bash.requests[0]?.sandboxPolicy).toMatchObject({
+      mode: 'danger-full-access',
+    })
   })
 
   it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {

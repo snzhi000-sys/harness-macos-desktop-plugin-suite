@@ -97,6 +97,19 @@ describe('unified file-open planning matrix', () => {
 })
 
 describe('unified file-open execution', () => {
+  it('never downloads when a text open or its probe fails during startup', async () => {
+    const { ctx, store } = setup()
+    let downloads = 0
+    const fallback = () => { downloads++ }
+    ;(window as Window & { __dshFileEdit?: unknown }).__dshFileEdit = { open: async () => { throw new Error('session-not-found') } }
+    expect(await openSidebarFile(ctx, store, 's1', '/work/README.md', '/work', { fallback })).toBe('error')
+    expect(await openSidebarFile(ctx, store, 's1', '/work/main.ts', '/work', {
+      fallback, probe: async () => { throw new Error('connection loading') },
+    })).toBe('error')
+    delete (window as Window & { __dshFileEdit?: unknown }).__dshFileEdit
+    expect(await openSidebarFile(ctx, store, 's1', '/work/README.md', '/work', { fallback })).toBe('error')
+    expect(downloads).toBe(0)
+  })
   it('opens Preview formats in the right tree without touching file-edit', async () => {
     const { ctx, store } = setup()
     ;(window as Window & { __dshFileEdit?: unknown }).__dshFileEdit = { open: () => { throw new Error('must not open') } }

@@ -30,6 +30,10 @@ const agent: AgentUnderTest = {
   tsconfigPath: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)),
 }
 
+const snapshotEnv = {
+  NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+}
+
 interface JsonObject {
   [key: string]: unknown
 }
@@ -73,6 +77,7 @@ describe('same-session goal snapshot through the ACP automation driver', () => {
       fixtureFile,
       overrideFile,
       configPath: agent.configPath,
+      env: snapshotEnv,
     })
 
     expect(result.stderr).toBe('')
@@ -122,6 +127,7 @@ describe('same-session goal snapshot through the ACP automation driver', () => {
       fixtureFile: join(wrapupDir, 'session.jsonl'),
       overrideFile: join(wrapupDir, 'replay.override.json'),
       configPath: agent.configPath,
+      env: snapshotEnv,
     })
 
     expect(result.stderr).toBe('')

@@ -202,7 +202,7 @@ class ConfiningFakeBash extends ShellExecutor {
 }
 
 /** Sandboxed composition: the shared policy service + a confining executor + the pwsh tool (+ optional approval). */
-async function setupSandboxed(withApproval = false) {
+async function setupSandboxed(withApproval = false, toolConfig: Partial<ToolPwsh.Config> = {}) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
@@ -213,7 +213,7 @@ async function setupSandboxed(withApproval = false) {
   await ctx.plugin(SandboxPolicyService, {})
   await ctx.plugin(ConfiningFakeBash)
   if (withApproval) await ctx.plugin(ApprovalService)
-  await ctx.plugin(ToolPwsh)
+  await ctx.plugin(ToolPwsh, toolConfig)
   const bash = ctx.shell as ConfiningFakeBash
   return { ctx, bash }
 }
@@ -570,6 +570,31 @@ describe('sandbox escalation through ctx.approval', () => {
     ]) {
       expect((await call(ctx, 'pwsh', args)).isError).toBe(true)
     }
+  })
+
+  it('accepts redundant full-access requests without another approval', async () => {
+    const { ctx, bash } = await setupSandboxed(false, { auditFullAccessWrites: true })
+    const result = await call(ctx, 'pwsh', {
+      command: 'echo ok', description: 'same permission',
+      sandbox_permissions: 'danger-full-access', justification: 'already allowed',
+    }, sandboxAgent('danger-full-access'))
+    expect(result.isError).toBe(false)
+    expect(bash.modes).toEqual(['danger-full-access'])
+  })
+
+  it('preserves full-access permission independently of the optional audit root', async () => {
+    const { ctx, bash } = await setupSandboxed(false, { auditFullAccessWrites: true })
+    const auditRoot = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-pwsh-audit-root-')))
+    const schema = ctx.tools.schemas().find(item => item.name === 'pwsh')!
+    expect(schema.parameters.properties).toHaveProperty('audit_root')
+    const result = await call(ctx, 'pwsh', {
+      command: 'Set-Content file.txt captured',
+      description: 'write outside session workspace',
+      audit_root: auditRoot,
+    }, sandboxAgent('danger-full-access'))
+    expect(result.isError).toBe(false)
+    expect(bash.modes).toEqual(['danger-full-access'])
+    expect(bash.requests[0]?.sandboxPolicy).toMatchObject({ mode: 'danger-full-access' })
   })
 
   it('the escalation fields and the confined-mode clauses stay out of sandbox-less compositions', async () => {

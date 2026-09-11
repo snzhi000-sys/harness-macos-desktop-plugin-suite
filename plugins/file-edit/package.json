@@ -1,6 +1,6 @@
 {
   "name": "dsh-file-edit",
-  "version": "1.13.32-local",
+  "version": "1.13.43-local",
   "description": "Workspace file browser with whole-document CodeMirror editing, agent-change review, references and rendered markdown",
   "type": "module",
   "main": "host/index.mjs",
@@ -20,7 +20,7 @@
   "private": true,
   "scripts": {
     "build:client": "esbuild client/src/client.js --bundle --format=iife --platform=browser --target=chrome120 --outfile=client/dist/client.js",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",

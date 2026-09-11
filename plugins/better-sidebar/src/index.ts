@@ -359,6 +359,18 @@ function buildApi(
   resolved: ResolvedSidebarConfig,
   getSettings: () => SidebarSettingsFace | undefined,
 ): Record<string, ApiMethod> {
+  const releaseInfo = (): { version: string; builtAt: string | null; channel: 'dev' | 'stable' | null } => {
+    try {
+      const value = JSON.parse(process.env.DSH_DESKTOP_RELEASE_INFO ?? '{}') as Partial<{ version: unknown; builtAt: unknown; channel: unknown }>
+      return {
+        version: typeof value.version === 'string' ? value.version : 'v1.00.00',
+        builtAt: typeof value.builtAt === 'string' ? value.builtAt : null,
+        channel: value.channel === 'dev' || value.channel === 'stable' ? value.channel : null,
+      }
+    } catch {
+      return { version: 'v1.00.00', builtAt: null, channel: null }
+    }
+  }
   const explorerMarks = new ExplorerMarksStore(join(
     process.env.DSH_HOME ?? process.cwd(),
     'state',
@@ -390,6 +402,7 @@ function buildApi(
   // API). A deployment without the jobs registry downgrades kill to a 503.
   const jobsApi: SidebarJobsRoutes = buildJobsApi(ctx, resolved.readLimit)
   return {
+    'app.release-info': () => releaseInfo(),
     'layout.get': async (payload) => {
       const sessionId = requireString(payload, 'sessionId')
       return { state: await sidebarLayouts.get(sessionId) }

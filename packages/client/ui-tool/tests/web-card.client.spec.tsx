@@ -252,7 +252,7 @@ describe('DetailsPanel web Output section', () => {
       chat: over.chat ?? toolChatSnapshot(nodes, runningCalls),
       nodes: [], turnTimings: new Map(), turnEnds: new Map(), partial: null, runningCalls: [],
       pending: [], queue: [], running: false, composerPhase: 'active', removed: false,
-      openState: 'open', openError: null, hasMore: false, loadingOlder: false,
+      openState: 'open', openError: null, hasMore: false, loadingOlder: false, historyError: null,
       promptError: null, blank: false, subagent: null, lastAgentError: null, ...over,
     }
   }

@@ -1,4 +1,5 @@
 import { basicSetup } from 'codemirror'
+import { revealFileTab } from './reveal-file-tab.mjs'
 import { EditorState, Compartment, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { indentWithTab } from '@codemirror/commands'
@@ -1068,6 +1069,7 @@ window.__ModuleLoader__.load({
           sessionId: null,
           tabs: [],
           active: null,
+          tabRevealTick: 0,
           modified: new Set(),
           deleted: new Set(),
           draftDirty: new Set(),
@@ -1106,6 +1108,7 @@ window.__ModuleLoader__.load({
             activateFilesView(this.sessionId)
             if (this.tabs.indexOf(path) < 0) this.tabs.push(path)
             this.active = path
+            this.tabRevealTick++
             this.emit()
           },
           closeTab(path) {
@@ -1134,7 +1137,7 @@ window.__ModuleLoader__.load({
             this.emit()
             return result.closed.length
           },
-          activate(path) { if (this.active !== path) { this.active = path; this.emit() } },
+          activate(path) { this.active = path; this.tabRevealTick++; this.emit() },
           renamePath(from, to) {
             if (!from || !to || from === to) return
             const remap = (path) => path === from || path.startsWith(from + '/') || path.startsWith(from + '\\')
@@ -1269,7 +1272,10 @@ window.__ModuleLoader__.load({
               open: async (request) => {
                 if (!request || typeof request !== 'object' || !request.sessionId) return false
                 const result = await call('resolveOpenTarget', request)
-                if (!result || !result.ok || !result.id || result.kind === 'binary') return false
+                if (!result || !result.ok || !result.id) throw new Error(result?.error || '文件暂时无法打开，请重试')
+                if (result.kind === 'binary') return false
+                const current = ctx.sessions.list.getSnapshot().current
+                if (current && String(current) !== String(request.sessionId)) return true
                 store.setSessionId(String(request.sessionId))
                 if (result.deleted) store.markDeleted(String(result.id))
                 store.openFile(String(result.id), undefined, String(result.path || result.id))
@@ -1677,7 +1683,7 @@ window.__ModuleLoader__.load({
           '.dsh-fe-filetabs-scroll { display:flex; align-items:center; gap:4px; min-width:0; flex:1; overflow-x:auto; scrollbar-width:none; }',
           '.dsh-fe-filetabs-scroll::-webkit-scrollbar { display:none; }',
           '.dsh-fe-filetabs-scroll .dsh-fe-filetab { flex:none; }',
-          '.dsh-fe-tab-actions { position:relative; flex:none; display:flex; align-items:center; margin-left:2px; }',
+          '.dsh-fe-tab-controls { position:relative; flex:none; display:flex; align-items:center; margin-left:2px; }',
           '.dsh-fe-tab-more[aria-expanded="true"] { background:color-mix(in srgb, var(--dsw-alias-label-secondary) 14%, transparent); color:var(--dsw-alias-label-primary); }',
           '.dsh-fe-tab-menu { position:absolute; top:calc(100% + 6px); right:0; z-index:20; min-width:148px; padding:4px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); box-shadow:var(--dsw-shadow-lv2, 0 8px 24px rgba(0,0,0,.16)); }',
           '.dsh-fe-tab-menuitem { width:100%; display:flex; align-items:center; padding:6px 9px; border:none; border-radius:6px; background:transparent; color:var(--dsw-alias-label-primary); font-size:12px; text-align:left; white-space:nowrap; cursor:pointer; }',
@@ -2288,7 +2294,7 @@ window.__ModuleLoader__.load({
           const stats = item.createdThenDeleted
             ? React.createElement('span', { className: 'dsh-fe-stats' }, '本会话新建后删除')
             : item.note
-            ? React.createElement('span', { className: 'dsh-fe-stats' }, item.note === 'binary' ? '二进制' : (item.note === 'shell-unknown' ? '脚本修改' : (item.note === 'write-before-unknown' ? '修改前内容未知' : '过大')))
+            ? React.createElement('span', { className: 'dsh-fe-stats' }, item.note === 'binary' ? '二进制' : (item.note === 'shell-unknown' ? '脚本修改' : (item.note === 'write-before-unknown' ? '修改前内容未知' : (item.note === 'shell-delete-unrecoverable' ? 'Shell 删除未隔离' : '过大'))))
             : React.createElement('span', { className: 'dsh-fe-stats' },
               React.createElement('span', { className: 'dsh-fe-stat-add' }, '+' + item.added),
               ' ',
@@ -3684,6 +3690,13 @@ window.__ModuleLoader__.load({
                 ])),
                 EditorView.updateListener.of((update) => {
                   if (update.docChanged && !callbacksRef.current.readOnly) callbacksRef.current.onChange(update.state.doc.toString())
+                  if (update.selectionSet && !update.state.selection.main.empty) {
+                    const sel = update.state.selection.main, first = update.state.doc.lineAt(sel.from).number
+                    let last = update.state.doc.lineAt(sel.to).number
+                    if (sel.to > sel.from && update.state.doc.sliceString(sel.to - 1, sel.to) === '\n') last--
+                    const a = view.coordsAtPos(sel.from), b = view.coordsAtPos(sel.to)
+                    callbacksRef.current.onSelection?.(first, Math.max(first,last), { left: Math.min(a?.left ?? 0,b?.left ?? 0), right: Math.max(a?.right ?? 0,b?.right ?? 0), top: Math.min(a?.top ?? 0,b?.top ?? 0), bottom: Math.max(a?.bottom ?? 0,b?.bottom ?? 0) })
+                  } else if (update.selectionSet) callbacksRef.current.onSelection?.(null)
                 }),
               ],
             })
@@ -3724,6 +3737,7 @@ window.__ModuleLoader__.load({
           const [documentMode, setDocumentMode] = React.useState('browse')
           const [draftText, setDraftText] = React.useState('')
           const [savingDocument, setSavingDocument] = React.useState(false)
+          const [selectionBubble, setSelectionBubble] = React.useState(null)
           const [reviewAction, setReviewAction] = React.useState(null)
           // v1.7.1: hunk heads (行号范围 + 接受/拒绝) are PERMANENT — the
           // old hover-show/hover-hide made adjacent hunks jitter while the
@@ -3762,6 +3776,19 @@ window.__ModuleLoader__.load({
             setDocumentMode(lang === 'markdown' ? 'preview' : 'browse')
             setDraftText('')
             setSavingDocument(false)
+          }, [path, sid])
+          React.useEffect(() => {
+            const onSelection = () => {
+              const sel = window.getSelection?.()
+              if (!sel || sel.isCollapsed || !sel.rangeCount) return setSelectionBubble(null)
+              const closest = node => (node?.nodeType === 1 ? node : node?.parentElement)?.closest?.('.dsh-fe-line')
+              const a = closest(sel.anchorNode), b = closest(sel.focusNode)
+              if (!a || !b) return setSelectionBubble(null)
+              const an = Number(a.dataset.n), bn = Number(b.dataset.n); if (!an || !bn) return setSelectionBubble(null)
+              const r = sel.getRangeAt(0).getBoundingClientRect(); setSelectionBubble({ start: Math.min(an,bn), end: Math.max(an,bn), rect: r })
+            }
+            document.addEventListener('selectionchange', onSelection); window.addEventListener('scroll', onSelection, true)
+            return () => { document.removeEventListener('selectionchange', onSelection); window.removeEventListener('scroll', onSelection, true) }
           }, [path, sid])
           // v1.8.1: sticky header measurements — the toolbar pins below the
           // tabs bar; its height feeds the jump control's sticky offset
@@ -3998,7 +4025,9 @@ window.__ModuleLoader__.load({
             return React.createElement('div', { className: 'dsh-fe-pane' },
               toolbar,
               React.createElement('div', { className: 'dsh-fe-msg dsh-fe-deleted-hint' },
-                diff.createdThenDeleted
+                diff.note === 'shell-delete-unrecoverable'
+                  ? '检测到 Shell 删除，但删除前未建立隔离备份。以下仅是最后已知内容；该记录只能接受或手动恢复。'
+                  : diff.createdThenDeleted
                   ? '文件已从磁盘删除，以下为删除前内容。可确认保持删除，或恢复文件并继续保留新增审核。'
                   : (diff.changed ? '文件已从磁盘删除，以下为删除前内容。可在工具栏确认删除或恢复文件。' : '文件已从磁盘删除，以下保留删除前内容供只读浏览。')),
               error ? React.createElement('div', { className: 'dsh-fe-err' }, String(error)) : null,
@@ -4032,6 +4061,7 @@ window.__ModuleLoader__.load({
             const html = renderMarkdown(sourceText)
             return React.createElement('div', { className: 'dsh-fe-pane' },
               toolbar,
+              selectionBubble ? React.createElement('button', { type: 'button', style: { position:'fixed', zIndex:2147483647, left: Math.max(8, Math.min(selectionBubble.rect.left, window.innerWidth - 130)), top: Math.min(window.innerHeight - 44, selectionBubble.rect.bottom + 8), border:'1px solid var(--dsw-alias-border-l1)', borderRadius:8, background:'var(--dsw-alias-bg-layer-2)', color:'var(--dsw-alias-label-primary)', boxShadow:'0 6px 22px #0004', padding:'6px 10px', fontSize:12, cursor:'pointer', whiteSpace:'nowrap' }, onPointerDown: e => e.preventDefault(), onClick: () => { referenceDocumentSelection(selectionBubble.start, selectionBubble.end); setSelectionBubble(null) } }, '引用该内容') : null,
               error ? React.createElement('div', { className: 'dsh-fe-err' }, String(error)) : null,
               React.createElement('div', { className: 'dsh-fe-mdwrap' },
                 React.createElement('div', { className: 'dsh-fe-md', dangerouslySetInnerHTML: { __html: html } }),
@@ -4051,6 +4081,7 @@ window.__ModuleLoader__.load({
                   onChange: setDraftText,
                   onSave: saveDocument,
                   onReference: referenceDocumentSelection,
+                  onSelection: (start, end, rect) => setSelectionBubble(start == null ? null : { start, end, rect }),
                 }),
               ),
             )
@@ -4146,7 +4177,7 @@ window.__ModuleLoader__.load({
             return React.createElement('div', { className: 'dsh-fe-pane' },
               toolbar,
               React.createElement('div', { className: 'dsh-fe-msg' },
-                diff.note === 'binary' ? '二进制文件无法预览，可在修改列表中直接接受或拒绝' : (diff.note === 'shell-unknown' ? '已检测到脚本修改，但修改前内容无法恢复；请接受或手动检查文件。' : (diff.note === 'write-before-unknown' ? '已检测到文件被覆盖，但工具未返回修改前内容；为避免误判，不能自动拒绝，请接受或手动检查文件。' : '文件过大无法预览'))),
+                diff.note === 'binary' ? '二进制文件无法预览，可在修改列表中直接接受或拒绝' : (diff.note === 'shell-unknown' ? '已检测到脚本修改，但修改前内容无法恢复；请接受或手动检查文件。' : (diff.note === 'write-before-unknown' ? '已检测到文件被覆盖，但工具未返回修改前内容；为避免误判，不能自动拒绝，请接受或手动检查文件。' : (diff.note === 'shell-delete-unrecoverable' ? '检测到 Shell 删除，但没有可恢复的隔离备份。' : '文件过大无法预览')))),
               error ? React.createElement('div', { className: 'dsh-fe-err' }, String(error)) : null,
             )
           }
@@ -4358,6 +4389,16 @@ window.__ModuleLoader__.load({
           // sticky offsets (CSS var on the viewer root + store for JS math).
           const viewerRef = React.useState({ node: null })[0]
           const tabsRef = React.useState({ node: null })[0]
+          const tabScrollRef = React.useRef(null)
+          const activeTabRef = React.useRef(null)
+          const revealedSessionRef = React.useRef(null)
+          // Selection/open requests reveal once after DOM commit. Polls, edits,
+          // manual scrolling and drag reorder do not own this scroll position.
+          React.useLayoutEffect(() => {
+            const animate = revealedSessionRef.current === sid
+            if (activeTabRef.current) revealedSessionRef.current = sid
+            return revealFileTab(tabScrollRef.current, activeTabRef.current, { animate })
+          }, [sid, store.active, store.tabRevealTick])
           React.useEffect(() => {
             const el = tabsRef.node
             if (el && el.offsetHeight > 0) {
@@ -4401,8 +4442,9 @@ window.__ModuleLoader__.load({
           }
           return React.createElement('div', { className: 'dsh-fe-viewer', ref: (node) => { viewerRef.node = node } },
             React.createElement('div', { className: 'dsh-fe-filetabs', ref: (node) => { tabsRef.node = node } },
-              React.createElement('div', { className: 'dsh-fe-filetabs-scroll' }, tabs.map((t, i) => React.createElement('span', {
+              React.createElement('div', { className: 'dsh-fe-filetabs-scroll', ref: tabScrollRef }, tabs.map((t, i) => React.createElement('span', {
                 key: t,
+                ref: t === active ? activeTabRef : null,
                 className: 'dsh-fe-filetab' + (t === active ? ' dsh-fe-filetab-on' : '') + (dragIdx === i ? ' dsh-fe-tab-drag' : ''),
                 title: store.deleted.has(t) ? ((reviewLabels.get(t) || t) + '（文件已删除，当前显示删除前内容）') : (reviewLabels.get(t) || t),
                 draggable: true,
@@ -4423,7 +4465,9 @@ window.__ModuleLoader__.load({
                   icon: IconClose,
                 }),
               ))),
-              React.createElement('div', { className: 'dsh-fe-tab-actions', ref: (node) => { menuRef.node = node } },
+              // Message Edit's legacy scanner treats classes containing "actions"
+              // as message rows; file tab controls must not be scan candidates.
+              React.createElement('div', { className: 'dsh-fe-tab-controls', ref: (node) => { menuRef.node = node } },
                 React.createElement('button', {
                   type: 'button',
                   className: 'dsh-fe-iconbtn dsh-fe-tab-more',

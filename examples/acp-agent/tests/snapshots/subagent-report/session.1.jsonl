@@ -1,5 +1,5 @@
 {"type":"session","version":0,"id":"33333333-3333-4333-8333-333333333333","createdAt":1789000001000,"cwd":"{{cwd}}","parentSession":"11111111-1111-4111-8111-111111111111","origin":"subagent","delegationDepth":1}
-{"type":"subagent/descriptor","seq":0,"time":1785594881508,"data":{"version":2,"mode":"continuable","provider":"spawn","label":"Report a finding","agentProvider":"deepseek-official","agentModel":"deepseek-v4-flash"}}
+{"type":"subagent/descriptor","seq":0,"time":1785594881508,"data":{"version":3,"mode":"continuable","provider":"spawn","label":"Report a finding","agentProvider":"deepseek-official","agentModel":"deepseek-v4-flash"}}
 {"type":"session/end-seed","seq":1,"time":1785594881508,"data":{}}
 {"type":"approval/policy","seq":2,"time":1786374158805,"data":{"policy":"never","source":"delegation"}}
 {"type":"agent/inbox/spliced","seq":3,"time":1786374158806,"data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Call the report tool once with output exactly CHILD_REPORT_OK, then stop."}],"source":{"kind":"user"},"role":"user","id":"9045ac78-393a-4f24-b20d-8999286dd6ce"}]}}

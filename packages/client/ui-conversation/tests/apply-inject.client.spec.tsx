@@ -14,7 +14,7 @@
 // guards would mask. Rendering-path acceptance lives in
 // chat-toolview-slot.spec.tsx.
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SlotTestRuntime, usePinnedBrowserLanguages, stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionBehaviorOverrides } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -29,6 +29,7 @@ import type { createChatStore } from '../src/client/stores.ts'
 // The service reads its initial locale from the browser; these specs assert
 // the shipped Chinese copy, so they state the browser they assume.
 usePinnedBrowserLanguages('zh-CN')
+afterEach(() => { vi.unstubAllGlobals() })
 
 const ROOT = 'root-1' as SessionId
 
@@ -41,6 +42,7 @@ function sessionFakeFor() {
     open: vi.fn(() => Promise.resolve()),
     loadOlder: vi.fn<ISession['loadOlder']>(() => Promise.resolve()),
     loadThrough: vi.fn<ISession['loadThrough']>(() => Promise.resolve()),
+    beginSubmission: vi.fn<ISession['beginSubmission']>(() => ({ abandon: vi.fn() })),
     prompt: vi.fn<ISession['prompt']>(() => Promise.resolve({ ok: true, value: { accepted: true } })),
     cancel: vi.fn<ISession['cancel']>(() => Promise.resolve({ ok: true, value: { accepted: true } })),
   } satisfies SessionBehaviorOverrides
@@ -151,8 +153,9 @@ describe('conversation slot inject API', () => {
     await b.runtime.dispose()
   })
 
-  it('the provide-channel input face submits through the machine sink: trim, optimistic clear, failure restore without clobber', async () => {
+  it('the provide-channel input face submits with suspended animation frames: trim, optimistic clear, failure restore without clobber', async () => {
     const b = await bench()
+    vi.stubGlobal('requestAnimationFrame', vi.fn())
     const { injected } = b.conversationApi(ROOT)
     const { state, actions } = b.inputApi(ROOT)
     // Whitespace-only: the machine treats it as empty — no prompt, draft kept.
@@ -164,8 +167,9 @@ describe('conversation slot inject API', () => {
     actions.setDraft('hello')
     actions.submit()
     expect(state.getSnapshot().draft).toBe('')
-    await Promise.resolve()
-    expect(b.sessionFake.prompt).toHaveBeenCalledWith([{ type: 'text', text: 'hello' }], 'queue')
+    await vi.waitFor(() => {
+      expect(b.sessionFake.prompt).toHaveBeenCalledWith([{ type: 'text', text: 'hello' }], 'queue')
+    })
     // Failure: restored (draft still empty when the rejection lands).
     b.sessionFake.prompt.mockResolvedValueOnce({ ok: false, error: { code: 'agent-busy', message: 'b', details: { reason: 'b' } } })
     actions.setDraft('retry me')

@@ -3,11 +3,11 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'title': '权限',
-  'description': '选择新会话的默认权限模式',
+  'description': '设置新会话的执行权限；文件修改审核始终保持开启',
   'loading': '加载中',
   'unavailable': '不可用',
   'confirm.title': '确认启用 Full access？',
-  'confirm.description': '启用 Full access 后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。',
+  'confirm.description': 'Full access 允许 AI 在系统权限范围内读取和修改任意路径，并关闭权限审批提示；Shell 审核可能不完整，未记录的修改可能无法恢复。仅建议在你信任后续任务时使用。',
   'confirm.acknowledge': '我已了解风险，并愿意继续',
   'confirm.cancel': '取消',
   'confirm.enable': '启用 Full access',
@@ -19,11 +19,11 @@ export type PermissionSettingsKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'title': 'Permission',
-  'description': 'Choose the default permission mode for new sessions',
+  'description': 'Set execution permission for new sessions; file-change review always remains enabled',
   'loading': 'Loading',
   'unavailable': 'Unavailable',
   'confirm.title': 'Enable Full access?',
-  'confirm.description': 'Full access lets new sessions reduce confirmation steps and perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust subsequent tasks.',
+  'confirm.description': 'Full access lets the AI read and modify any path allowed by the OS without permission prompts; Shell review may be incomplete and unrecorded changes may be unrecoverable. Use it only when you trust subsequent tasks.',
   'confirm.acknowledge': 'I understand the risks and want to continue',
   'confirm.cancel': 'Cancel',
   'confirm.enable': 'Enable Full access',
@@ -32,7 +32,7 @@ export const en = {
 /** Simplified Chinese dictionary for the current-session popup gate. */
 export const accessZh = {
   'confirm.title': '确认启用 Full access？',
-  'confirm.description': '启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。',
+  'confirm.description': 'Full access 允许 AI 在系统权限范围内读取和修改任意路径，并关闭权限审批提示；Shell 审核可能不完整，未记录的修改可能无法恢复。仅建议在你信任当前任务时使用。',
   'confirm.acknowledge': '我已了解风险，并愿意继续',
   'confirm.cancel': '取消',
   'confirm.enable': '启用 Full access',
@@ -44,7 +44,7 @@ export type PermissionAccessKey = keyof typeof accessZh
 /** English dictionary for the current-session popup gate. */
 export const accessEn = {
   'confirm.title': 'Enable Full access?',
-  'confirm.description': 'Full access reduces confirmation steps and lets the agent perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust the current task.',
+  'confirm.description': 'Full access lets the AI read and modify any path allowed by the OS without permission prompts; Shell review may be incomplete and unrecorded changes may be unrecoverable. Use it only when you trust the current task.',
   'confirm.acknowledge': 'I understand the risks and want to continue',
   'confirm.cancel': 'Cancel',
   'confirm.enable': 'Enable Full access',

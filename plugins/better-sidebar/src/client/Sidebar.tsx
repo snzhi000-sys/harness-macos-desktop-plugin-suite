@@ -37,7 +37,7 @@ import {
   resizeSplitIn, setBottomHeight, setLeftWidth, setWidth, toggleBottomPanel, toggleExpanded, toggleLeftPanel, togglePanel,
   type DropZone, type SidebarState, type SidebarStore, type SidebarTab, type SplitNode,
 } from './state.ts'
-import { IconGlobeOutline16, IconPanelBottomOutline16, IconPanelLeftOutline16, IconPanelRightOutline16 } from './icons.tsx'
+import { IconPanelBottomOutline16, IconPanelLeftOutline16, IconPanelRightOutline16 } from './icons.tsx'
 import { ExplorerView } from './ExplorerView.tsx'
 import { startupTaskLane } from './startup-tasks.ts'
 import { openHtmlInBrowser, openSidebarFile, synchronizeDeletedPath, synchronizeRenamedPath } from './intercept.tsx'
@@ -720,22 +720,6 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
     />
   )
 
-  const openBrowserPanel = (): void => {
-    const existingLeaf = allLeaves(state.splits).find(leaf => leaf.tabs.some(tab => tab.type === 'browser'))
-    const existing = existingLeaf?.tabs.find(tab => tab.type === 'browser')
-    if (existingLeaf !== undefined && existing !== undefined) {
-      store.reduce(s => ({
-        ...s,
-        panelOpen: true,
-        activePane: existingLeaf.id,
-        splits: mapLeaf(s.splits, existingLeaf.id, leaf => { leaf.active = existing.id }),
-      }))
-      return
-    }
-    store.reduce(s => ({ ...s, panelOpen: true, activePane: firstLeaf(s.splits).id }))
-    ctx.betterSidebar?.openTab({ type: 'browser', title: t('browser') })
-  }
-
   const rightTree = rightSurfaceTree(state.splits)
   const browserTabOptions = buildNewTabOptions(state, ctx, { sessionId, cwd })
     .filter(option => option.id === 'browser')
@@ -782,9 +766,8 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
           </Tooltip>
         )}
       </div>
-      {/* Explorer, right-surface visibility, and Browser creation share the
-          packaged app's titlebar control area. The panel control never
-          creates content; the globe remains the explicit Browser action. */}
+      {/* Explorer and right-surface visibility share the packaged app's
+          titlebar control area. */}
       <div className={css.titlebarToggles}>
         {!narrow && ctx.betterSidebar?.isTabEnabled('explorer') !== false && (
           <div className={css.desktopExplorerToggle}>
@@ -811,18 +794,6 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
               onClick={() => { store.reduce(togglePanel) }}
             >
               <IconPanelRightOutline16 />
-            </button>
-          </Tooltip>
-        )}
-        {browserEnabled && (
-          <Tooltip label={t('openBrowserPanel')} side="bottom" delayMs={500}>
-            <button
-              type="button"
-              className={css.toggleButton}
-              aria-label={t('openBrowserPanel')}
-              onClick={openBrowserPanel}
-            >
-              <IconGlobeOutline16 />
             </button>
           </Tooltip>
         )}

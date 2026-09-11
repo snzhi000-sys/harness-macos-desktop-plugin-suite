@@ -1,0 +1,14 @@
+[
+  {"id":"ggz-kiana","group":"崩坏学园2","entry":"Kiana/model.json","name":"琪亚娜"},
+  {"id":"ggz-bronya","group":"崩坏学园2","entry":"bronya/model.json","name":"布洛妮娅"},
+  {"id":"ggz-himeko","group":"崩坏学园2","entry":"himeko/model.json","name":"姬子"},
+  {"id":"warship-209-2","group":"战舰少女","entry":"209_2/model.model.json","name":"战舰少女 · 209_2"},
+  {"id":"warship-248-1","group":"战舰少女","entry":"248_1/model.model.json","name":"战舰少女 · 248_1"},
+  {"id":"warship-325-1","group":"战舰少女","entry":"325_1/model.model.json","name":"战舰少女 · 325_1"},
+  {"id":"gfl-kalina","group":"少女前线 girls Frontline","entry":"live2dnew/gelina/normal/normal.model3.json","name":"格琳娜"},
+  {"id":"gfl-88type","group":"少女前线 girls Frontline","entry":"live2dnew/88type_1809/normal/normal.model3.json","name":"88 式"},
+  {"id":"gfl-m950a","group":"少女前线 girls Frontline","entry":"live2dnew/m950a_4302/normal/normal.model3.json","name":"M950A"},
+  {"id":"azur-atago","group":"碧蓝航线 Azue Lane","entry":"Azue Lane(JP)/aidang_2/aidang_2.model3.json","name":"爱宕"},
+  {"id":"azur-belfast","group":"碧蓝航线 Azue Lane","entry":"Azue Lane(JP)/beierfasite_2/beierfasite_2.model3.json","name":"贝尔法斯特"},
+  {"id":"azur-sirius","group":"碧蓝航线 Azue Lane","entry":"Azue Lane(JP)/tianlangxing_3/tianlangxing_3.model3.json","name":"天狼星"}
+]

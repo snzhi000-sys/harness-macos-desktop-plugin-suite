@@ -3,8 +3,9 @@
  * explicitly register the underlying stylesheet as a watch dependency.
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { clientBundle } from '../packages/client/tsdown.client.ts'
 
@@ -35,15 +36,26 @@ describe('client bundle CSS Modules', () => {
       const importer = join(root, 'index.ts')
       await writeFile(stylesheet, '.root { color: red; }\n')
       const plugin = cssPlugin()
-      const virtualId = plugin.resolveId?.('./Fixture.module.css', importer)
-      if (typeof virtualId !== 'string' || plugin.load === undefined) {
+      expect(() => plugin.resolveId?.('./Fixture.module.css', importer)).toThrow(/inside the repository/)
+
+      const repositoryStylesheet = fileURLToPath(new URL(
+        '../packages/client/ui-conversation/src/client/queue/QueueDock.module.css',
+        import.meta.url,
+      ))
+      const repositoryImporter = fileURLToPath(new URL(
+        '../packages/client/ui-conversation/src/client/queue/QueueDock.tsx',
+        import.meta.url,
+      ))
+      const repositoryVirtualId = plugin.resolveId?.('./QueueDock.module.css', repositoryImporter)
+      if (typeof repositoryVirtualId !== 'string' || plugin.load === undefined) {
         throw new Error('CSS Modules plugin hooks are incomplete')
       }
+      expect(repositoryVirtualId).not.toContain(homedir())
       const watched: string[] = []
 
-      const output = await plugin.load.call({ addWatchFile: id => watched.push(id) }, virtualId)
+      const output = await plugin.load.call({ addWatchFile: id => watched.push(id) }, repositoryVirtualId)
 
-      expect(watched).toEqual([stylesheet])
+      expect(watched).toEqual([repositoryStylesheet])
       expect(output).toContain('data-plugin-css')
     } finally {
       await rm(root, { recursive: true, force: true })

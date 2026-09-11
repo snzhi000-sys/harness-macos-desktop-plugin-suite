@@ -20,6 +20,7 @@
 | `description` | string (required) | 命令的一行主动语态摘要（5-10 词），仅用于 UI/日志展示——不影响执行。 |
 | `timeoutMs` | number | 超时覆盖值（毫秒）。执行器应用其配置的默认值与上限。 |
 | `workdir` | string | 本次调用的工作目录。默认取调用 agent（智能体）的会话 cwd（`session.header.cwd`），使每个会话在自己的工作区运行；相对 `workdir` 基于同一身份解析。 |
+| `audit_root` | string | 启用 `auditFullAccessWrites` 时公开。Full Access 下可选的修改前快照目录，默认 `workdir`，不限制写入范围；快照失败时仍执行，未记录修改可能无法恢复。 |
 | `run_in_background` | boolean | 立即返回 job id；不适用超时。 |
 | `sandbox_permissions` | string enum | 仅当已挂载 sandbox 执行器时才会公开（`ctx.shell.sandboxMode` 已定义）。用于对刚被 sandbox 拒绝的命令做一次性重试的更宽 sandbox 模式——取刚好足够的最窄更宽模式，要求 `justification` 并在执行**之前**经 `ctx.approval` 获得用户批准。未拓宽或无法获批的请求 fail-closed，不运行任何内容。 |
 | `justification` | string | 必须与 `sandbox_permissions` 一同提供：用一句话向用户解释为何正是这条命令需要更宽的访问。 |
@@ -34,7 +35,7 @@
 
 规范成功形态是已完成前台进程的 `{ kind: 'foreground', ...ShellRunResult }`（存在时投影执行器的 `sandbox` 事实——`mode`/`denied`、可选的 `enforcement`/`runnerFailed`）或已发布任务的 `{ kind: 'background', jobId }`。渲染器对后台 ack 精确保留 `started background job <id>`；编程消费者使用类型化字段而不解析渲染文本。
 
-当 `run_in_background` 为 true 时，本插件在 spawn 前预检 `ctx.jobs.start()`，把调用 agent 注册为 owner，并将返回的 `ShellProcess` 句柄适配为通用的 cancel/done/增量输出钩子。任务运行时负责 job id、跨会话隔离、完成通知、等待和 dispose（资源释放）清理；本插件只把 pwsh 退出事实映射进任务输出与结果明细。`enableRunInBackground: false` 会移除参数并在执行时拒绝强制的后台调用。
+当 `run_in_background` 为 true 时，本插件在 spawn 前预检 `ctx.jobs.start()`，把调用 agent 注册为 owner，并将返回的 `ShellProcess` 句柄适配为通用的 cancel/done/增量输出钩子。任务运行时负责 job id、跨会话隔离、完成通知、等待和 dispose（资源释放）清理；本插件只把 pwsh 退出事实映射进任务输出与结果明细。`enableRunInBackground: false` 会移除参数并在执行时拒绝强制的后台调用。`auditFullAccessWrites: true` 公开可选快照提示及审核不完整说明，不改变解析后的执行权限。当前已是 Full Access 时重复请求同一模式不触发审批；真正升级仍由审批服务决定。
 
 ## UI presentation
 

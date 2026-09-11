@@ -51,7 +51,7 @@ export async function openSidebarFile(
   path: string,
   resolvedCwd?: string,
   options: FileOpenOptions = {},
-): Promise<'preview' | 'file-edit' | 'fallback'> {
+): Promise<'preview' | 'file-edit' | 'fallback' | 'error'> {
   const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
   const cwd = resolvedCwd ?? summary?.cwd
   const absolute = resolveSidebarPath(cwd, path)
@@ -61,6 +61,11 @@ export async function openSidebarFile(
     if (options.fallback !== undefined) await options.fallback()
     else downloadFile(sessionId, cwd, absolute)
     return 'fallback'
+  }
+  const failed = (): 'error' => {
+    // Failed reads and startup races are not evidence of a binary format.
+    window.alert?.('文件暂时无法打开，请稍后重试。未启动下载。')
+    return 'error'
   }
 
   let plan: FileOpenPlan = planFileOpen(ctx.betterSidebar, absolute)
@@ -76,7 +81,7 @@ export async function openSidebarFile(
         : (await api.fsRead({ sessionId, cwd }, absolute)).kind
       plan = resolveProbedFileOpen(plan, kind)
     } catch {
-      return fallback()
+      return failed()
     }
   }
 
@@ -95,9 +100,10 @@ export async function openSidebarFile(
         })
         return opened === false ? fallback() : 'file-edit'
       } catch {
-        return fallback()
+        return failed()
       }
     }
+    return failed()
   }
   return fallback()
 }

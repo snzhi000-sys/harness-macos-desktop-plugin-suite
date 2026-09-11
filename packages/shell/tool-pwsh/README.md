@@ -20,6 +20,7 @@ The plugin also contributes the `tool:pwsh` prompt section (order 105): non-zero
 | `description` | string (required) | One-line, active-voice summary of the command (5-10 words), for UI/log display only — no effect on execution. |
 | `timeoutMs` | number | Timeout override in milliseconds. The executor applies its configured default and cap. |
 | `workdir` | string | Working directory for this call. Defaults to the calling agent's session cwd (`session.header.cwd`) so each session runs in its own workspace; a relative `workdir` is resolved against that same identity. |
+| `audit_root` | string | Exposed when `auditFullAccessWrites` is enabled. Optional Full Access recovery-snapshot directory, defaulting to workdir; never restricts writes. Failed snapshots do not block execution and unrecorded changes may be unrecoverable. |
 | `run_in_background` | boolean | Return a job id immediately; no timeout applies. |
 | `sandbox_permissions` | string enum | Advertised only when a sandboxing executor is mounted (`ctx.shell.sandboxMode` defined). The wider sandbox mode for a one-shot retry of a command the sandbox just denied — the narrowest wider mode that suffices, requiring `justification` and user approval through `ctx.approval` BEFORE execution. A non-widening or unapprovable request fails closed without running anything. |
 | `justification` | string | Required with `sandbox_permissions`: one sentence for the user explaining why this exact command needs the wider access. |
@@ -34,7 +35,7 @@ Result text contains stdout, an optional `[stderr]` section, then applicable tru
 
 The canonical success is `{ kind: 'foreground', ...ShellRunResult }` for a completed foreground process (with the executor's `sandbox` facts — `mode`/`denied`, optional `enforcement`/`runnerFailed` — projected when present) or `{ kind: 'background', jobId }` for a published task. The renderer preserves exactly `started background job <id>` for background acks; programmatic consumers use the typed fields without parsing the rendered text.
 
-When `run_in_background` is true, this plugin preflights `ctx.jobs.start()` before spawning, registers the calling agent as owner, and adapts the returned `ShellProcess` handle into generic cancel/done/incremental-output hooks. The job runtime owns ids, cross-session isolation, completion notices, waiting, and disposal cleanup; this plugin only maps pwsh exit facts into job output and outcome detail. `enableRunInBackground: false` removes the parameter and rejects a forced background call at execution time.
+When `run_in_background` is true, this plugin preflights `ctx.jobs.start()` before spawning, registers the calling agent as owner, and adapts the returned `ShellProcess` handle into generic cancel/done/incremental-output hooks. The job runtime owns ids, cross-session isolation, completion notices, waiting, and disposal cleanup; this plugin only maps pwsh exit facts into job output and outcome detail. `enableRunInBackground: false` removes the parameter and rejects a forced background call at execution time. `auditFullAccessWrites: true` exposes an optional snapshot hint and partial-review guidance without changing the resolved execution permission. Repeating the current Full Access mode requires no escalation; genuine widening still uses approval.
 
 ## UI presentation
 

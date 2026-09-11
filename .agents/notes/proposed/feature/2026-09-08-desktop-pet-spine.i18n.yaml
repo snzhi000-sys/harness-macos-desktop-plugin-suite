@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/proposed/feature/2026-09-08-desktop-pet-spine.md
+2026-09-08-desktop-pet-spine.md: 3d505409c85ff174aaf8406d4f7625d87b36d2c3
+2026-09-08-desktop-pet-spine.zh.md: 0eb3a161414558e98702f56292e5fd8500bb380f

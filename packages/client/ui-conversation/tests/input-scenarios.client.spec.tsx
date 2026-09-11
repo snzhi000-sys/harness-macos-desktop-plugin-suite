@@ -117,7 +117,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     sessionId, views: EMPTY_CONVERSATION_VIEWS, chat: EMPTY_CHAT_SNAPSHOT,
     nodes: [], turnTimings: new Map(), turnEnds: new Map(), partial: null, runningCalls: [],
     pending: [], queue: [], running: false, composerPhase: 'active', removed: false,
-    openState: 'open', openError: null, hasMore: false, loadingOlder: false,
+    openState: 'open', openError: null, hasMore: false, loadingOlder: false, historyError: null,
     promptError: null, blank: false, subagent: null, lastAgentError: null,
   })
   const barProps: InputBarProps = {

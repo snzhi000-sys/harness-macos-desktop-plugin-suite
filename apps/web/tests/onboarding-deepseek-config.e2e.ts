@@ -203,15 +203,25 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     await deepSeek.waitFor({ timeout: 10_000 })
     await deepSeek.locator('xpath=ancestor::li').getByRole('button', { name: '编辑' }).click()
     await settings.getByText('自定义设置').click()
-    await settings.getByRole('button', { name: /删除模型/ }).first().click()
+    const removeModels = settings.getByRole('button', { name: /删除模型/ })
+    const initialModelCount = await removeModels.count()
+    await removeModels.first().click()
+    // Let the controlled editor publish its replacement array before the next
+    // add action reads props; otherwise two rapid actions can both derive from
+    // the pre-removal catalog in a real browser.
+    await expect.poll(() => removeModels.count(), { timeout: 10_000 }).toBe(initialModelCount - 1)
     await settings.getByRole('button', { name: '添加模型' }).click()
-    const customModelId = settings.getByLabel('模型 ID 2')
+    // Phase 5 added the vision model to the inherited catalog. Removing the
+    // selected Flash row must preserve both Pro and Vision, then append the
+    // custom entry instead of overwriting the image-capable default.
+    const customRow = initialModelCount
+    const customModelId = settings.getByLabel(`模型 ID ${String(customRow)}`)
     await customModelId.fill('private-preview')
-    await settings.getByLabel('显示名称 2').fill('Private Preview')
+    await settings.getByLabel(`显示名称 ${String(customRow)}`).fill('Private Preview')
     // Capacities live behind the row's own disclosure, as in the pi-ai form.
-    await settings.getByRole('button', { name: '容量 2' }).click()
-    await settings.getByLabel('上下文窗口 2').fill('131072')
-    await settings.getByLabel('最大输出 token 数 2').fill('64K')
+    await settings.getByRole('button', { name: `容量 ${String(customRow)}` }).click()
+    await settings.getByLabel(`上下文窗口 ${String(customRow)}`).fill('131072')
+    await settings.getByLabel(`最大输出 token 数 ${String(customRow)}`).fill('64K')
 
     const modelEditor = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
     await compareOrRefreshGolden(MODELS_EXPECTED, modelEditor, MODE)
@@ -220,11 +230,12 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
 
     const document = await readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8')
     expect(document).toContain('id: deepseek-v4-pro')
+    expect(document).toContain('id: deepseek-v4-flash-vision-exp')
     expect(document).toContain('id: private-preview')
     expect(document).toContain('name: Private Preview')
     expect(document).toContain('contextWindow: 131072')
     expect(document).toContain('maxTokens: 64000')
-    expect(document).not.toContain('id: deepseek-v4-flash')
+    expect(document).not.toMatch(/^\s*-\s+id: deepseek-v4-flash$/m)
 
     await page.keyboard.press('Escape')
     // A connected Workspace is what puts a live composer — and its model

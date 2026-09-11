@@ -1,4 +1,4 @@
-const STARTUP_MESSAGE = '正在启动 DeepSeek Harness，首次启动可能需要几秒钟'
+const STARTUP_MESSAGE = '正在启动 Harness Web 后端'
 
 /** Returns the local three-region placeholder shown while the Web backend starts. */
 export function startupDocument() {
@@ -22,6 +22,15 @@ html[data-leaving="true"] body{opacity:0}.app{height:100%;display:grid;grid-temp
 <p class="startup-message" role="status" aria-live="polite">${STARTUP_MESSAGE}</p>
 </main></body></html>`
   return `data:text/html;charset=utf-8,${encodeURIComponent(markup)}`
+}
+
+/** Updates the visible startup phase without delaying backend initialization. */
+export async function updateStartupDocument(webContents, message) {
+  try {
+    await webContents.executeJavaScript(`(() => { const status = document.querySelector('.startup-message'); if (status) status.textContent = ${JSON.stringify(message)} })()`)
+  } catch {
+    // Navigation or window teardown can supersede the cosmetic status update.
+  }
 }
 
 /** Fades the startup document before the BrowserWindow navigates to Harness. */

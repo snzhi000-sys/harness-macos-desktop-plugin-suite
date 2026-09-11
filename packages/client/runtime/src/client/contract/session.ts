@@ -75,7 +75,7 @@ export interface ISession {
   rename(title: string): Promise<RpcResult<{ title: string; seq: number }>>
   /**
    * Extend the history window backwards (older messages pagination).
-   * @returns completion; failures land in snapshot.openState/loadingOlder.
+   * @returns completion; failures land in snapshot.historyError, preserving the loaded window.
    */
   loadOlder(): Promise<void>
   /**

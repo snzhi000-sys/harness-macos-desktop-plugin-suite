@@ -52,7 +52,7 @@ function snapshotBase(): ConversationSnapshot {
     sessionId: SID, views: EMPTY_CONVERSATION_VIEWS, chat: chatSnapshotFixture(), nodes: [],
     turnTimings: new Map(), turnEnds: new Map(), partial: null, runningCalls: [],
     pending: [], queue: [], running: false, composerPhase: 'active', removed: false, openState: 'open', openError: null,
-    hasMore: false, loadingOlder: false, promptError: null, blank: false, subagent: null, lastAgentError: null,
+    hasMore: false, loadingOlder: false, historyError: null, promptError: null, blank: false, subagent: null, lastAgentError: null,
   }
 }
 
@@ -395,7 +395,7 @@ describe('ChatView', () => {
     expect(h.loadThrough).not.toHaveBeenCalled()
     expect(view.getByRole('button', { name: '加载并跳转到第 1 轮' }).getAttribute('aria-busy')).toBe('true')
 
-    await act(async () => { h.set({ loadingOlder: false }) })
+    await act(async () => { h.set({ loadingOlder: false, historyError: null }) })
     expect(h.loadThrough).toHaveBeenCalledTimes(1)
     expect(h.loadThrough).toHaveBeenLastCalledWith(0)
   })
@@ -535,6 +535,28 @@ describe('ChatView', () => {
     expect(branchButtons[0]!.getAttribute('aria-disabled')).toBeNull()
     fireEvent.click(branchButtons[0]!)
     expect(h.forkAt).toHaveBeenCalledWith(1)
+  })
+
+  it('keeps an immediate local echo only until the matching Host queue occurrence is visible', () => {
+    const submission = { id: 'submission-1', text: 'send immediately', images: [] }
+    const queued = {
+      id: 'queued-occurrence' as never,
+      messageId: 'queued-message' as never,
+      placement: 'queued' as const,
+      content: [{ type: 'text' as const, text: submission.text }],
+      preview: submission.text,
+      text: submission.text,
+    }
+    const h = makeHarness({ pendingSubmissions: [submission] })
+    const view = render(<h.ChatView {...h.props} />)
+
+    expect(view.getByText(submission.text).closest('[data-pending-submission]')).not.toBeNull()
+
+    act(() => { h.set({ queue: [queued] }) })
+    expect(view.queryByText(submission.text)).toBeNull()
+
+    act(() => { h.set({ queue: [] }) })
+    expect(view.queryByText(submission.text)).toBeNull()
   })
 
   it('keeps a later pending occurrence visible when it reuses a durable MessageId', () => {
@@ -1275,7 +1297,62 @@ describe('ChatView', () => {
     fireEvent.click(view.getByText('加载更早'))
     expect(h.loadOlder).toHaveBeenCalledTimes(1)
     act(() => { h.set({ loadingOlder: true }) })
-    expect(view.getByText('加载中…')).toBeTruthy()
+    expect(view.getByText('正在加载更早消息…').getAttribute('aria-hidden')).toBe('false')
+  })
+
+  it('requires upward input at the top and never chains pages after settling', () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness({ nodes: [user(5, 'later')], hasMore: true })
+      const view = render(<h.ChatView {...h.props} />)
+      const pager = view.container.querySelector('[data-history-pager]')!
+      const scroll = pager.parentElement!.parentElement!
+      expect(h.loadOlder).not.toHaveBeenCalled()
+      expect(view.getByText('正在加载更早消息…').getAttribute('aria-hidden')).toBe('true')
+      fireEvent.scroll(scroll)
+      fireEvent.wheel(scroll, { deltaY: 100 })
+      expect(h.loadOlder).not.toHaveBeenCalled()
+      fireEvent.wheel(scroll, { deltaY: -100 })
+      expect(h.loadOlder).toHaveBeenCalledTimes(1)
+      act(() => { h.set({ loadingOlder: true }) })
+      fireEvent.wheel(scroll, { deltaY: -100 })
+      expect(h.loadOlder).toHaveBeenCalledTimes(1)
+      act(() => { h.set({ loadingOlder: false }) })
+      act(() => { vi.advanceTimersByTime(180) })
+      expect(pager.getAttribute('data-history-pager')).toBe('leaving')
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(pager.getAttribute('data-history-pager')).toBe('idle')
+      fireEvent.scroll(scroll)
+      expect(h.loadOlder).toHaveBeenCalledTimes(1)
+      fireEvent.wheel(scroll, { deltaY: -100 })
+      expect(h.loadOlder).toHaveBeenCalledTimes(2)
+      view.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('shows inline retry without automatic retries, and stops at the oldest record', () => {
+    const h = makeHarness({ nodes: [user(5, 'later')], hasMore: true,
+      historyError: { code: 'internal', message: 'offline', details: {} } })
+    const view = render(<h.ChatView {...h.props} />)
+    const scroll = view.container.querySelector('[data-history-pager]')!.parentElement!.parentElement!
+    fireEvent.wheel(scroll, { deltaY: -100 })
+    expect(h.loadOlder).not.toHaveBeenCalled()
+    fireEvent.click(view.getByText('加载失败，重试'))
+    expect(h.loadOlder).toHaveBeenCalledTimes(1)
+    view.unmount()
+    const end = makeHarness({ nodes: [user(1, 'oldest')], hasMore: false })
+    const ended = render(<end.ChatView {...end.props} />)
+    expect(ended.getByText('已到最早的记录')).toBeTruthy()
+    fireEvent.wheel(ended.container.querySelector('[data-history-pager]')!.parentElement!.parentElement!, { deltaY: -100 })
+    expect(end.loadOlder).not.toHaveBeenCalled()
+  })
+
+  it('does not show the top spinner for navigator-owned loading', () => {
+    const h = makeHarness({ nodes: [user(5, 'later')], hasMore: true, loadingOlder: true })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getByText('正在加载更早消息…').getAttribute('aria-hidden')).toBe('true')
+    expect(h.loadOlder).not.toHaveBeenCalled()
   })
 
   it('shows open error and loading states', () => {

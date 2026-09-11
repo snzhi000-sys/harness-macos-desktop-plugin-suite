@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { desktopPetEnabled } from '../../desktop/product-channel.cjs'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 
@@ -12,6 +13,9 @@ function run(label, command, args, cwd) {
 
 run('Better Sidebar', 'npm', ['test'], 'plugins/better-sidebar')
 run('File Edit', 'npm', ['test'], 'plugins/file-edit')
+run('Lark CLI', 'npm', ['test'], 'plugins/lark-cli')
+if (desktopPetEnabled()) run('Desktop Pet', 'npm', ['test'], 'plugins/desktop-pet')
+if (desktopPetEnabled()) run('Desktop Pet conversation snapshot', 'npm', ['run', 'test:conversation'], 'plugins/desktop-pet')
 run('Workspace Lineage', resolve(root, 'node_modules/.bin/vitest'), ['run', '--config', 'vitest.config.ts'], 'plugins/workspace-lineage')
 run('Cowork', 'pnpm', ['test'], 'plugins/cowork')
 run('Message Edit Host snapshot', process.execPath, ['--check', 'index.mjs'], 'plugins/message-edit')

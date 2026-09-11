@@ -203,12 +203,15 @@
           read-only:
             sandbox: read-only
             approval: ask
+            description: Read files without workspace writes; approval may still apply to other operations.
           workspace-write:
             sandbox: workspace-write
             approval: ask
+            description: Write inside the workspace with approval for wider operations; the product file reviewer can audit bounded foreground Shell changes.
           danger-full-access:
             sandbox: danger-full-access
             approval: never
+            description: Read or write any path without approval prompts; recoverable file review remains enabled for agent changes.
 
     - id: shell-env
       name: '@deepseek-ai/dsh-shell-env'

@@ -1,0 +1,12 @@
+/** Build a local visual catalog from verified rendering evidence without embedding artwork in the package. */
+import { readFile, writeFile } from 'node:fs/promises'
+import { resolve, join } from 'node:path'
+const output = resolve('../../desktop/.artifacts/desktop-pet-library')
+const download = JSON.parse(await readFile(join(output, 'download-result.json'), 'utf8'))
+const playback = JSON.parse(await readFile(join(output, 'playback-result.json'), 'utf8'))
+const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+const good = playback.results.filter(item => item.status === 'rendered')
+const failed = [...download.results, ...playback.results].filter(item => item.status === 'failed')
+const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>本地 Live2D 角色图鉴</title><style>body{font:15px -apple-system,sans-serif;max-width:1200px;margin:40px auto;padding:0 24px;background:#f6f3ed;color:#333}h1{font-size:30px}p{line-height:1.7;color:#666}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}article{background:white;border:1px solid #ddd;border-radius:16px;overflow:hidden}img{width:100%;height:300px;object-fit:contain;background:#eae6df}h2{font-size:15px;margin:14px}small{display:block;margin:14px;color:#666}li{margin:12px 0;overflow-wrap:anywhere}</style><h1>本地 Live2D 角色图鉴</h1><p>新增 ${good.length} 个通过播放检查的模型版本。连同原有加藤惠、蕾姆和 Senko，体验库合计 ${good.length + 3} 个版本。同人物可能有多个服装或姿势版本，数量不代表独立人物数。使用 Harness 的「🐾 桌宠」搜索、预览和切换。</p><div class="grid">${good.map(item => `<article><img loading="lazy" src="previews/${escape(item.preview)}" alt="${escape(item.name)}"><h2>${escape(item.name)}</h2><small>${item.kind === 'cubism2' ? 'Cubism 2' : 'Cubism 3/4'} · ${item.motions} 动作 · ${item.expressions} 表情</small><small>${item.motionPlayed ? '已播放原有动作' : '无原有动作，支持参数跟随'}${item.expressionPlayed ? ' · 已播放表情' : ''}</small></article>`).join('')}</div><h2>未加入体验库的入口</h2><ul>${failed.map(item => `<li>${escape(item.repositoryEntry)}：${escape(item.error)}</li>`).join('')}</ul><p>来源 ${escape(download.source)}。素材仅保存在本地调研目录，没有加入产品发行包。动作能力以素材已有内容为限，部分模型仅提供姿势、视线或表情；Fox Hime Zero 的笑脸、疑问和不耐烦已做明确动作绑定。</p></html>`
+await writeFile(join(output, '角色图鉴.html'), html)
+console.log(`角色图鉴已生成：${good.length} 个新增版本，${failed.length} 个失败入口`)

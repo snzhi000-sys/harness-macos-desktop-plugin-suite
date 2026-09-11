@@ -34,11 +34,14 @@ export const inject = ['tools', 'shell', 'systemPrompt', 'shellEnv']
 export interface Config {
   /** Expose `run_in_background` (default true); disabled calls are also rejected. */
   enableRunInBackground?: boolean
+  /** Advertise optional recovery snapshots and partial-review guidance without restricting Full Access. */
+  auditFullAccessWrites?: boolean
 }
 
 /** Runtime configuration schema for the bash tool plugin. */
 export const Config: z<Config> = z.object({
   enableRunInBackground: z.boolean().default(true),
+  auditFullAccessWrites: z.boolean().default(false),
 })
 
 /** Parsed tool args; execute validates value constraints absent from ParameterSchemaSpec. */
@@ -47,6 +50,7 @@ interface BashToolArgs {
   description: string
   timeoutMs?: number
   workdir?: string
+  audit_root?: string
   run_in_background?: boolean
   sandbox_permissions?: string
   justification?: string
@@ -61,6 +65,9 @@ function validateBashArgs(args: BashToolArgs): void {
   }
   if (args.timeoutMs !== undefined && (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0)) {
     throw new Error(`invalid timeoutMs: expected a positive number, got ${JSON.stringify(args.timeoutMs)}`)
+  }
+  if (args.audit_root !== undefined && (args.audit_root.trim().length === 0 || !isAbsolute(args.audit_root))) {
+    throw new Error('invalid audit_root: expected an absolute directory path')
   }
   // The escalation pairing (sandbox_permissions ⇔ justification, non-empty) is
   // the shared rule both enforcing families validate identically.
@@ -189,6 +196,7 @@ const BACKGROUND_OUTPUT_PROPERTIES = {
 
 export function apply(ctx: Context, config: Config = {}): void {
   const backgroundEnabled = config.enableRunInBackground ?? true
+  const auditFullAccessWrites = config.auditFullAccessWrites ?? false
   const defaultMode = ctx.shell.sandboxMode
   const escalationModes: readonly SandboxMode[] = defaultMode === undefined ? [] : ESCALATION_TARGETS
   const sandboxPolicy: SandboxPolicyService | undefined = defaultMode === undefined ? undefined : ctx.get('sandboxPolicy')
@@ -236,7 +244,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.systemPrompt.section({
     name: 'tool:bash',
     order: 105,
-    text: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on.',
+    text: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on.'
+      + (auditFullAccessWrites ? ' Full Access does not restrict writes to audit_root. File review is partial: changes outside the snapshot, or when a snapshot fails, may not be recorded or recoverable. audit_root is an optional snapshot hint, not a permission boundary.' : ''),
   })
 
   ctx.tools.register(defineTool({
@@ -253,6 +262,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
       timeoutMs: { type: 'number', description: 'Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.' },
       workdir: { type: 'string', description: 'Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.' },
+      ...auditFullAccessWrites ? {
+        audit_root: { type: 'string' as const, description: 'Full Access only: optional existing absolute directory to attempt a recovery snapshot; defaults to workdir. Does not restrict writes. Missing or failed snapshots do not block execution; unrecorded changes may be unrecoverable.' },
+      } : {},
       ...backgroundEnabled ? {
         run_in_background: { type: 'boolean' as const, description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.' },
       } : {},
@@ -332,12 +344,14 @@ export function apply(ctx: Context, config: Config = {}): void {
       // Description is display metadata; workdir defaults to the caller's session.
       const standingPolicy = resolveSandboxPolicy(exec)
       const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
+        && !(args.sandbox_permissions === 'danger-full-access' && standingPolicy?.mode === 'danger-full-access')
         ? await approveBashEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
         : undefined
-      const policy = approvedMode === undefined
+      const requestedPolicy = approvedMode === undefined
         ? standingPolicy
         : { ...(standingPolicy as SandboxExecutionPolicy), mode: approvedMode }
       const workdir = resolveWorkdir(args.workdir, exec, standingPolicy?.workspaceRoot)
+      const policy = requestedPolicy
       const dshEnv = ctx.shellEnv.collect(exec)
       const request = {
         command: args.command,

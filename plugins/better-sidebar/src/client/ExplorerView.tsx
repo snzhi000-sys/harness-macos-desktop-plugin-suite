@@ -33,6 +33,7 @@ import {
 } from './uncommon-paths.ts'
 import { t } from './locales.ts'
 import { scheduleStartupTask, type StartupTaskLane } from './startup-tasks.ts'
+import { explorerDataForWorkspace, storeExplorerDataForWorkspace } from './workspace-explorer-cache.ts'
 import css from './sidebar.module.css'
 
 export interface LevelData {
@@ -223,8 +224,13 @@ export function ExplorerView(props: {
 }) {
   const { sessionId, cwd, expanded, onToggle, onRevealPath, onCollapseAll, onOpenFile, onReferenceFile, onOpenInBrowser, onRenamed, onDeleted, startupTasks } = props
   const root = cwd
-  const [data, setData] = useState<Record<string, LevelData>>({})
+  const [data, setData] = useState<Record<string, LevelData>>(() => explorerDataForWorkspace(root))
   const dataRef = useRef(data)
+  const rootRef = useRef(root)
+  rootRef.current = root
+  /** The current request authority changes with the conversation, while the cached data does not. */
+  const scopeRef = useRef({ sessionId, cwd })
+  scopeRef.current = { sessionId, cwd }
   /** Workspace-scoped file/folder anchors survive conversation switches. */
   const [folderMarks, setFolderMarks] = useState<FolderMark[]>([])
   /** Invalidates a slower Host hydration when the user edits marks meanwhile. */
@@ -289,6 +295,15 @@ export function ExplorerView(props: {
     if (revealTimer.current !== null) window.clearTimeout(revealTimer.current)
   }, [])
 
+  // Marks are workspace-owned; changing conversations under one root must
+  // not rehydrate the same record.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const cached = explorerDataForWorkspace(root)
+    dataRef.current = cached
+    setData(cached)
+  }, [root])
+
   useEffect(() => {
     const revision = ++folderMarksRevision.current
     if (root === undefined) {
@@ -299,12 +314,12 @@ export function ExplorerView(props: {
     setFolderMarks(local)
     const controller = new AbortController()
     void scheduleStartupTask(startupTasks, async () => {
-      const result = await api.explorerMarksGet({ sessionId, cwd: root }, controller.signal)
+      const result = await api.explorerMarksGet(scopeRef.current, controller.signal)
       // One-time migration from the old origin/port-scoped localStorage.
       // Once the Host has an initialized workspace record (including an
       // intentionally empty one), it is always authoritative.
       const remote = !result.initialized && local.length > 0
-        ? (await api.explorerMarksSet({ sessionId, cwd: root }, local)).marks
+        ? (await api.explorerMarksSet(scopeRef.current, local)).marks
         : result.marks
       if (folderMarksRevision.current !== revision) return
       const clean = saveFolderMarks(root, remote)
@@ -313,8 +328,11 @@ export function ExplorerView(props: {
       if (!controller.signal.aborted) console.warn('[dsh-better-sidebar] failed to hydrate Explorer marks:', error)
     })
     return () => { controller.abort() }
-  }, [root, sessionId, startupTasks])
+  }, [root, startupTasks])
 
+  // Visibility is workspace-owned; the session id is request authority,
+  // not its cache identity.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const revision = ++visibilityRevision.current
     if (root === undefined) {
@@ -324,12 +342,12 @@ export function ExplorerView(props: {
     }
     setVisibilityReady(false)
     const controller = new AbortController()
-    void api.explorerVisibilitySnapshot({ sessionId, cwd: root }, controller.signal).then((result) => {
+    void api.explorerVisibilitySnapshot(scopeRef.current, controller.signal).then((result) => {
       if (visibilityRevision.current !== revision) return
       acceptVisibility(result)
       setVisibilityReady(true)
       return scheduleStartupTask(startupTasks, async () => {
-        const reconciled = await api.explorerVisibilityGet({ sessionId, cwd: root }, controller.signal)
+        const reconciled = await api.explorerVisibilityGet(scopeRef.current, controller.signal)
         if (visibilityRevision.current !== revision) return
         acceptVisibility(reconciled)
       }, controller.signal)
@@ -340,7 +358,7 @@ export function ExplorerView(props: {
       }
     })
     return () => { controller.abort() }
-  }, [root, sessionId, acceptVisibility, startupTasks])
+  }, [root, acceptVisibility, startupTasks])
 
   // Keep two mounted Explorer surfaces (and separate Harness windows) in
   // sync. The custom event covers this window; StorageEvent covers others.
@@ -439,20 +457,32 @@ export function ExplorerView(props: {
     if (explorerBody.current !== null) explorerBody.current.scrollLeft = 0
   }, [renaming?.path, renaming?.saving, expanded])
 
-  const storeLevel = useCallback((path: string, level: LevelData) => {
-    dataRef.current = { ...dataRef.current, [path]: level }
-    setData(dataRef.current)
+  const storeLevel = useCallback((workspaceRoot: string, path: string, level: LevelData) => {
+    const base = explorerDataForWorkspace(workspaceRoot)
+    const next = { ...base, [path]: level }
+    storeExplorerDataForWorkspace(workspaceRoot, next)
+    if (rootRef.current !== workspaceRoot) return
+    dataRef.current = next
+    setData(next)
   }, [])
+
+  /** Update the cache belonging to the Explorer currently on screen. */
+  const storeCurrentLevel = useCallback((path: string, level: LevelData) => {
+    if (root === undefined) return
+    storeLevel(root, path, level)
+  }, [root, storeLevel])
 
   const loadDir = useCallback((dir: string) => {
     if (dataRef.current[dir] !== undefined) return
-    storeLevel(dir, {})
-    api.fsTree({ sessionId, cwd }, dir).then((listing) => {
-      storeLevel(dir, { entries: listing.entries })
+    const workspaceRoot = root
+    if (workspaceRoot === undefined) return
+    storeLevel(workspaceRoot, dir, {})
+    api.fsTree(scopeRef.current, dir).then((listing) => {
+      storeLevel(workspaceRoot, dir, { entries: listing.entries })
     }).catch((error: unknown) => {
-      storeLevel(dir, { error: error instanceof Error ? error.message : String(error) })
+      storeLevel(workspaceRoot, dir, { error: error instanceof Error ? error.message : String(error) })
     })
-  }, [sessionId, cwd, storeLevel])
+  }, [root, storeLevel])
 
   useEffect(() => {
     // Load the visible set; already-loaded levels (kept in the cache) are
@@ -474,11 +504,11 @@ export function ExplorerView(props: {
     const dirs = [cwd, ...expanded]
     const poll = () => {
       for (const dir of dirs) {
-        api.fsTree({ sessionId, cwd }, dir).then((listing) => {
+        api.fsTree(scopeRef.current, dir).then((listing) => {
           const prev = dataRef.current[dir]
           if (prev === undefined) return
           if (prev.error !== undefined || !sameEntries(prev.entries, listing.entries)) {
-            storeLevel(dir, { entries: listing.entries })
+            storeLevel(cwd, dir, { entries: listing.entries })
           }
         }).catch(() => { /* transient failure: ignore, next tick retries */ })
       }
@@ -487,7 +517,7 @@ export function ExplorerView(props: {
     return () => window.clearInterval(id)
     // `expanded` is captured through its stable key below to avoid identity churn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, sessionId, expandedKey, storeLevel])
+  }, [cwd, expandedKey, storeLevel])
 
   /** Copy `text`; on success flip the row's copied label for a moment. */
   const copyPath = useCallback((text: string, path: string): void => {
@@ -553,6 +583,7 @@ export function ExplorerView(props: {
       // back to the top. Remap the live cache in-place from the user's point
       // of view, then let the host listings below quietly verify it.
       dataRef.current = remapExplorerDataAfterRename(dataRef.current, current.path, result.path)
+      if (cwd !== undefined) storeExplorerDataForWorkspace(cwd, dataRef.current)
       setData(dataRef.current)
       setCopiedPath(value => value === null ? null : remapPath(value, current.path, result.path))
       // A second rename/create action may have started while the request was
@@ -570,9 +601,9 @@ export function ExplorerView(props: {
         .map(path => remapPath(path, current.path, result.path)))]
       for (const dir of visible) {
         api.fsTree({ sessionId, cwd }, dir).then((listing) => {
-          storeLevel(dir, { entries: listing.entries })
+          storeCurrentLevel(dir, { entries: listing.entries })
         }).catch((error: unknown) => {
-          storeLevel(dir, { error: error instanceof Error ? error.message : String(error) })
+          storeCurrentLevel(dir, { error: error instanceof Error ? error.message : String(error) })
         })
       }
     } catch (error) {
@@ -592,13 +623,13 @@ export function ExplorerView(props: {
     try {
       const result = await api.fsMkdir({ sessionId, cwd }, parent)
       const listing = await api.fsTree({ sessionId, cwd }, parent)
-      storeLevel(parent, { entries: listing.entries })
+      storeCurrentLevel(parent, { entries: listing.entries })
       // The root level is permanently visible; a nested parent must open so
       // the new child row (and its focused editor) can actually be seen.
       if (parent !== cwd && !expanded.includes(parent)) onToggle(parent)
       beginRename(result.path, true)
     } catch (error) {
-      storeLevel(parent, { error: error instanceof Error ? error.message : String(error) })
+      storeCurrentLevel(parent, { error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -607,11 +638,11 @@ export function ExplorerView(props: {
     try {
       const result = await api.fsCreateMarkdown({ sessionId, cwd }, parent)
       const listing = await api.fsTree({ sessionId, cwd }, parent)
-      storeLevel(parent, { entries: listing.entries })
+      storeCurrentLevel(parent, { entries: listing.entries })
       if (parent !== cwd && !expanded.includes(parent)) onToggle(parent)
       beginRename(result.path, false)
     } catch (error) {
-      storeLevel(parent, { error: error instanceof Error ? error.message : String(error) })
+      storeCurrentLevel(parent, { error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -632,7 +663,7 @@ export function ExplorerView(props: {
       setDeleting({ preview, busy: false })
     } catch (error) {
       const parent = parentPath(path)
-      storeLevel(parent, { error: error instanceof Error ? error.message : String(error) })
+      storeCurrentLevel(parent, { error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -644,13 +675,17 @@ export function ExplorerView(props: {
     try {
       await api.fsDelete({ sessionId, cwd }, current.preview.path)
       const parent = parentPath(current.preview.path)
-      for (const key of Object.keys(dataRef.current)) {
+      const nextData = { ...dataRef.current }
+      for (const key of Object.keys(nextData)) {
         if (key === current.preview.path || key.startsWith(`${current.preview.path}/`) || key.startsWith(`${current.preview.path}\\`)) {
-          delete dataRef.current[key]
+          delete nextData[key]
         }
       }
+      dataRef.current = nextData
+      if (cwd !== undefined) storeExplorerDataForWorkspace(cwd, nextData)
+      setData(nextData)
       const listing = await api.fsTree({ sessionId, cwd }, parent)
-      storeLevel(parent, { entries: listing.entries })
+      storeCurrentLevel(parent, { entries: listing.entries })
       setDeleting(null)
       updateFolderMarks(marks => deleteFolderMarks(marks, current.preview.path))
       updateVisibility(
@@ -770,6 +805,7 @@ export function ExplorerView(props: {
     try {
       const result = await api.fsMove({ sessionId, cwd }, path, destination)
       dataRef.current = remapExplorerDataAfterMove(dataRef.current, path, result.path)
+      if (cwd !== undefined) storeExplorerDataForWorkspace(cwd, dataRef.current)
       setData(dataRef.current)
       setCopiedPath(value => value === null ? null : remapPath(value, path, result.path))
       setHighlightedPath(value => value === null ? null : remapPath(value, path, result.path))
@@ -784,7 +820,7 @@ export function ExplorerView(props: {
       // levels preserves the Explorer's scroll position and expansion state.
       for (const dir of new Set([parentPath(path), destination])) {
         api.fsTree({ sessionId, cwd }, dir).then((listing) => {
-          storeLevel(dir, { entries: listing.entries })
+          storeCurrentLevel(dir, { entries: listing.entries })
         }).catch(() => { /* the normal poll retries transient failures */ })
       }
     } catch (error) {

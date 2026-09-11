@@ -142,6 +142,8 @@ function scopePayload(scope: SessionScope, extra: Record<string, unknown>): Reco
 
 /** The sidebar API surface (session scope threaded through every call). */
 export const api = {
+  appReleaseInfo: (signal?: AbortSignal) =>
+    call<{ version: string; builtAt: string | null; channel: 'dev' | 'stable' | null }>('app.release-info', {}, signal),
   layoutGet: (sessionId: string, signal?: AbortSignal) =>
     call<{ state?: unknown }>('layout.get', { sessionId }, signal),
   layoutSet: (sessionId: string, state: unknown) =>

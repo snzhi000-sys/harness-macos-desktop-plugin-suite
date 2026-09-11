@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, lstatSync, readdirSync, rmSync, symlinkSync, realpathSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, lstatSync, readdirSync, rmSync, symlinkSync, realpathSync, renameSync, chmodSync, utimesSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
+import { execFileSync } from 'node:child_process'
 
 const temp = mkdtempSync(join(tmpdir(), 'dsh-file-edit-ledger-'))
 const stateHome = join(temp, 'state')
@@ -12,9 +14,9 @@ mkdirSync(stateHome, { recursive: true })
 mkdirSync(workspace, { recursive: true })
 process.env.DSH_HOME = stateHome
 
-const { default: plugin } = await import('../host/index.mjs?' + Date.now())
+const { default: plugin } = await import(process.env.DSH_TEST_FILE_EDIT_HOST || '../host/index.mjs?' + Date.now())
 
-function harness(pluginImpl = plugin, sessionOverrides = {}) {
+function harness(pluginImpl = plugin, sessionOverrides = {}, policyMode = 'workspace-write', pluginConfig = {}, services = {}) {
   const events = new Map()
   const registered = new Map()
   const guards = []
@@ -35,7 +37,8 @@ function harness(pluginImpl = plugin, sessionOverrides = {}) {
     async readText(target) { readTextCalls++; return readFileSync(target.path, 'utf8') },
     async readBytes(target) { return readFileSync(target.path) },
     async listDir() { listCalls++; return [] },
-    async writeText(target, content) {
+    async writeText(target, content, _encoding, _version, policy) {
+      if (policy?.mode === 'read-only') throw new Error('file access denied under read-only mode')
       const before = existsSync(target.path) ? readFileSync(target.path, 'utf8') : null
       writeFileSync(target.path, content)
       const s = statSync(target.path)
@@ -43,8 +46,12 @@ function harness(pluginImpl = plugin, sessionOverrides = {}) {
     },
   }
   const ctx = {
+    get: name => services[name],
     fs,
-    sandboxPolicy: { resolve: (request = {}) => ({ mode: request.mode ?? 'workspace-write', workspaceRoot: workspace, sessionId: 'session-test' }) },
+    sandboxPolicy: { resolve: (request = {}) => {
+      if (typeof policyMode === 'function') return policyMode(request)
+      return { mode: request.mode ?? policyMode, workspaceRoot: workspace, sessionId: 'session-test' }
+    } },
     sessions: { get: id => sessionRecords.get(id) },
     shell: { sandboxMode: 'workspace-write', resolve: x => x, run: async (spec) => {
       shellCalls.push(spec)
@@ -67,7 +74,7 @@ function harness(pluginImpl = plugin, sessionOverrides = {}) {
     effect(fn) { return fn() },
     on(name, fn) { events.set(name, fn); return () => events.delete(name) },
   }
-  pluginImpl.apply(ctx)
+  pluginImpl.apply(ctx, pluginConfig)
   const invoke = async (method, args) => {
     const req = Readable.from([Buffer.from(JSON.stringify({ method, args }))])
     req.method = 'POST'
@@ -84,13 +91,139 @@ function harness(pluginImpl = plugin, sessionOverrides = {}) {
   }
 }
 
+test('Read Only blocks structured deletion and rename before changing files or review state', async () => {
+  let mode = 'danger-full-access'
+  const h = harness(plugin, {}, () => ({ mode, workspaceRoot: workspace }))
+  const exec = { agent: { session: { id: 'session-test' } }, signal: new AbortController().signal }
+  const source = join(workspace, 'readonly-source.txt')
+  const destination = join(workspace, 'readonly-renamed.txt')
+  const directory = join(workspace, 'readonly-directory')
+  const external = join(temp, 'readonly-external.txt')
+  writeFileSync(source, 'original')
+  writeFileSync(external, 'external')
+  mkdirSync(directory)
+  writeFileSync(join(directory, 'child.txt'), 'child')
+  const ledger = join(stateHome, 'dsh-file-edit-state', 'session-test.json')
+  const before = existsSync(ledger) ? readFileSync(ledger, 'utf8') : null
+  mode = 'read-only'
+  for (const target of [source, directory, external]) {
+    await assert.rejects(h.registered.get('file_delete').execute({ file_path: target }, exec), /Read Only/)
+  }
+  await assert.rejects(h.registered.get('file_move').execute({ source_path: source, destination_path: destination }, exec), /Read Only/)
+  assert.equal(readFileSync(source, 'utf8'), 'original')
+  assert.equal(readFileSync(external, 'utf8'), 'external')
+  assert.equal(readFileSync(join(directory, 'child.txt'), 'utf8'), 'child')
+  assert.equal(existsSync(destination), false)
+  assert.equal(existsSync(ledger) ? readFileSync(ledger, 'utf8') : null, before)
+  mode = 'workspace-write'
+  await h.registered.get('file_move').execute({ source_path: source, destination_path: destination }, exec)
+  assert.equal(readFileSync(destination, 'utf8'), 'original')
+  mode = 'danger-full-access'
+  await h.registered.get('file_delete').execute({ file_path: destination }, exec)
+  assert.equal(existsSync(destination), false)
+})
+
+test('manual document saving in Read Only does not grant agent mutation permission', async () => {
+  const h = harness(plugin, {}, 'read-only')
+  const path = 'manual-readonly.md'
+  writeFileSync(join(workspace, path), '# before\n')
+  const diff = await h.invoke('getDiff', { sessionId: 'session-test', path })
+  const result = await h.invoke('applyDocument', { sessionId: 'session-test', path, rev: diff.rev, content: '# manual save\n' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(readFileSync(join(workspace, path), 'utf8'), '# manual save\n')
+  assert.equal(result.changed, false)
+  const stale = await h.invoke('applyDocument', { sessionId: 'session-test', path, rev: diff.rev, content: 'stale' })
+  assert.equal(stale.code, 'stale')
+  const exec = { agent: { session: { id: 'session-test' } }, signal: new AbortController().signal }
+  await assert.rejects(h.registered.get('file_delete').execute({ file_path: join(workspace, path) }, exec), /Read Only/)
+  assert.equal(readFileSync(join(workspace, path), 'utf8'), '# manual save\n')
+})
+
+test('Workspace Write rejects external deletion including symlink parents before quarantine', async () => {
+  const h = harness()
+  const outside = join(temp, 'workspace-denied-delete')
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'file.txt'), 'keep')
+  const link = join(workspace, 'external-delete-link')
+  symlinkSync(outside, link)
+  const exec = { agent: { session: { id: 'session-test' } }, signal: new AbortController().signal }
+  const before = state()
+  for (const path of [outside, join(outside, 'file.txt'), join(link, 'file.txt')]) {
+    await assert.rejects(h.registered.get('file_delete').execute({ file_path: path }, exec), /Workspace Write/)
+    assert.equal(readFileSync(join(outside, 'file.txt'), 'utf8'), 'keep')
+  }
+  assert.deepEqual(state(), before)
+  const full = harness(plugin, {}, 'danger-full-access')
+  await full.registered.get('file_delete').execute({ file_path: outside }, exec)
+  assert.equal(existsSync(outside), false)
+})
+
+test('manual Read Only saving rejects symlink escape and preserves pending agent work', async () => {
+  const h = harness(plugin, {}, 'read-only')
+  const outside = join(temp, 'manual-save-outside.md')
+  writeFileSync(outside, 'external\n')
+  const link = join(workspace, 'manual-save-link.md')
+  symlinkSync(outside, link)
+  const opened = await h.invoke('resolveOpenTarget', { sessionId: 'session-test', absolutePath: link })
+  const diff = await h.invoke('getDiff', { sessionId: 'session-test', path: opened.id })
+  const denied = await h.invoke('applyDocument', { sessionId: 'session-test', path: opened.id, rev: diff.rev, content: 'overwrite' })
+  assert.equal(denied.ok, false)
+  assert.equal(readFileSync(outside, 'utf8'), 'external\n')
+  const path = 'manual-pending.md'
+  writeFileSync(join(workspace, path), 'agent\n')
+  await h.events.get('tools/result')({ name: 'write', agent: { session: { id: 'session-test' } } }, {
+    isError: false, value: { path: join(workspace, path), operation: 'update', before: 'before\n', after: 'agent\n' },
+  })
+  const pending = await h.invoke('getDiff', { sessionId: 'session-test', path })
+  const result = await h.invoke('applyDocument', { sessionId: 'session-test', path, rev: pending.rev, content: 'manual\n' })
+  assert.equal(result.code, 'pending-review')
+  assert.equal(readFileSync(join(workspace, path), 'utf8'), 'agent\n')
+})
+
+test('structured mutations recheck permission after preparation and reject unknown policy', async () => {
+  const exec = { agent: { session: { id: 'session-test' } }, signal: new AbortController().signal }
+  for (const tool of ['file_delete', 'file_move']) {
+    const source = join(workspace, `permission-recheck-${tool}.txt`)
+    const destination = source + '.moved'
+    writeFileSync(source, 'unchanged')
+    const args = tool === 'file_delete' ? { file_path: source } : { source_path: source, destination_path: destination }
+    let checks = 0
+    const h = harness(plugin, {}, () => ({ mode: ++checks === 1 ? 'workspace-write' : 'read-only', workspaceRoot: workspace }))
+    await assert.rejects(h.registered.get(tool).execute(args, exec), /Read Only/)
+    assert.equal(readFileSync(source, 'utf8'), 'unchanged')
+    assert.equal(existsSync(destination), false)
+    const unknown = harness(plugin, {}, () => ({}))
+    await assert.rejects(unknown.registered.get(tool).execute(args, exec), /权限拒绝/)
+    assert.equal(readFileSync(source, 'utf8'), 'unchanged')
+  }
+})
+
 function state() {
   return JSON.parse(readFileSync(join(stateHome, 'dsh-file-edit-state', 'session-test.json'), 'utf8'))
+}
+
+
+function stateForSession(sessionId) {
+  return JSON.parse(readFileSync(join(stateHome, 'dsh-file-edit-state', sessionId + '.json'), 'utf8'))
+}
+
+function shellTransactionManifests() {
+  const root = join(stateHome, 'dsh-file-edit-state', 'shell-transactions')
+  if (!existsSync(root)) return []
+  return readdirSync(root).flatMap((sessionDir) => {
+    const sessionRoot = join(root, sessionDir)
+    return readdirSync(sessionRoot).flatMap((transactionDir) => {
+      const manifestPath = join(sessionRoot, transactionDir, 'manifest.json')
+      return existsSync(manifestPath) ? [JSON.parse(readFileSync(manifestPath, 'utf8'))] : []
+    })
+  })
 }
 
 test('write/edit results enter the session ledger without a workspace scan', async () => {
   const h = harness()
   const deep = join(workspace, 'beyond-8000', 'target.md')
+  mkdirSync(dirname(deep), { recursive: true })
+  writeFileSync(deep, '# created\n')
   await h.events.get('tools/result')(
     { name: 'write', agent: { session: { id: 'session-test' } } },
     { isError: false, value: { path: deep, operation: 'create', before: null, after: '# created\n' } },
@@ -99,12 +232,248 @@ test('write/edit results enter the session ledger without a workspace scan', asy
   assert.equal(state().files['beyond-8000/target.md'].base.present, false)
   assert.equal(state().files['beyond-8000/target.md'].cur.content, '# created\n')
 
+  writeFileSync(deep, '# expanded\n\nbody\n')
   await h.events.get('tools/result')(
     { name: 'edit', agent: { session: { id: 'session-test' } } },
     { isError: false, value: { path: deep, before: '# created\n', after: '# expanded\n\nbody\n' } },
   )
   assert.equal(state().files['beyond-8000/target.md'].base.present, false)
   assert.equal(state().files['beyond-8000/target.md'].cur.content, '# expanded\n\nbody\n')
+})
+
+test('an accepted hunk stays settled when the agent edits the same file again', async () => {
+  const h = harness()
+  const target = join(workspace, 'accepted-hunk-followup.md')
+  const baseline = 'alpha 0\ngap a\nbeta 0\ngap b\ngamma 0\ngap c\ndelta 0\n'
+  const first = 'alpha 1\ngap a\nbeta 1\ngap b\ngamma 1\ngap c\ndelta 0\n'
+  writeFileSync(target, first)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: first } },
+  )
+
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'accepted-hunk-followup.md' })
+  assert.equal(initial.hunks.length, 3)
+  const accepted = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'accepted-hunk-followup.md', rev: initial.rev, hunkId: 'h1', action: 'accept',
+  })
+  assert.deepEqual(accepted.hunks.flatMap((hunk) => hunk.newLines), ['alpha 1', 'gamma 1'])
+
+  const second = 'alpha 1\ngap a\nbeta 1\ngap b\ngamma 1\ngap c\ndelta 1\n'
+  writeFileSync(target, second)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: first, after: second } },
+  )
+
+  const followup = await h.invoke('getDiff', { sessionId: 'session-test', path: 'accepted-hunk-followup.md' })
+  assert.deepEqual(followup.hunks.flatMap((hunk) => hunk.newLines), ['alpha 1', 'gamma 1', 'delta 1'])
+  assert.equal(followup.baseline[2], 'beta 1')
+
+  const rejectedRemaining = await h.invoke('rejectFile', { sessionId: 'session-test', path: 'accepted-hunk-followup.md' })
+  assert.equal(rejectedRemaining.changed, false)
+  assert.equal(readFileSync(target, 'utf8'), 'alpha 0\ngap a\nbeta 1\ngap b\ngamma 0\ngap c\ndelta 0\n')
+})
+
+test('rejecting one hunk leaves every other hunk pending after ids are recomputed', async () => {
+  const h = harness()
+  const target = join(workspace, 'rejected-hunk-reindex.md')
+  const baseline = 'alpha 0\ngap a\nbeta 0\ngap b\ngamma 0\n'
+  const changed = 'alpha 1\ngap a\nbeta 1\ngap b\ngamma 1\n'
+  writeFileSync(target, changed)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: changed } },
+  )
+
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'rejected-hunk-reindex.md' })
+  assert.equal(initial.hunks.length, 3)
+  const rejected = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'rejected-hunk-reindex.md', rev: initial.rev, hunkId: 'h0', action: 'reject',
+  })
+
+  assert.deepEqual(rejected.hunks.flatMap((hunk) => hunk.newLines), ['beta 1', 'gamma 1'])
+  assert.equal(readFileSync(target, 'utf8'), 'alpha 0\ngap a\nbeta 1\ngap b\ngamma 1\n')
+})
+
+test('a rejected hunk stays rejected when the remaining file is accepted', async () => {
+  const h = harness()
+  const target = join(workspace, 'reject-then-accept-file.md')
+  const baseline = 'first 0\ngap\nlast 0\n'
+  const changed = 'first 1\ngap\nlast 1\n'
+  writeFileSync(target, changed)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: changed } },
+  )
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'reject-then-accept-file.md' })
+  const rejected = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'reject-then-accept-file.md', rev: initial.rev, hunkId: 'h0', action: 'reject',
+  })
+  assert.deepEqual(rejected.hunks.flatMap((hunk) => hunk.newLines), ['last 1'])
+  const accepted = await h.invoke('acceptFile', { sessionId: 'session-test', path: 'reject-then-accept-file.md' })
+  assert.equal(accepted.changed, false)
+  assert.equal(readFileSync(target, 'utf8'), 'first 0\ngap\nlast 1\n')
+})
+
+test('a later agent edit inside an accepted region creates only the new delta', async () => {
+  const h = harness()
+  const target = join(workspace, 'accepted-region-edited-again.md')
+  const baseline = 'alpha 0\ngap\nbeta 0\n'
+  const first = 'alpha 0\ngap\nbeta 1\n'
+  writeFileSync(target, first)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: first } },
+  )
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'accepted-region-edited-again.md' })
+  const accepted = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'accepted-region-edited-again.md', rev: initial.rev, hunkId: 'h0', action: 'accept',
+  })
+  assert.equal(accepted.changed, false)
+
+  const second = 'alpha 0\ngap\nbeta 2\n'
+  writeFileSync(target, second)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: first, after: second } },
+  )
+  const followup = await h.invoke('getDiff', { sessionId: 'session-test', path: 'accepted-region-edited-again.md' })
+  assert.deepEqual(followup.baseline, ['alpha 0', 'gap', 'beta 1'])
+  assert.deepEqual(followup.hunks.flatMap((hunk) => hunk.newLines), ['beta 2'])
+})
+
+test('partial review preserves CRLF and rejects stale revisions', async () => {
+  const h = harness()
+  const target = join(workspace, 'partial-review-crlf.txt')
+  const baseline = 'alpha 0\r\ngap\r\nbeta 0\r\n'
+  const changed = 'alpha 1\r\ngap\r\nbeta 1\r\n'
+  writeFileSync(target, changed)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: changed } },
+  )
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'partial-review-crlf.txt' })
+  const stale = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'partial-review-crlf.txt', rev: initial.rev - 1, hunkId: 'h0', action: 'reject',
+  })
+  assert.equal(stale.code, 'stale')
+  const rejected = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'partial-review-crlf.txt', rev: initial.rev, hunkId: 'h0', action: 'reject',
+  })
+  assert.equal(rejected.hunks.length, 1)
+  assert.equal(readFileSync(target, 'utf8'), 'alpha 0\r\ngap\r\nbeta 1\r\n')
+})
+
+test('partial settlement handles inserted and deleted hunks independently', async () => {
+  const h = harness()
+  const target = join(workspace, 'partial-review-insert-delete.txt')
+  const baseline = 'keep 1\ndelete me\ngap\nkeep 2\n'
+  const changed = 'insert me\nkeep 1\ngap\nkeep 2\n'
+  writeFileSync(target, changed)
+  await h.events.get('tools/result')(
+    { name: 'edit', agent: { session: { id: 'session-test' } } },
+    { isError: false, value: { path: target, before: baseline, after: changed } },
+  )
+  const initial = await h.invoke('getDiff', { sessionId: 'session-test', path: 'partial-review-insert-delete.txt' })
+  assert.equal(initial.hunks.length, 2)
+  const acceptedInsert = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'partial-review-insert-delete.txt', rev: initial.rev, hunkId: 'h0', action: 'accept',
+  })
+  assert.equal(acceptedInsert.hunks.length, 1)
+  const rejectedDelete = await h.invoke('applyHunk', {
+    sessionId: 'session-test', path: 'partial-review-insert-delete.txt', rev: acceptedInsert.rev, hunkId: acceptedInsert.hunks[0].id, action: 'reject',
+  })
+  assert.equal(rejectedDelete.changed, false)
+  assert.equal(readFileSync(target, 'utf8'), 'insert me\nkeep 1\ndelete me\ngap\nkeep 2\n')
+})
+
+test('a settled baseline survives host restart with only pending hunks', async () => {
+  const sessionId = 'session-partial-review-restart'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const target = join(workspace, 'partial-review-restart.md')
+  const baseline = 'alpha 0\ngap\nbeta 0\n'
+  const changed = 'alpha 1\ngap\nbeta 1\n'
+  writeFileSync(target, changed)
+  const seeded = harness(plugin, { [sessionId]: session })
+  await seeded.events.get('tools/result')(
+    { name: 'edit', agent: { session } },
+    { isError: false, value: { path: target, before: baseline, after: changed } },
+  )
+  const initial = await seeded.invoke('getDiff', { sessionId, path: 'partial-review-restart.md' })
+  await seeded.invoke('applyHunk', {
+    sessionId, path: 'partial-review-restart.md', rev: initial.rev, hunkId: 'h0', action: 'accept',
+  })
+
+  const restartedPlugin = (await import('../host/index.mjs?partial-review-restart=' + Date.now())).default
+  const restarted = harness(restartedPlugin, { [sessionId]: session })
+  const restored = await restarted.invoke('getDiff', { sessionId, path: 'partial-review-restart.md' })
+  assert.deepEqual(restored.baseline, ['alpha 1', 'gap', 'beta 0'])
+  assert.deepEqual(restored.hunks.flatMap((hunk) => hunk.newLines), ['beta 1'])
+})
+
+test('v5 accept-only decisions migrate into the baseline while mixed decisions fail safe', async () => {
+  const stateDir = join(stateHome, 'dsh-file-edit-state')
+  mkdirSync(stateDir, { recursive: true })
+  const makeEntry = (content, version) => ({
+    present: true, content, eol: true, crlf: false, version,
+    size: Buffer.byteLength(content), binRef: null, binSize: 0, md: true,
+  })
+
+  const acceptedSessionId = 'session-v5-accept-migration'
+  const acceptedSession = { id: acceptedSessionId, header: { id: acceptedSessionId, cwd: workspace } }
+  const acceptedPath = join(workspace, 'v5-accept-migration.md')
+  const acceptedCur = 'alpha 1\ngap\nbeta 1\n'
+  writeFileSync(acceptedPath, acceptedCur)
+  const acceptedStat = statSync(acceptedPath)
+  writeFileSync(join(stateDir, acceptedSessionId + '.json'), JSON.stringify({
+    version: 5,
+    root: workspace,
+    baseReady: false,
+    files: {
+      'v5-accept-migration.md': {
+        base: makeEntry('alpha 0\ngap\nbeta 0\n', 'legacy-before'),
+        cur: makeEntry(acceptedCur, `${acceptedStat.mtimeMs}:${acceptedStat.size}`),
+        rev: 2,
+        decisions: { h0: 'accept' },
+      },
+    },
+  }))
+
+  const mixedSessionId = 'session-v5-mixed-migration'
+  const mixedSession = { id: mixedSessionId, header: { id: mixedSessionId, cwd: workspace } }
+  const mixedPath = join(workspace, 'v5-mixed-migration.md')
+  const mixedCur = 'alpha 1\ngap\nbeta 0\n'
+  writeFileSync(mixedPath, mixedCur)
+  const mixedStat = statSync(mixedPath)
+  writeFileSync(join(stateDir, mixedSessionId + '.json'), JSON.stringify({
+    version: 5,
+    root: workspace,
+    baseReady: false,
+    files: {
+      'v5-mixed-migration.md': {
+        base: makeEntry('alpha 0\ngap\nbeta 0\n', 'legacy-before'),
+        cur: makeEntry(mixedCur, `${mixedStat.mtimeMs}:${mixedStat.size}`),
+        rev: 3,
+        decisions: { h0: 'accept', h1: 'reject' },
+      },
+    },
+  }))
+
+  const migratedPlugin = (await import('../host/index.mjs?v5-review-migration=' + Date.now())).default
+  const migrated = harness(migratedPlugin, {
+    [acceptedSessionId]: acceptedSession,
+    [mixedSessionId]: mixedSession,
+  })
+  const accepted = await migrated.invoke('getDiff', { sessionId: acceptedSessionId, path: 'v5-accept-migration.md' })
+  assert.deepEqual(accepted.baseline, ['alpha 1', 'gap', 'beta 0'])
+  assert.deepEqual(accepted.hunks.flatMap((hunk) => hunk.newLines), ['beta 1'])
+
+  const mixed = await migrated.invoke('getDiff', { sessionId: mixedSessionId, path: 'v5-mixed-migration.md' })
+  assert.deepEqual(mixed.hunks.flatMap((hunk) => hunk.newLines), ['alpha 1'])
+  assert.equal(readFileSync(mixedPath, 'utf8'), mixedCur)
+  await migrated.invoke('getModified', { sessionId: acceptedSessionId })
+  assert.equal(JSON.parse(readFileSync(join(stateDir, acceptedSessionId + '.json'), 'utf8')).version, 7)
 })
 
 test('subagent writes and structured deletes are reviewed by the nearest visible parent session', async () => {
@@ -155,16 +524,18 @@ test('opaque shell results do not claim unrelated files', async () => {
   assert.equal(JSON.stringify(state().files), before)
 })
 
-test('strict gate denies every writable raw shell entry before dispatch', async () => {
+test('shell gate blocks writable raw shell before dispatch, regardless of command language', async () => {
   const h = harness()
-  const target = join(workspace, 'strict-gate-target.md')
-  writeFileSync(target, 'must remain\n')
+  const target = join(workspace, 'shell-gate-target')
+  mkdirSync(target, { recursive: true })
+  writeFileSync(join(target, 'keep.md'), 'must remain\n')
   const attempts = [
-    ['bash', { command: `rm -f '${target}'` }],
-    ['bash', { command: `python3 -c "import os; os.remove('${target}')"`, run_in_background: true }],
-    ['bash', { command: `node -e "require('fs').rmSync('${target}')"`, sandbox_permissions: 'danger-full-access', justification: 'delete it' }],
-    ['shell', { command: `find '${workspace}' -delete` }],
-    ['pwsh', { command: `Remove-Item '${target}'` }],
+    ['bash', { command: `rm -rf '${target}'` }],
+    ['bash', { command: `python3 -c "import shutil; shutil.rmtree('${target}')"` }],
+    ['bash', { command: `node -e "require('fs').rmSync('${target}', { recursive: true })"` }],
+    ['shell', { command: `rm -rf '${target}'` }],
+    ['pwsh', { command: `Remove-Item -Recurse '${target}'` }],
+    ['bash', { command: `rm -rf '${target}'`, run_in_background: true }],
     ['powershell', { command: `Remove-Item '${target}'` }],
     ['shell_command', { command: `rm -f '${target}'` }],
     ['terminal_open', { type: 'shell' }],
@@ -177,10 +548,265 @@ test('strict gate denies every writable raw shell entry before dispatch', async 
       async () => { dispatched = true; return { kind: 'allow' } },
     )
     assert.equal(decision.kind, 'deny', name)
-    assert.match(decision.reason, /file_delete/)
+    assert.match(decision.reason, /命令未执行/)
     assert.equal(dispatched, false, name)
-    assert.equal(readFileSync(target, 'utf8'), 'must remain\n', name)
+    assert.equal(existsSync(join(target, 'keep.md')), true, name)
   }
+  assert.equal(existsSync(join(stateHome, 'dsh-file-edit-state', 'shell-transactions')), false)
+})
+
+test('foreground raw shell is allowed directly under a resolved read-only policy', async () => {
+  const h = harness(plugin, {}, 'read-only')
+  for (const name of ['bash', 'shell', 'pwsh']) {
+    const downstream = { kind: 'allow', name }
+    const decision = await h.events.get('tools/pre-execute')(
+      { name, arguments: { command: 'pwd' }, agent: { session: { id: 'session-test' } } },
+      async () => downstream,
+    )
+    assert.equal(decision, downstream, name)
+  }
+})
+
+test('raw shell modes allow full access independently of snapshot availability', async () => {
+  const readOnly = harness(plugin, {}, 'read-only')
+  const missing = await readOnly.events.get('tools/pre-execute')(
+    { name: 'bash', arguments: { command: 'pwd' } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(missing.kind, 'deny')
+  assert.match(missing.reason, /^\[权限拒绝\]/)
+
+  const unrestricted = harness(plugin, {}, 'danger-full-access', { shellTransactionLifecycle: true })
+  const unrestrictedDecision = await unrestricted.events.get('tools/pre-execute')(
+    { name: 'bash', arguments: { command: 'pwd' }, agent: { session: { id: 'session-test' } } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(unrestrictedDecision.kind, 'allow')
+
+  const failed = harness(plugin, {}, () => { throw new Error('policy unavailable') })
+  const failure = await failed.events.get('tools/pre-execute')(
+    { name: 'bash', arguments: { command: 'pwd' }, agent: { session: { id: 'session-test' } } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(failure.kind, 'deny')
+  assert.match(failure.reason, /^\[权限拒绝\]/)
+
+  const disabled = harness(plugin, {}, 'workspace-write')
+  const unavailable = await disabled.events.get('tools/pre-execute')(
+    { name: 'bash', arguments: { command: 'pwd' }, agent: { session: { id: 'session-test' } } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(unavailable.kind, 'deny')
+  assert.match(unavailable.reason, /^\[审核不可用\]/)
+})
+
+test('full access missing roots dispatch once and retain coverage without injecting warnings', async () => {
+  for (const enabled of [true, false]) {
+    const sessionId = 'partial-missing-' + enabled
+    const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+    const h = harness(plugin, { [sessionId]: session }, 'danger-full-access', { shellTransactionLifecycle: enabled })
+    const exec = { name: 'bash', arguments: { command: 'synthetic write', audit_root: join(temp, 'not-created') }, agent: { session } }
+    assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+    let count = 0
+    const output = await h.events.get('tools/execute')(exec, async () => {
+      count++
+      writeFileSync(join(temp, sessionId + '.txt'), 'outside workspace')
+      return { isError: false, content: [{ type: 'text', text: 'done' }], value: { exitCode: 0 } }
+    })
+    assert.equal(count, 1)
+    assert.equal(output.isError, false)
+    assert.equal(h.events.has('tools/post-execute'), false)
+    assert.deepEqual(output.content, [{ type: 'text', text: 'done' }])
+    assert.equal(output.content.at(-1).text, 'done')
+    assert.equal(stateForSession(sessionId).auditCoverage.kind, 'partial')
+    const reboot = harness(plugin, { [sessionId]: session })
+    const snapshot = await reboot.invoke('getModifiedSnapshot', { sessionId })
+    assert.equal(snapshot.auditCoverage.kind, 'partial')
+    assert.deepEqual(snapshot.files, [])
+    assert.equal((await reboot.invoke('getModifiedSnapshot', { sessionId: 'another-session' })).auditCoverage, null)
+  }
+})
+
+test('full access snapshot depth overflow does not block or duplicate execution and retains failure outcome', async () => {
+  const root = join(temp, 'partial-depth')
+  let deep = root
+  for (let i = 0; i < 65; i++) deep = join(deep, 'd')
+  mkdirSync(deep, { recursive: true })
+  const sessionId = 'partial-overflow'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'danger-full-access', { shellTransactionLifecycle: true })
+  const exec = { name: 'bash', arguments: { command: 'synthetic', audit_root: root }, agent: { session } }
+  let count = 0
+  const result = await h.events.get('tools/execute')(exec, async () => {
+    count++
+    writeFileSync(join(temp, 'partial-overflow-out.txt'), 'written')
+    return { isError: false, content: [], value: { exitCode: 17 } }
+  })
+  assert.equal(count, 1)
+  assert.equal(result.value.exitCode, 17)
+  const failure = new Error('original-command-failure')
+  await assert.rejects(h.events.get('tools/execute')(exec, async () => {
+    count++
+    throw failure
+  }), (error) => error === failure)
+  assert.equal(count, 2)
+  assert.equal(stateForSession(sessionId).auditCoverage.kind, 'partial')
+})
+
+test('full access packaged Bash writes beyond its snapshot and keeps the exit marker', { skip: !process.env.DSH_TEST_RUNTIME_DIR }, async () => {
+  const { pathToFileURL } = await import('node:url')
+  const consumer = await import(pathToFileURL(join(process.env.DSH_TEST_RUNTIME_DIR, 'node_modules/@deepseek-ai/dsh-tool-bash/lib/index.js')).href)
+  const root = mkdtempSync(join(temp, 'partial-native-'))
+  const outside = mkdtempSync(join(temp, 'partial-native-outside-'))
+  const sessionId = 'partial-native'
+  const session = { id: sessionId, header: { id: sessionId, cwd: root } }
+  const policy = { mode: 'danger-full-access', workspaceRoot: root }
+  let definition
+  let calls = 0
+  consumer.apply({
+    get: (name) => name === 'sandboxPolicy' ? { resolve: () => policy } : undefined,
+    tools: { register: (def) => { definition = def; return () => {} } },
+    effect: (fn) => fn(),
+    systemPrompt: { section: () => () => {} },
+    shellEnv: { collect: () => ({}) },
+    shell: {
+      sandboxMode: 'read-only', resolve: (spec) => spec,
+      run: async (spec) => {
+        assert.equal(spec.sandboxPolicy.mode, 'danger-full-access')
+        calls++
+        const stdout = execFileSync('/bin/bash', ['-c', spec.command], { cwd: root, timeout: 10_000, encoding: 'utf8' })
+        return { exitCode: 0, stdout: { text: stdout, truncated: false }, stderr: { text: '', truncated: false } }
+      },
+    },
+  }, { auditFullAccessWrites: true, enableRunInBackground: false })
+  const h = harness(plugin, { [sessionId]: session }, () => policy, { shellTransactionLifecycle: true })
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'"
+  const exec = {
+    name: 'bash', callId: 'native-call', signal: new AbortController().signal, agent: { session },
+    arguments: {
+      command: 'printf inside > inside.txt; mkdir -p ' + quote(join(outside, 'new')) + '; printf outside > ' + quote(join(outside, 'new', 'out.txt')),
+      description: 'synthetic outside writes', sandbox_permissions: 'danger-full-access', justification: 'already allowed',
+    },
+  }
+  const result = await h.events.get('tools/execute')(exec, async () => {
+    const value = await definition.execute(exec.arguments, exec)
+    return { isError: false, value, content: [{ type: 'text', text: '[exit code: 0]' }] }
+  })
+  assert.equal(calls, 1)
+  assert.equal(readFileSync(join(outside, 'new', 'out.txt'), 'utf8'), 'outside')
+  assert.equal(stateForSession(sessionId).files['inside.txt'].cur.content, 'inside')
+  assert.equal(h.events.has('tools/post-execute'), false)
+  assert.deepEqual(result.content, [{ type: 'text', text: '[exit code: 0]' }])
+})
+
+test('full access settlement failure never reruns a successful command', async () => {
+  const root = join(temp, 'partial-root-delete')
+  mkdirSync(root)
+  writeFileSync(join(root, 'old.txt'), 'before')
+  const sessionId = 'partial-settlement'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'danger-full-access', { shellTransactionLifecycle: true })
+  let count = 0
+  const result = await h.events.get('tools/execute')({
+    name: 'bash', arguments: { command: 'synthetic root deletion', audit_root: root }, agent: { session },
+  }, async () => {
+    count++
+    rmSync(root, { recursive: true })
+    return { isError: false, content: [], value: { exitCode: 0 } }
+  })
+  assert.equal(count, 1)
+  assert.equal(result.isError, false)
+  assert.equal(result.value.exitCode, 0)
+  assert.equal(stateForSession(sessionId).auditCoverage.kind, 'partial')
+})
+
+test('each call resolves the live session mode and workspace escalation remains approval-owned', async () => {
+  let mode = 'read-only'
+  const requests = []
+  const h = harness(plugin, {}, (request) => {
+    requests.push(request)
+    const resolvedMode = request.mode ?? mode
+    return { mode: resolvedMode, workspaceRoot: workspace, sessionId: request.session?.id }
+  }, { shellTransactionLifecycle: true })
+  const exec = { name: 'bash', arguments: { command: 'pwd' }, agent: { session: { id: 'session-test' } } }
+  assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+  mode = 'workspace-write'
+  assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+  mode = 'danger-full-access'
+  const full = await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))
+  assert.equal(full.kind, 'allow')
+
+  mode = 'read-only'
+  const escalated = {
+    ...exec,
+    arguments: { command: 'pwd', sandbox_permissions: 'workspace-write', justification: 'A bounded write is required.' },
+  }
+  assert.equal((await h.events.get('tools/pre-execute')(escalated, async () => ({ kind: 'allow' }))).kind, 'allow')
+  await assert.rejects(
+    h.events.get('tools/execute')(escalated, async () => { throw new Error('approval for command was rejected by the user') }),
+    /approval for command was rejected by the user/,
+  )
+  assert.ok(requests.some((request) => request.mode === 'workspace-write' && request.session?.id === 'session-test'))
+})
+
+test('full access snapshots and reviews changes under an arbitrary audit root', async () => {
+  const sessionId = 'session-shell-full-access-root'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const auditRootSpelling = join(temp, 'full-access-audit-root')
+  mkdirSync(auditRootSpelling, { recursive: true })
+  const auditRoot = realpathSync(auditRootSpelling)
+  const target = join(auditRoot, 'outside-workspace.txt')
+  const h = harness(plugin, { [sessionId]: session }, 'danger-full-access', { shellTransactionLifecycle: true })
+  const exec = {
+    name: 'bash',
+    callId: 'call-full-access-root',
+    arguments: { command: 'write outside-workspace.txt', audit_root: auditRoot },
+    agent: { session },
+  }
+
+  assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+  await h.events.get('tools/execute')(exec, async () => {
+    writeFileSync(target, 'full access captured\n')
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+
+  const snapshot = await h.invoke('getModifiedSnapshot', { sessionId })
+  assert.ok(snapshot.files.some((file) => file.path === target && file.status === 'added'), JSON.stringify(snapshot))
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: snapshot.files.find((file) => file.path === target).id })).ok, true)
+  assert.equal(existsSync(target), false)
+})
+
+test('full access shell directory deletion outside the workspace remains recoverable', async () => {
+  const sessionId = 'session-shell-full-access-delete'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const auditRootSpelling = join(temp, 'full-access-delete-root')
+  const directorySpelling = join(auditRootSpelling, 'deleted-directory')
+  mkdirSync(join(directorySpelling, 'nested'), { recursive: true })
+  writeFileSync(join(directorySpelling, 'a.txt'), 'outside alpha\n')
+  writeFileSync(join(directorySpelling, 'nested', 'b.txt'), 'outside beta\n')
+  const auditRoot = realpathSync(auditRootSpelling)
+  const directory = join(auditRoot, 'deleted-directory')
+  const h = harness(plugin, { [sessionId]: session }, 'danger-full-access', { shellTransactionLifecycle: true })
+  const exec = {
+    name: 'bash',
+    callId: 'call-full-access-delete',
+    arguments: { command: 'rm -rf deleted-directory', audit_root: auditRoot },
+    agent: { session },
+  }
+
+  await h.events.get('tools/execute')(exec, async () => {
+    rmSync(directory, { recursive: true })
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+
+  const persisted = stateForSession(sessionId)
+  const records = Object.values(persisted.files).filter((file) => file.deletion?.root === directory)
+  assert.equal(records.length, 2)
+  const deletionBatchId = records[0].deletion.deletionBatchId
+  const restored = await h.invoke('rejectDeletionBatch', { sessionId, deletionBatchId })
+  assert.equal(restored.ok, true, JSON.stringify(restored))
+  assert.equal(readFileSync(join(directory, 'a.txt'), 'utf8'), 'outside alpha\n')
+  assert.equal(readFileSync(join(directory, 'nested', 'b.txt'), 'utf8'), 'outside beta\n')
 })
 
 test('strict gate allows structured file tools and unrelated read tools', async () => {
@@ -195,15 +821,302 @@ test('strict gate allows structured file tools and unrelated read tools', async 
   }
 })
 
-test('monotonic guard remains the final raw shell denial after pre-execute listeners', async () => {
-  const h = harness()
-  assert.equal(h.guards.length, 1)
-  for (const name of ['bash', 'shell', 'pwsh', 'powershell', 'shell_command', 'terminal_open', 'terminal_send']) {
-    assert.match(h.guards[0]({ name, arguments: {} }), /file_delete/, name)
+test('monotonic guard enforces the same raw shell policy after all listeners', async () => {
+  const writable = harness()
+  assert.equal(writable.guards.length, 1)
+  for (const name of ['powershell', 'shell_command', 'terminal_open', 'terminal_send']) {
+    assert.match(writable.guards[0]({ name, arguments: {} }), /命令未执行/, name)
+  }
+  for (const name of ['bash', 'shell', 'pwsh']) {
+    assert.match(writable.guards[0]({ name, arguments: {}, agent: { session: { id: 'session-test' } } }), /^\[审核不可用\]/, name)
   }
   for (const name of ['shell_readonly', 'write', 'edit', 'file_delete', 'file_move', 'read']) {
-    assert.equal(h.guards[0]({ name, arguments: {} }), undefined, name)
+    assert.equal(writable.guards[0]({ name, arguments: {} }), undefined, name)
   }
+  const readOnly = harness(plugin, {}, 'read-only')
+  assert.equal(readOnly.guards[0]({ name: 'bash', arguments: {}, agent: { session: { id: 'session-test' } } }), undefined)
+  assert.match(readOnly.guards[0]({ name: 'bash', arguments: { sandbox_permissions: 'workspace-write' }, agent: { session: { id: 'session-test' } } }), /^\[审核不可用\]/)
+})
+
+test('workspace symlink roots are canonicalized before a writable transaction', async () => {
+  const sessionId = 'session-shell-symlink-root'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const symlinkRoot = join(temp, 'workspace-root-link')
+  try { symlinkSync(workspace, symlinkRoot, 'dir') } catch (error) { return }
+  const h = harness(plugin, { [sessionId]: session }, () => ({
+    mode: 'workspace-write', workspaceRoot: symlinkRoot, sessionId,
+  }), { shellTransactionLifecycle: true })
+  const exec = { name: 'bash', callId: 'call-symlink-root', arguments: { command: 'write symlink-root-proof.txt' }, agent: { session } }
+  assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+  const target = join(workspace, 'symlink-root-proof.txt')
+  await h.events.get('tools/execute')(exec, async () => {
+    writeFileSync(target, 'captured through canonical root\n')
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  const snapshot = await h.invoke('getModifiedSnapshot', { sessionId })
+  assert.ok(snapshot.files.some((file) => file.path === 'symlink-root-proof.txt'))
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: 'symlink-root-proof.txt' })).ok, true)
+})
+
+test('subagent shell resolves child permission but settles into the visible parent ledger', async () => {
+  const child = { id: 'session-shell-child', header: { id: 'session-shell-child', cwd: workspace, origin: 'subagent', parentSession: 'session-test' } }
+  const seen = []
+  const h = harness(plugin, { 'session-shell-child': child }, (request) => {
+    seen.push(request.session?.id)
+    return { mode: 'workspace-write', workspaceRoot: workspace, sessionId: request.session?.id }
+  }, { shellTransactionLifecycle: true })
+  const target = join(workspace, 'subagent-shell-write.txt')
+  const exec = { name: 'bash', callId: 'call-subagent-shell', arguments: { command: 'write subagent-shell-write.txt' }, agent: { session: child } }
+  await h.events.get('tools/execute')(exec, async () => {
+    writeFileSync(target, 'child shell write\n')
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  assert.ok(seen.includes('session-shell-child'))
+  assert.ok((await h.invoke('getModifiedSnapshot', { sessionId: 'session-test' })).files.some((file) => file.path === 'subagent-shell-write.txt'))
+  assert.equal(existsSync(join(stateHome, 'dsh-file-edit-state', 'session-shell-child.json')), false)
+  assert.equal((await h.invoke('rejectFile', { sessionId: 'session-test', path: 'subagent-shell-write.txt' })).ok, true)
+})
+
+test('snapshot preparation failures are classified before dispatch', async () => {
+  const sessionId = 'session-shell-snapshot-failure'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const source = join(workspace, 'snapshot-hard-link-source.txt')
+  const alias = join(workspace, 'snapshot-hard-link-alias.txt')
+  writeFileSync(source, 'hard linked\n')
+  try { execFileSync('/bin/ln', [source, alias]) } catch (error) { return }
+  let dispatched = false
+  await assert.rejects(
+    h.events.get('tools/execute')({ name: 'bash', arguments: { command: 'pwd' }, agent: { session } }, async () => {
+      dispatched = true
+      return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+    }),
+    (error) => error.code === 'file-edit-shell-snapshot-failed'
+      && error.auditCauseCode === 'snapshot-hard-link'
+      && /^\[快照失败\] 命令未执行/.test(error.message),
+  )
+  assert.equal(dispatched, false)
+  rmSync(alias)
+  rmSync(source)
+})
+
+test('snapshot limits and post-command instability have distinct user-facing classifications', async () => {
+  const limitSessionId = 'session-shell-audit-limit'
+  const limitSession = { id: limitSessionId, header: { id: limitSessionId, cwd: workspace } }
+  const h = harness(plugin, { [limitSessionId]: limitSession }, 'workspace-write', { shellTransactionLifecycle: true })
+  let deep = join(workspace, 'snapshot-depth-limit-host')
+  for (let index = 0; index < 65; index++) deep = join(deep, `d${index}`)
+  mkdirSync(deep, { recursive: true })
+  let dispatched = false
+  await assert.rejects(
+    h.events.get('tools/execute')({ name: 'bash', arguments: { command: 'pwd' }, agent: { session: limitSession } }, async () => {
+      dispatched = true
+      return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+    }),
+    (error) => error.code === 'file-edit-shell-audit-limit'
+      && error.auditCauseCode === 'snapshot-depth-limit'
+      && /^\[审计超限\] 命令未执行/.test(error.message),
+  )
+  assert.equal(dispatched, false)
+  rmSync(join(workspace, 'snapshot-depth-limit-host'), { recursive: true })
+
+  const conflictSessionId = 'session-shell-settlement-conflict'
+  const conflictSession = { id: conflictSessionId, header: { id: conflictSessionId, cwd: workspace } }
+  const target = join(workspace, 'snapshot-settlement-conflict.txt')
+  let timer
+  try {
+    await assert.rejects(
+      h.events.get('tools/execute')({ name: 'bash', arguments: { command: 'continuous writer' }, agent: { session: conflictSession } }, async () => {
+        writeFileSync(target, '0\n')
+        let revision = 0
+        timer = setInterval(() => { writeFileSync(target, `${++revision}\n`) }, 15)
+        return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+      }),
+      (error) => error.code === 'file-edit-shell-settlement-conflict'
+        && error.auditCauseCode === 'snapshot-finalize-stale'
+        && /^\[结算冲突\] 命令可能已经修改文件/.test(error.message),
+    )
+  } finally {
+    clearInterval(timer)
+    rmSync(target, { force: true })
+  }
+})
+
+test('enabled shell lifecycle allows workspace-write and commits additions to the ledger', async () => {
+  const h = harness(plugin, {}, 'workspace-write', { shellTransactionLifecycle: true })
+  const exec = {
+    name: 'bash',
+    callId: 'call-internal-transaction',
+    arguments: { command: 'python3 dynamic-write.py' },
+    agent: { session: { id: 'session-test' } },
+  }
+  const denied = await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))
+  assert.equal(denied.kind, 'allow')
+
+  const target = join(workspace, 'internal-transaction.txt')
+  const result = await h.events.get('tools/execute')(exec, async () => {
+    writeFileSync(target, 'transactional write\n')
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  assert.equal(result.value.exitCode, 0)
+  assert.equal(state().files['internal-transaction.txt'].base.present, false)
+  assert.equal(state().files['internal-transaction.txt'].cur.content, 'transactional write\n')
+  assert.equal(shellTransactionManifests().some((item) => item.changes?.some((entry) => entry.relativePath === 'internal-transaction.txt')), false)
+  assert.equal((await h.invoke('rejectFile', { sessionId: 'session-test', path: 'internal-transaction.txt' })).ok, true)
+})
+
+test('workspace-write shell rm creates a durable directory batch and restart reject restores exact payload', async () => {
+  const sessionId = 'session-shell-directory-delete'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const directory = join(workspace, 'shell-directory-delete')
+  mkdirSync(join(directory, 'nested', 'empty'), { recursive: true })
+  writeFileSync(join(directory, 'a.txt'), 'alpha\n')
+  writeFileSync(join(directory, 'nested', 'b.bin'), Buffer.from([0, 1, 2, 255]))
+  chmodSync(join(directory, 'a.txt'), 0o640)
+  symlinkSync('../a.txt', join(directory, 'nested', 'a-link'))
+  const exec = { name: 'bash', callId: 'call-shell-rm-directory', arguments: { command: 'rm -rf shell-directory-delete' }, agent: { session } }
+  await h.events.get('tools/execute')(exec, async () => {
+    rmSync(directory, { recursive: true })
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  assert.equal(existsSync(directory), false)
+  const persisted = stateForSession(sessionId)
+  const records = Object.values(persisted.files).filter((file) => file.deletion?.root === 'shell-directory-delete')
+  assert.equal(records.length, 2)
+  assert.equal(new Set(records.map((file) => file.deletion.deletionBatchId)).size, 1)
+  const batchId = records[0].deletion.deletionBatchId
+  const quarantine = join(stateHome, 'dsh-file-edit-state', sessionId, 'quarantine', batchId)
+  assert.equal(existsSync(join(quarantine, 'payload', 'shell-directory-delete', 'nested', 'empty')), true)
+  assert.equal(lstatSync(join(quarantine, 'payload', 'shell-directory-delete', 'nested', 'a-link')).isSymbolicLink(), true)
+
+  const restartedPlugin = (await import('../host/index.mjs?shell-directory-restart=' + Date.now())).default
+  const restarted = harness(restartedPlugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const restored = await restarted.invoke('rejectDeletionBatch', { sessionId, deletionBatchId: batchId })
+  assert.equal(restored.ok, true, JSON.stringify(restored))
+  assert.equal(readFileSync(join(directory, 'a.txt'), 'utf8'), 'alpha\n')
+  assert.deepEqual(readFileSync(join(directory, 'nested', 'b.bin')), Buffer.from([0, 1, 2, 255]))
+  assert.equal(statSync(join(directory, 'a.txt')).mode & 0o777, 0o640)
+  assert.equal(existsSync(join(directory, 'nested', 'empty')), true)
+  assert.equal(lstatSync(join(directory, 'nested', 'a-link')).isSymbolicLink(), true)
+  assert.equal(existsSync(quarantine), false)
+})
+
+test('a real foreground Bash rm is settled and restored through the same directory batch', async () => {
+  const sessionId = 'session-real-bash-delete'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const directory = join(workspace, 'real-bash-delete')
+  mkdirSync(join(directory, 'nested'), { recursive: true })
+  writeFileSync(join(directory, 'nested', 'proof.txt'), 'real bash bytes\n')
+  await h.events.get('tools/execute')({
+    name: 'bash', callId: 'call-real-bash-rm', arguments: { command: 'rm -rf real-bash-delete' }, agent: { session },
+  }, async () => {
+    execFileSync('/bin/bash', ['-c', 'rm -rf -- real-bash-delete'], { cwd: workspace })
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  const deletion = (await h.invoke('getModifiedSnapshot', { sessionId })).files.find((file) => file.path === 'real-bash-delete/nested/proof.txt')
+  assert.ok(deletion)
+  const restored = await h.invoke('rejectDeletionBatch', { sessionId, deletionBatchId: deletion.deletionBatchId })
+  assert.equal(restored.ok, true)
+  assert.equal(readFileSync(join(directory, 'nested', 'proof.txt'), 'utf8'), 'real bash bytes\n')
+})
+
+test('shell deletion of an empty directory is represented by a recoverable anchor batch', async () => {
+  const sessionId = 'session-shell-empty-directory'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const directory = join(workspace, 'shell-empty-directory')
+  mkdirSync(directory)
+  await h.events.get('tools/execute')({
+    name: 'bash', callId: 'call-shell-empty-directory', arguments: { command: 'rmdir shell-empty-directory' }, agent: { session },
+  }, async () => {
+    rmSync(directory, { recursive: true })
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  const snapshot = await h.invoke('getModifiedSnapshot', { sessionId })
+  const anchor = snapshot.files.find((file) => file.deletionRoot === 'shell-empty-directory')
+  assert.ok(anchor)
+  assert.equal(anchor.deletionFileCount, 1)
+  const restored = await h.invoke('rejectDeletionBatch', { sessionId, deletionBatchId: anchor.deletionBatchId })
+  assert.equal(restored.ok, true, JSON.stringify(restored))
+  assert.equal(existsSync(directory), true)
+})
+
+test('one workspace-write shell transaction settles mixed add modify and delete changes', async () => {
+  const sessionId = 'session-shell-mixed-settlement'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const modified = join(workspace, 'shell-mixed-modified.txt')
+  const deleted = join(workspace, 'shell-mixed-deleted.txt')
+  const added = join(workspace, 'shell-mixed-added.txt')
+  writeFileSync(modified, 'before modify\n')
+  writeFileSync(deleted, 'before delete\n')
+  await h.events.get('tools/execute')({
+    name: 'bash', callId: 'call-shell-mixed', arguments: { command: 'python3 mixed.py' }, agent: { session },
+  }, async () => {
+    writeFileSync(modified, 'after modify\n')
+    writeFileSync(added, 'new file\n')
+    rmSync(deleted)
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  const snapshot = await h.invoke('getModifiedSnapshot', { sessionId })
+  assert.deepEqual(snapshot.files.map((file) => [file.path, file.status]), [
+    ['shell-mixed-added.txt', 'added'],
+    ['shell-mixed-deleted.txt', 'deleted'],
+    ['shell-mixed-modified.txt', 'modified'],
+  ])
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: 'shell-mixed-added.txt' })).ok, true)
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: 'shell-mixed-modified.txt' })).ok, true)
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: 'shell-mixed-deleted.txt' })).ok, true)
+  assert.equal(existsSync(added), false)
+  assert.equal(readFileSync(modified, 'utf8'), 'before modify\n')
+  assert.equal(readFileSync(deleted, 'utf8'), 'before delete\n')
+})
+
+test('shell deletion of a previously reviewed new file remains recoverable and returns to added review', async () => {
+  const sessionId = 'session-shell-created-then-deleted'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const target = join(workspace, 'shell-created-then-deleted.txt')
+  writeFileSync(target, 'created earlier\n')
+  await h.events.get('tools/result')(
+    { name: 'write', agent: { session } },
+    { isError: false, value: { path: target, operation: 'create', before: null, after: 'created earlier\n' } },
+  )
+  await h.events.get('tools/execute')({
+    name: 'bash', callId: 'call-shell-created-delete', arguments: { command: 'rm shell-created-then-deleted.txt' }, agent: { session },
+  }, async () => {
+    rmSync(target)
+    return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+  })
+  const deleted = (await h.invoke('getModifiedSnapshot', { sessionId })).files.find((file) => file.path === 'shell-created-then-deleted.txt')
+  assert.equal(deleted.createdThenDeleted, true)
+  const rejected = await h.invoke('rejectFile', { sessionId, path: 'shell-created-then-deleted.txt' })
+  assert.equal(rejected.status, 'added')
+  assert.equal(readFileSync(target, 'utf8'), 'created earlier\n')
+})
+
+test('internal shell lifecycle retains one failed settlement for a surviving process tree', async () => {
+  const sessionId = 'session-internal-survivor'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const h = harness(plugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const target = join(workspace, 'internal-survivor.txt')
+  await assert.rejects(
+    h.events.get('tools/execute')({
+      name: 'bash',
+      callId: 'call-internal-survivor',
+      arguments: { command: 'helper &' },
+      agent: { session },
+    }, async () => {
+      writeFileSync(target, 'written before survivor detection\n')
+      throw Object.assign(new Error('foreground child survived'), { code: 'SHELL_PROCESS_TREE_SURVIVED' })
+    }),
+    (error) => error.code === 'SHELL_PROCESS_TREE_SURVIVED' && typeof error.snapshotTransactionId === 'string',
+  )
+  const manifest = shellTransactionManifests().find((item) => item.failure === 'SHELL_PROCESS_TREE_SURVIVED')
+  assert.equal(manifest.state, 'failed')
+  assert.equal(manifest.changes.find((entry) => entry.relativePath === 'internal-survivor.txt').kind, 'added')
 })
 
 test('shell_readonly forces read-only policy and offers no escalation or background fields', async () => {
@@ -326,6 +1239,53 @@ test('shell changes are recorded even when the tool later fails', async () => {
   assert.equal(state().files['shell-before-error.md'].cur.content, 'written before failure\n')
 })
 
+test('a pending created file deleted by an already-running shell remains as an unrecoverable ledger incident', async () => {
+  const sessionId = 'session-shell-net-zero-delete'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const statePath = join(stateHome, 'dsh-file-edit-state', sessionId + '.json')
+  const target = join(workspace, 'shell-net-zero-delete.md')
+  writeFileSync(target, 'last known content\n')
+  const h = harness(plugin, { [sessionId]: session })
+  await h.events.get('tools/result')(
+    { name: 'write', agent: { session } },
+    { isError: false, value: { path: target, operation: 'create', before: null, after: 'last known content\n' } },
+  )
+
+  await h.events.get('tools/execute')(
+    { name: 'bash', callId: 'legacy-shell-delete', arguments: { command: `rm -f '${target}'` }, agent: { session } },
+    async () => {
+      rmSync(target, { force: true })
+      return { isError: false, value: { exitCode: 0 } }
+    },
+  )
+
+  const persisted = JSON.parse(readFileSync(statePath, 'utf8'))
+  assert.equal(persisted.files['shell-net-zero-delete.md'].cur.note, 'shell-delete-unrecoverable')
+  assert.equal(persisted.files['shell-net-zero-delete.md'].deletedPreview.content, 'last known content\n')
+
+  const restartedPlugin = (await import('../host/index.mjs?shell-net-zero-delete=' + Date.now())).default
+  const restarted = harness(restartedPlugin, { [sessionId]: session })
+  const listing = await restarted.invoke('getModifiedSnapshot', { sessionId })
+  const row = listing.files.find((file) => file.path === 'shell-net-zero-delete.md')
+  assert.equal(row.status, 'deleted')
+  assert.equal(row.note, 'shell-delete-unrecoverable')
+  assert.equal(row.restorable, false)
+
+  const diff = await restarted.invoke('getDiff', { sessionId, path: 'shell-net-zero-delete.md' })
+  assert.equal(diff.deleted, true)
+  assert.equal(diff.note, 'shell-delete-unrecoverable')
+  assert.equal(diff.restorable, false)
+  assert.deepEqual(diff.deletedPreview, ['last known content'])
+  const rejected = await restarted.invoke('rejectFile', { sessionId, path: 'shell-net-zero-delete.md' })
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /无法自动恢复/)
+  assert.equal(existsSync(target), false)
+
+  const accepted = await restarted.invoke('acceptFile', { sessionId, path: 'shell-net-zero-delete.md' })
+  assert.equal(accepted.changed, false)
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).files['shell-net-zero-delete.md'], undefined)
+})
+
 test('restart snapshot restores pending review without a workspace scan', async () => {
   const restartedPlugin = (await import('../host/index.mjs?restart-snapshot=' + Date.now())).default
   const h = harness(restartedPlugin)
@@ -334,6 +1294,24 @@ test('restart snapshot restores pending review without a workspace scan', async 
   assert.equal(result.restoring, true)
   assert.ok(result.files.some(file => file.path === 'beyond-8000/target.md'))
   assert.equal(h.listCalls, 0)
+})
+
+test('first-screen review snapshot does not run shell transaction cleanup', async () => {
+  const sessionId = 'session-startup-cleanup'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const sessionHash = createHash('sha256').update(sessionId).digest('hex').slice(0, 32)
+  const preparing = join(stateHome, 'dsh-file-edit-state', 'shell-transactions', sessionHash, '.startup.preparing')
+  mkdirSync(preparing, { recursive: true })
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+  utimesSync(preparing, old, old)
+  const restartedPlugin = (await import('../host/index.mjs?startup-cleanup=' + Date.now())).default
+  const h = harness(restartedPlugin, { [sessionId]: session }, 'workspace-write', { shellTransactionLifecycle: true })
+  const snapshot = await h.invoke('getModifiedSnapshot', { sessionId })
+  assert.equal(snapshot.ok, true)
+  assert.equal(existsSync(preparing), true)
+  const hydrated = await h.invoke('getModified', { sessionId })
+  assert.equal(hydrated.ok, true)
+  assert.equal(existsSync(preparing), false)
 })
 
 test('restart reconciliation hydrates only persisted review targets without scanning the workspace', async () => {
@@ -552,7 +1530,7 @@ test('accepting a tombstone refuses to overwrite a path that reappeared', async 
 })
 
 test('file_delete quarantines external files with opaque review authority', async () => {
-  const h = harness()
+  const h = harness(plugin, {}, 'danger-full-access')
   const outside = join(temp, 'delete-external.txt')
   writeFileSync(outside, 'external delete baseline\n')
   const exec = { agent: { session: { id: 'session-test' } }, signal: new AbortController().signal }
@@ -720,7 +1698,7 @@ test('rejectAll falls back to remaining files for a partial directory batch', as
   assert.equal(rejected.ok, true)
   assert.equal(existsSync(join(directory, 'accepted.md')), false)
   assert.equal(readFileSync(join(directory, 'restore.md'), 'utf8'), 'restore me\n')
-  assert.equal(existsSync(join(stateHome, 'dsh-file-edit-state', 'session-test', 'quarantine', deletion.deletionBatchId)), true)
+  assert.equal(existsSync(join(stateHome, 'dsh-file-edit-state', 'session-test', 'quarantine', deletion.deletionBatchId)), false)
 })
 
 test('directory batch actions fail closed after one child was reviewed separately', async () => {
@@ -757,7 +1735,7 @@ test('directory reject returns stale and preserves quarantine when the original 
 })
 
 test('file_delete recursively records files from an external directory', async () => {
-  const h = harness()
+  const h = harness(plugin, {}, 'danger-full-access')
   const directory = join(temp, 'delete-external-directory')
   mkdirSync(join(directory, 'nested'), { recursive: true })
   writeFileSync(join(directory, 'one.md'), 'one\n')
@@ -1041,4 +2019,89 @@ test('workspace symlink escape is canonicalized as an external review target', a
   assert.equal(item.external, true)
   assert.equal((await h.invoke('rejectFile', { sessionId: 'session-test', path: item.id })).ok, true)
   assert.equal(readFileSync(outside, 'utf8'), 'before symlink edit\n')
+})
+
+test('cold file browsing uses persisted headers without attaching history or scanning review targets', async () => {
+  const sessionId = 'cold-browse-session'
+  const target = join(workspace, 'cold-browse.txt')
+  writeFileSync(target, 'cold content')
+  let listed = 0
+  const h = harness(plugin, {}, 'read-only', {}, { sessionPersistence: {
+    list: async () => { listed++; return [{ id: sessionId, cwd: workspace }] },
+    load: () => { throw new Error('must not load full history') },
+  } })
+  const opened = await h.invoke('resolveOpenTarget', { sessionId, path: 'cold-browse.txt', cwd: '/untrusted' })
+  assert.equal(opened.ok, true, JSON.stringify(opened))
+  assert.equal(opened.id, 'cold-browse.txt')
+  const diff = await h.invoke('getDiff', { sessionId, path: opened.id })
+  assert.equal(diff.ok, true, JSON.stringify(diff))
+  assert.equal(h.listCalls, 0)
+  assert.ok(listed > 0)
+  const missing = await h.invoke('resolveOpenTarget', { sessionId: 'unknown-cold-session', absolutePath: target, cwd: workspace })
+  assert.equal(missing.error, 'session-not-found')
+})
+
+test('migrated Stable profile permits real Bash writes and recoverable deletion', async (t) => {
+  const workspace = mkdtempSync(join(temp, 'upgrade-workspace-'))
+  const policy = () => ({ mode: 'workspace-write', workspaceRoot: workspace })
+  const { pathToFileURL } = await import('node:url')
+  const { createRequire } = await import('node:module')
+  const { installBundledProfile } = await import(process.env.DSH_TEST_PROFILE_INSTALLER || '../../../desktop/src/profile-bootstrap.mjs')
+  const resourcesPath = process.env.DSH_TEST_APP_RESOURCES || join(temp, 'upgrade-resources')
+  if (!process.env.DSH_TEST_APP_RESOURCES) {
+    mkdirSync(join(resourcesPath, 'profile-bootstrap'), { recursive: true })
+    writeFileSync(join(resourcesPath, 'profile-bootstrap', 'profile-id'), '0123456789abcdef')
+  }
+  const userData = join(temp, 'upgrade-user-data')
+  t.after(() => rmSync(userData, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
+  t.after(() => rmSync(workspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
+  const profile = join(userData, 'harness', 'profiles', 'web')
+  mkdirSync(profile, { recursive: true })
+  writeFileSync(join(profile, 'package.json'), '{"name":"legacy-user-profile"}')
+  const original = '# preserve user composition\n- insert:\n    - id: dsh-file-edit\n      name: dsh-file-edit\n- id: personal-plugin\n  config: { setting: retained }\n'
+  writeFileSync(join(profile, 'cordis.patch.yml'), original)
+  const sessionId = 'session-profile-migration'
+  const session = { id: sessionId, header: { id: sessionId, cwd: workspace } }
+  const exec = { name: 'bash', callId: 'upgrade-write', arguments: { command: "printf upgraded > upgrade-write.txt" }, agent: { session } }
+  const old = harness(plugin, { [sessionId]: session }, policy, {})
+  const denied = await old.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))
+  assert.notEqual(denied.kind, 'allow')
+  assert.equal(existsSync(join(workspace, 'upgrade-write.txt')), false)
+  const options = { channel: 'stable', isPackaged: true, resourcesPath, userData, runtimeDir: process.env.DSH_TEST_RUNTIME_DIR }
+  if (!process.env.DSH_TEST_APP_RESOURCES) options.extractArchive = async (_archive, destination) => {
+    mkdirSync(join(destination, 'node_modules'), { recursive: true })
+    writeFileSync(join(destination, 'package.json'), '{}')
+  }
+  assert.equal(await installBundledProfile(options), true)
+  const require = createRequire(options.runtimeDir ? join(options.runtimeDir, 'package.json') : import.meta.url)
+  const { parse } = require('yaml')
+  const config = parse(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8'))[0].insert[0].config
+  assert.equal(config.shellTransactionLifecycle, true)
+  assert.equal(readFileSync(join(profile, 'cordis.patch.yml.before-shell-transactions'), 'utf8'), original)
+  assert.equal(await installBundledProfile(options), false)
+  const migratedPlugin = process.env.DSH_TEST_APP_RESOURCES
+    ? (await import(pathToFileURL(join(profile, 'node_modules/dsh-file-edit/host/index.mjs')).href)).default : plugin
+  const h = harness(migratedPlugin, { [sessionId]: session }, policy, config)
+  assert.equal((await h.events.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' }))).kind, 'allow')
+  const execute = async command => {
+    exec.arguments.command = command
+    exec.callId += '-next'
+    return h.events.get('tools/execute')(exec, async () => {
+      execFileSync('/bin/bash', ['-c', command], { cwd: workspace, timeout: 10000 })
+      return { isError: false, value: { kind: 'foreground', exitCode: 0 } }
+    })
+  }
+  await execute('printf upgraded > upgrade-write.txt')
+  assert.equal(stateForSession(sessionId).files['upgrade-write.txt'].cur.content, 'upgraded')
+  assert.equal((await h.invoke('rejectFile', { sessionId, path: 'upgrade-write.txt' })).ok, true)
+  assert.equal(existsSync(join(workspace, 'upgrade-write.txt')), false)
+  const directory = join(workspace, 'upgrade-delete')
+  mkdirSync(join(directory, 'nested'), { recursive: true })
+  writeFileSync(join(directory, 'nested', 'original.txt'), 'recover me')
+  await execute('rm -rf -- upgrade-delete')
+  assert.equal(existsSync(directory), false)
+  const record = stateForSession(sessionId).files['upgrade-delete/nested/original.txt']
+  assert.ok(record.deletion.deletionBatchId)
+  assert.equal((await h.invoke('rejectDeletionBatch', { sessionId, deletionBatchId: record.deletion.deletionBatchId })).ok, true)
+  assert.equal(readFileSync(join(directory, 'nested', 'original.txt'), 'utf8'), 'recover me')
 })

@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { verifyClientBundle } from '../src/client-bundle-contract.mjs'
+import { productProfile } from '../product-channel.cjs'
 
 const desktopDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const suiteRoot = resolve(desktopDir, '..')
@@ -48,11 +50,34 @@ function bootManifest(html) {
   return JSON.parse(encoded)
 }
 
+async function verifyLarkCliTool(profileDir) {
+  const directory = packagePath(profileDir, 'dsh-lark-cli')
+  const installed = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+  const entry = typeof installed.main === 'string' ? installed.main : 'index.mjs'
+  const loaded = await import(`${pathToFileURL(join(directory, entry)).href}?profile-runtime-probe=${Date.now()}`)
+  const registered = []
+  const sections = []
+  const ctx = {
+    tools: { register: tool => { registered.push(tool); return () => {} } },
+    systemPrompt: { section: section => { sections.push(section); return () => {} } },
+    approval: {}, sandbox: {}, subprocess: {},
+    effect: callback => callback(),
+  }
+  loaded.default.apply(ctx, {})
+  const tool = registered.find(candidate => candidate?.name === 'lark_cli')
+  if (tool === undefined || tool.parameters?.properties?.args === undefined || tool.parameters?.properties?.purpose === undefined) {
+    throw new Error('Bundled dsh-lark-cli did not register the expected lark_cli schema')
+  }
+  if (!sections.some(section => section?.name === 'tool:lark-cli')) {
+    throw new Error('Bundled dsh-lark-cli did not register its model guidance')
+  }
+}
+
 for (const artifact of [runtimeArchive, profileArchive]) {
   if (!existsSync(artifact)) throw new Error(`Missing desktop artifact: ${artifact}`)
 }
 
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+const manifest = productProfile(JSON.parse(readFileSync(manifestPath, 'utf8')))
 if (!Array.isArray(manifest.requiredRuntimePlugins) || manifest.requiredRuntimePlugins.length === 0) {
   throw new Error('Product manifest has no requiredRuntimePlugins gate')
 }
@@ -70,6 +95,9 @@ try {
   run('/usr/bin/tar', ['-xzf', profileArchive, '-C', profileDir], root)
 
   const profile = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+  if (!manifest.productPlugins['dsh-desktop-pet'] && existsSync(packagePath(profileDir, 'dsh-desktop-pet'))) {
+    throw new Error('Stable Profile must not contain Desktop Pet')
+  }
   if (JSON.stringify(profile.dsh?.profile?.bundles) !== JSON.stringify(manifest.bundles)) {
     throw new Error('Bundled Profile bundle order differs from distribution/profile-manifest.json')
   }
@@ -82,7 +110,11 @@ try {
     if (required.client === true && installed.exports?.['./client'] === undefined) {
       throw new Error(`Required plugin client export is missing: ${required.package}`)
     }
+    if (required.package === 'dsh-desktop-pet') {
+      verifyClientBundle(readFileSync(join(directory, installed.exports['./client']), 'utf8'), required.package)
+    }
   }
+  await verifyLarkCliTool(profileDir)
 
   const node = join(runtimeDir, 'bin', 'node')
   const dsh = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
@@ -94,6 +126,9 @@ try {
     if (!composition.includes(`- id: ${required.entryId}\n`) || !packageRow.test(composition)) {
       throw new Error(`Required plugin is absent from the effective Cordis composition: ${required.package}`)
     }
+  }
+  if (!composition.includes('shellTransactionLifecycle: true')) {
+    throw new Error('File Edit recoverable shell transaction lifecycle must be enabled in the product composition')
   }
 
   child = spawn(node, [dsh, 'web', '--host', '127.0.0.1', '--port', '0'], {
@@ -110,8 +145,37 @@ try {
     if (!clientIds.has(required.package)) throw new Error(`Required plugin client bundle is absent from Web boot: ${required.package}`)
   }
 
+  // A profile can list every required package and still be unusable when its
+  // local peer closure shadows the runtime's scoped service packages. Creating
+  // one blank session exercises the real Host composition without sending a
+  // model request or reading any user data.
+  const sessionResponse = await fetch(`${url}/api/session.create`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: 'desktop-profile-runtime-smoke',
+      method: 'session.create',
+      payload: { cwd: join(root, 'workspace') },
+    }),
+  })
+  if (!sessionResponse.ok) throw new Error(`Session creation smoke returned HTTP ${String(sessionResponse.status)}`)
+  const sessionResult = await sessionResponse.json()
+  if (sessionResult?.result?.ok !== true || typeof sessionResult.result.value?.sessionId !== 'string') {
+    throw new Error(`Session creation smoke failed: ${JSON.stringify(sessionResult)}`)
+  }
+
   console.log(`profile runtime verification passed: ${String(manifest.requiredRuntimePlugins.length)} required plugins`)
 } finally {
-  if (child !== undefined && child.exitCode === null) child.kill('SIGTERM')
+  if (child !== undefined && child.exitCode === null) {
+    await new Promise(resolveExit => {
+      const timeout = setTimeout(resolveExit, 8_000)
+      child.once('exit', () => {
+        clearTimeout(timeout)
+        resolveExit()
+      })
+      child.kill('SIGTERM')
+    })
+  }
   rmSync(root, { recursive: true, force: true })
 }

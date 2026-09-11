@@ -51,6 +51,7 @@ describe('tsdown client artifact', () => {
       ['react/jsx-runtime', await import('react/jsx-runtime')],
       ['react-dom', await import('react-dom')],
       ['@deepseek-ai/dsh-client-runtime/client', await import('@deepseek-ai/dsh-client-runtime/client')],
+      ['@deepseek-ai/dsh-client-ui-attachment', await import('@deepseek-ai/dsh-client-ui-attachment')],
       ['@deepseek-ai/dsh-client-ui-primitives', await import('@deepseek-ai/dsh-client-ui-primitives')],
     ])
     const exports = handoff!.factory((spec) => {
@@ -65,7 +66,7 @@ describe('tsdown client artifact', () => {
     expect(handoff.id).toBe(PLUGIN_ID)
     expect(exports.apply).toBeTypeOf('function')
     expect(exports.inject).toEqual([
-      'slots', 'conversationEvents', 'conversationViews', 'sessions', 'locale',
+      'slots', 'conversation', 'conversationEvents', 'conversationViews', 'sessions', 'locale',
     ])
   })
 
@@ -85,6 +86,7 @@ describe('tsdown client artifact', () => {
     // the locale-aware view tab label (its settings scope needs a connection
     // handle and the Host-facing settings/remote seams).
     ctx.provide('sessions', { binding: () => undefined })
+    ctx.provide('conversation', { resolveImage: () => Promise.reject(new Error('not rendered')) })
     ctx.provide('connection', { api: { settings: {} }, isLoopback: false } as never)
     ctx.provide('remote', { $on: () => () => {} } as never)
     ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)

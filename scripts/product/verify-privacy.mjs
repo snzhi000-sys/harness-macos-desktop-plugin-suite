@@ -5,16 +5,24 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(process.argv[2] ?? fileURLToPath(new URL('../..', import.meta.url)))
-const result = spawnSync('git', ['ls-files', '-z'], { cwd: repositoryRoot, encoding: 'buffer' })
-if (result.status !== 0) throw new Error('Unable to enumerate tracked files')
+const listGitFiles = args => {
+  const result = spawnSync('git', ['ls-files', '-z', ...args], { cwd: repositoryRoot, encoding: 'buffer' })
+  if (result.status !== 0) throw new Error(`Unable to enumerate Git files: ${args.join(' ')}`)
+  return result.stdout.toString('utf8').split('\0').filter(Boolean)
+}
 
-const files = result.stdout.toString('utf8').split('\0').filter(Boolean)
+const tracked = listGitFiles([])
+const untracked = listGitFiles(['--others', '--exclude-standard'])
+const files = [...new Set([...tracked, ...untracked])].sort()
 const forbiddenNames = [
   /(^|\/)\.sessions?(\/|$)/,
   /(^|\/)\.artifacts(\/|$)/,
   /(^|\/)quarantine(\/|$)/,
   /(^|\/)dsh-file-edit-state(\/|$)/,
   /\.(?:sqlite3?|db|p12|mobileprovision)$/i,
+  /\.(?:key|keystore|jks)$/i,
+  /(^|\/)\.credentials\.ya?ml$/i,
+  /(^|\/)settings\.ya?ml$/i,
   /(^|\/)\.env(?:\.|$)/,
 ]
 const privateMarkers = [
@@ -47,5 +55,7 @@ if (violations.length > 0) {
   for (const [file, rule] of violations) console.error(`${file}: ${rule}`)
   process.exitCode = 1
 } else {
-  console.log(`privacy verification passed for ${String(files.length)} tracked files`)
+  console.log(
+    `privacy verification passed for ${String(tracked.length)} tracked and ${String(untracked.length)} untracked non-ignored files`,
+  )
 }

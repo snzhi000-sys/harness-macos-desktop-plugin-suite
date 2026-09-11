@@ -166,12 +166,41 @@ export function ChatView({
   const openError = useSession(s => s.openError)
   const hasMore = useSession(s => s.hasMore)
   const loadingOlder = useSession(s => s.loadingOlder)
+  const historyError = useSession(s => s.historyError)
+  const [pagePhase, setPagePhase] = useState<'idle' | 'loading' | 'leaving'>('idle')
+  const pageLock = useRef(false)
+  const upwardIntentUntil = useRef(0)
+  const requestPageRef = useRef(() => {})
+  const pageRestoreRef = useRef<PagingAnchor | null>(null)
   const selectedCallId = useStore(s => s.selection?.callId)
 
   const pendingSteering = useMemo(
     () => inbox.filter(item => item.placement === 'steering'),
     [inbox],
   )
+  const mirroredSubmissionIds = useRef(new Set<string>())
+  const visiblePendingSubmissions = useMemo(() => {
+    // Once Host admission publishes the same pure-text occurrence through the
+    // Queue mirror, that authoritative row/bubble owns its presentation. Keep
+    // only unmatched local echoes so a slow admission is still immediate while
+    // queued and steering messages never render twice. Consume as a multiset:
+    // repeated equal prompts correspond to distinct queue occurrences.
+    const mirrored = new Map<string, number>()
+    for (const item of inbox) {
+      if (item.text === null) continue
+      mirrored.set(item.text, (mirrored.get(item.text) ?? 0) + 1)
+    }
+    return pendingSubmissions.filter((submission) => {
+      const scopedId = `${sessionId}:${submission.id}`
+      if (mirroredSubmissionIds.current.has(scopedId)) return false
+      if (submission.images.length > 0) return true
+      const count = mirrored.get(submission.text) ?? 0
+      if (count === 0) return true
+      mirrored.set(submission.text, count - 1)
+      mirroredSubmissionIds.current.add(scopedId)
+      return false
+    })
+  }, [inbox, pendingSubmissions, sessionId])
   const runningTurnStart = useMemo(() => runningTurnStartTime(timeline), [timeline])
   const railItems = useMemo(
     () => turnRailItems(turnOutline, locations),
@@ -208,6 +237,7 @@ export function ChatView({
   const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ''}`
 
   const toBottom = (el: HTMLElement): void => {
+    pageRestoreRef.current = null
     anchorRef.current = null
     pendingJumpRef.current = null
     setBusyTurn(null)
@@ -223,6 +253,7 @@ export function ChatView({
     const row = [...local.querySelectorAll<HTMLElement>('[data-chat-turn]')]
       .find(candidate => Number(candidate.dataset.chatTurn) === turn)
     if (row === undefined) return false
+    pageRestoreRef.current = null
     el.scrollTop += flowTop(row, el) - 24
     observedTopRef.current = el.scrollTop
     atBottomRef.current = false
@@ -275,6 +306,17 @@ export function ChatView({
       anchorRef.current = null
       const row = anchorElement(local, anchor.key)
       if (row !== null) el.scrollTop += flowTop(row, el) - anchor.top
+      pageRestoreRef.current = row === null ? null : { key: anchor.key, top: flowTop(row, el) }
+      if (typeof window.matchMedia === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        for (const added of local.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')) {
+          const seq = nodeStore.get(added.dataset.chatAnchorKey ?? '')?.anchorSeq
+          if (seq === undefined || seq >= firstSeqRef.current) continue
+          const top = flowTop(added, el)
+          if (top < el.clientHeight && top + added.getBoundingClientRect().height > 0 && typeof added.animate === 'function') {
+            added.animate([{ opacity: 0.65 }, { opacity: 1 }], { duration: 150, easing: 'ease-out' })
+          }
+        }
+      }
       observedTopRef.current = el.scrollTop
       const pending = pendingJumpRef.current
       if (pending !== null && !landTurn(local, el, pending.turn) && row !== null) {
@@ -317,6 +359,8 @@ export function ChatView({
     // the current ownership state.
     const floor = Math.max(0, el.scrollHeight - el.clientHeight)
     const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > 0.5
+    const movedUp = movedByReader && el.scrollTop < observedTopRef.current
+    if (movedByReader) pageRestoreRef.current = null
     const isAtBottom = movedByReader
       ? floor - el.scrollTop <= FOLLOW_THRESHOLD + 1
       : atBottomRef.current
@@ -340,6 +384,7 @@ export function ChatView({
     if (isAtBottom) chatScroll.save(null)
     else if (position !== null) chatScroll.save(position)
     observedTopRef.current = el.scrollTop
+    if (movedUp && el.scrollTop <= 2 && performance.now() < upwardIntentUntil.current) requestPageRef.current()
   }
 
   // Bind the scroll listener on the resolved scrollport once per mount;
@@ -351,9 +396,37 @@ export function ChatView({
     if (local === null) return
     const el = scrollerOf(local)
     const onScroll = (): void => { onScrollRef.current() }
+    // At an already-reached top (including a short page), no scroll event is emitted.
+    const atTopInput = (): void => {
+      upwardIntentUntil.current = performance.now() + 500
+      if (el.scrollTop <= 2) requestPageRef.current()
+    }
+    const onWheel = (event: WheelEvent): void => { if (event.deltaY < 0) atTopInput() }
+    let touchY: number | null = null
+    const onTouchStart = (event: TouchEvent): void => { touchY = event.touches[0]?.clientY ?? null }
+    const onTouchMove = (event: TouchEvent): void => {
+      const next = event.touches[0]?.clientY ?? null
+      if (next !== null && touchY !== null && next > touchY) atTopInput()
+      touchY = next
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"]')) return
+      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) atTopInput()
+    }
+    const onPointer = (): void => { upwardIntentUntil.current = performance.now() + 500 }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+    el.addEventListener('keydown', onKey)
+    el.addEventListener('pointerdown', onPointer, { passive: true })
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('keydown', onKey)
+      el.removeEventListener('pointerdown', onPointer)
     }
   }, [])
 
@@ -362,6 +435,15 @@ export function ChatView({
   const followRef = useRef<(() => void) | null>(null)
   followRef.current = () => {
     const local = listRef.current
+    if (local !== null && !atBottomRef.current && pageRestoreRef.current !== null) {
+      const el = scrollerOf(local)
+      const anchor = pageRestoreRef.current
+      const row = anchorElement(local, anchor.key)
+      if (row !== null) {
+        el.scrollTop += flowTop(row, el) - anchor.top
+        observedTopRef.current = el.scrollTop
+      }
+    }
     if (local !== null && atBottomRef.current) {
       const el = scrollerOf(local)
       el.scrollTop = el.scrollHeight
@@ -414,6 +496,12 @@ export function ChatView({
   }, [firstSeq, hasMore, jumpSettleTick, landTurn, loadingOlder, loadThrough, railItems])
 
   const loadOlderAnchored = (): void => {
+    if (openState !== 'open' || !hasMore || loadingOlder || pageLock.current || pendingJumpRef.current !== null) return
+    pageLock.current = true
+    upwardIntentUntil.current = 0
+    setPagePhase('loading')
+    atBottomRef.current = false
+    setAtBottom(false)
     const local = listRef.current
     /* v8 ignore next -- ref-null guard: the paging button renders inside the list tree. */
     if (local !== null) {
@@ -428,6 +516,20 @@ export function ChatView({
     }
     loadOlder()
   }
+  requestPageRef.current = () => { if (historyError == null) loadOlderAnchored() }
+
+  // Keep fast responses visible without delaying the data commit. The seat never changes height.
+  useEffect(() => {
+    if (pagePhase === 'idle' || loadingOlder) return
+    const timer = window.setTimeout(() => {
+      if (pagePhase === 'loading') setPagePhase('leaving')
+      else {
+        pageLock.current = false
+        setPagePhase('idle')
+      }
+    }, pagePhase === 'loading' ? 180 : 150)
+    return () => { window.clearTimeout(timer) }
+  }, [loadingOlder, pagePhase])
 
   const navigateToTurn = useCallback((item: TurnRailItem): void => {
     const local = listRef.current
@@ -467,13 +569,17 @@ export function ChatView({
               {t('chat.loadError', { message: openError.message, code: openError.code })}
             </div>
           )}
-          {hasMore && (
-            <div className={css.older}>
-              <button type="button" disabled={loadingOlder} onClick={loadOlderAnchored}>
-                {loadingOlder ? t('loading') : t('chat.loadOlder')}
-              </button>
-            </div>
-          )}
+          <div className={css.older} data-history-pager={pagePhase} aria-live="polite">
+            <span className={css.pageLoading} data-visible={pagePhase === 'loading' && historyError == null}
+              aria-hidden={pagePhase !== 'loading' || historyError != null}>
+              <span className={css.pageSpinner} aria-hidden="true" />{t('chat.loadingOlder')}
+            </span>
+            {pagePhase === 'idle' && (historyError != null
+              ? <button type="button" disabled={loadingOlder} onClick={loadOlderAnchored}>{t('chat.retryOlder')}</button>
+              : hasMore
+                ? <button type="button" disabled={loadingOlder} onClick={loadOlderAnchored}>{t('chat.loadOlder')}</button>
+                : order.length > 0 && openState === 'open' ? <span className={css.hint}>{t('chat.historyStart')}</span> : null)}
+          </div>
           {order.map(nodeKey => (
             <ChatNodeSeat
               key={nodeKey}
@@ -490,7 +596,7 @@ export function ChatView({
               t={t}
             />
           ))}
-          {pendingSubmissions.map(submission => (
+          {visiblePendingSubmissions.map(submission => (
             <PendingSubmissionBubble key={submission.id} submission={submission} />
           ))}
           {/* No pending placeholders: questions (ui-user-questions) and approvals

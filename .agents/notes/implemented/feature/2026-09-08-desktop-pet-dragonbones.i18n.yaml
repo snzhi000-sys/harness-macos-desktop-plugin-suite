@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-08-desktop-pet-dragonbones.md
+2026-09-08-desktop-pet-dragonbones.md: ae373ec9fa6c3301ffa6bab1b896e1700595557e
+2026-09-08-desktop-pet-dragonbones.zh.md: 6e33f01d2a7acf1075ddd2a8c682fee92072e2ba

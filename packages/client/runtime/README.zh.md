@@ -44,6 +44,10 @@ SlotRegistry 分别为 renderer 提供 `useSessions` 与 `useWorkspaces` 的裸 
 
 `ConversationSnapshot.queue` 是 Host 提供的 `agent.inbox.nextTurn` 权威瞬态快照；待处理的 next-step steering（中途引导）不进入此投影。每行携带其 `MessageId`、所有内容块均为文本时的完整可编辑文本，以及扁平化预览。Host 根据持久 `agent/inbox/spliced` 变更派生完整 `session/queue` 快照，并在重连时发送基线；面向单条消息的 `agent/inbox/inserted`、`claimed` 与 `discarded` 通知不用于重建该投影。`Session.updateQueue()` 经 Host 侧 `Inbox.splice()` 发送编辑／移除操作，客户端不做乐观变更，因此下一份 Host 快照是唯一可见的提交结果，claim 竞态则可能呈现 `queue-item-not-found`。
 
+## 历史分页
+
+首次历史和普通旧页请求每页读取十条追加来源消息，保留 Host 的完整消息分组和原始序号顺序。显式回合跳转保留每批 250 条。常驻会话重新打开时保留已加载窗口。旧页失败通过 `historyError` 发布，与 `openError` 和 `hasMore` 分离；重试和重连清除此错误。声称仍有历史的空页及不连续页保留窗口并报告可重试错误。重连使普通分页和跳转请求及其清理失效，旧请求不能释放新分页器。该机制仅调整展示分页，不改变模型上下文或 JSONL 校验。
+
 ## Conversation 组装
 
 每个 `Session` 都把连续事件窗口交给 `ConversationNodeAssembler`。插件注册业务 Definition，把单个事件映射为稳定的 `{kind, id}`，在唯一 start 事件处创建 State，折叠有关联的 update，再为已注册的视图目标构造最终节点。Assembler 负责 Context 索引、只读前序 Context 查询，以及引用稳定的 Turn/Step Location 索引。实时 append 只对每个 Definition 求值一次，并且只更新命中的 Context；加载更早分页时保留已有 Context 与节点身份，只匹配新 prepend 的事件，并重放前序依赖或 Location 事实发生变化的 Context。完整替换仅用于 open、resync 和 gap repair。

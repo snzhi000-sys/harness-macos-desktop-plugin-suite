@@ -133,6 +133,14 @@ describe('LocalBashExecutor.run', () => {
     await expect(bash.run(bash.resolve({ command: 'true', workdir: '/nonexistent-dsh' }))).rejects.toThrow(/ENOENT/)
   })
 
+  it('terminates and rejects a foreground command whose child outlives the shell', async () => {
+    const { bash } = await setup({ graceMs: 100 })
+    await expect(bash.run(bash.resolve({
+      command: 'sleep 60 >/dev/null 2>&1 &',
+      timeoutMs: 5_000,
+    }))).rejects.toMatchObject({ code: 'SHELL_PROCESS_TREE_SURVIVED' })
+  })
+
   it('resolve() carries stdin/env/dshEnv onto the spec, and run() threads them to the command', async () => {
     const { bash } = await setup()
     const spec = bash.resolve({

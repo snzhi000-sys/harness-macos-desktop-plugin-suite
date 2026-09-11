@@ -23,6 +23,7 @@ import { registerImeGuard } from './ime-guard.ts'
 import { registerWindowChrome } from './window-chrome.ts'
 import { loadPrefs } from './prefs.ts'
 import { SideCardSection } from './SideCardSection.tsx'
+import { AboutHarnessSection } from './AboutHarnessSection.tsx'
 import { api } from './api.ts'
 import { LOCALE_NS, attachLocale, t, zh, en } from './locales.ts'
 import css from './sidebar.module.css'
@@ -242,6 +243,12 @@ export function apply(ctx: Context): void {
       label: () => t('settingsNav'),
       inject: () => ({ store: sidebarStore, service }),
     }, SideCardSection))
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section',
+      id: 'about-harness-app',
+      order: 1000,
+      label: () => t('aboutNav'),
+    }, AboutHarnessSection))
   } catch (error) {
     fail('load', error)
   }

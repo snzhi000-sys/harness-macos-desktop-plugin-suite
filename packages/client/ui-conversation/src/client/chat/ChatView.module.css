@@ -127,8 +127,41 @@
 }
 
 .older {
+  position: relative;
+  height: 28px;
+  flex: none;
   display: flex;
   justify-content: center;
+  align-items: center;
+}
+
+.pageLoading {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.pageLoading[data-visible='true'] { opacity: 1; }
+
+.pageSpinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--dsw-alias-border-l2);
+  border-top-color: var(--dsw-alias-label-secondary);
+  border-radius: 50%;
+}
+
+.pageLoading[data-visible='true'] .pageSpinner { animation: history-spin 800ms linear infinite; }
+@keyframes history-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pageLoading { transition: none; }
+  .pageLoading[data-visible='true'] .pageSpinner { animation: none; }
 }
 
 .older button {

@@ -4,6 +4,12 @@ import { test } from 'node:test'
 
 const sourceUrl = new URL('../client/src/client.js', import.meta.url)
 
+test('partial coverage does not render a warning or hold an empty review dock open', async () => {
+  const source = await readFile(sourceUrl, 'utf8')
+  assert.match(source, /const visible = !!\(sid && \(rowSet.length > 0 \|\| undoFresh\)\)/)
+  assert.doesNotMatch(source, /auditNotice|dismissedCoverage|data-audit-coverage|审核不完整/)
+})
+
 test('file content toolbar does not repeat the active tab filename', async () => {
   const source = await readFile(sourceUrl, 'utf8')
   assert.doesNotMatch(source, /className:\s*['"]dsh-fe-tb-name['"]/)
@@ -85,6 +91,14 @@ test('deleted files remain read-only browseable and use a red strike-through tab
   assert.match(source, /if \(result\.deleted\) store\.markDeleted\(String\(result\.id\)\)/)
   assert.match(source, /requestSeq\.latest !== seq/)
   assert.match(source, /r\.same && diff[\s\S]*diff\.deleted[\s\S]*store\.markDeleted\(reqPath\)/)
+})
+
+test('unrecoverable shell deletion is labeled and cannot offer automatic reject', async () => {
+  const source = await readFile(sourceUrl, 'utf8')
+  assert.match(source, /shell-delete-unrecoverable[\s\S]*Shell 删除未隔离/)
+  assert.match(source, /删除前未建立隔离备份/)
+  assert.match(source, /item\.restorable === false[\s\S]*disabled: !!acting \|\| item\.restorable === false/)
+  assert.match(source, /diff\.restorable === false[\s\S]*disabled: !!reviewAction \|\| diff\.restorable === false/)
 })
 
 test('directory deletion batches reuse the review bar with expandable file details', async () => {

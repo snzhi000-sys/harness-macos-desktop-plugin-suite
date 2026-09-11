@@ -29,7 +29,7 @@ import { resolvedClientTimeZone } from '../time-zone.ts'
 import { SessionQueueMirror } from './queue-mirror.ts'
 
 /** Messages requested per history page. */
-export const PAGE_MESSAGES = 50
+export const PAGE_MESSAGES = 10
 
 /** Larger pages amortize round trips for an explicit old-turn jump. */
 export const JUMP_PAGE_MESSAGES = 250
@@ -81,6 +81,7 @@ export class Session implements SessionFace {
    *  passes drop all writes once the generation moves on. */
   private openGeneration = 0
   private loadingOlder = false
+  private historyError: RpcError | null = null
   private jumpTargetSeq: number | null = null
   private jumpPromise: Promise<void> | null = null
   private pending = new Map<string, PendingInteraction>()
@@ -399,22 +400,32 @@ export class Session implements SessionFace {
   async loadOlder(): Promise<void> {
     if (this.openState !== 'open' || !this.hasMore || this.loadingOlder) return
     this.loadingOlder = true
+    this.historyError = null
+    const generation = this.openGeneration
+    const before = this.baseSeq
     this.notifier.markDirty()
     try {
-      const { result } = await this.history({ beforeSeq: this.baseSeq, maxMessages: PAGE_MESSAGES })
-      if (!result.ok) return // keep the window as-is; do not overwrite openError (open already succeeded)
+      const { result } = await this.history({ beforeSeq: before, maxMessages: PAGE_MESSAGES })
+      if (generation !== this.openGeneration) return
+      if (!result.ok) {
+        this.historyError = result.error
+        return
+      }
       const older = result.value.events
       if (older.length === 0) {
-        this.hasMore = result.value.hasMore
+        if (result.value.hasMore) {
+          this.historyError = { code: 'internal', message: 'History page made no progress. Retry loading earlier messages.', details: {} }
+          return
+        }
+        this.hasMore = false
         this.conversation.prepend([], this.hasMore)
         return
       }
       const tail = older[older.length - 1]
-      if (tail === undefined || tail.event.seq + 1 !== this.baseSeq) {
+      if (tail === undefined || tail.event.seq + 1 !== before || this.baseSeq !== before) {
         // Continuity assertion: on violation drop the page fail-soft rather than render an out-of-order stream.
         console.error(`[web-runtime] history page discontinuous: tail seq ${tail?.event.seq} vs baseSeq ${this.baseSeq}`)
-        this.hasMore = false
-        this.conversation.prepend([], false)
+        this.historyError = { code: 'internal', message: 'History page is discontinuous. Retry loading earlier messages.', details: {} }
         return
       }
       this.events = [...older.map(e => e.event), ...this.events]
@@ -424,10 +435,15 @@ export class Session implements SessionFace {
       this.hasMore = result.value.hasMore
       this.conversation.prepend(older.map(conversationInput), this.hasMore)
     } catch (error) {
+      if (generation !== this.openGeneration) return
+      const failure = transportError(error)
+      if (!failure.ok) this.historyError = failure.error
       console.error('[web-runtime] loadOlder failed:', error)
     } finally {
-      this.loadingOlder = false
-      this.notifier.markDirty()
+      if (generation === this.openGeneration) {
+        this.loadingOlder = false
+        this.notifier.markDirty()
+      }
     }
   }
 
@@ -444,6 +460,7 @@ export class Session implements SessionFace {
     if (this.loadingOlder) return Promise.resolve()
     this.jumpTargetSeq = seq
     this.loadingOlder = true
+    this.historyError = null
     this.notifier.markDirty()
     const generation = this.openGeneration
     this.jumpPromise = (async () => {
@@ -452,18 +469,25 @@ export class Session implements SessionFace {
           && this.hasMore && this.jumpTargetSeq !== null && this.baseSeq > this.jumpTargetSeq) {
           const before = this.baseSeq
           const { result } = await this.history({ beforeSeq: before, maxMessages: JUMP_PAGE_MESSAGES })
-          if (generation !== this.openGeneration || !result.ok) return
+          if (generation !== this.openGeneration) return
+          if (!result.ok) {
+            this.historyError = result.error
+            return
+          }
           const older = result.value.events
           if (older.length === 0) {
-            this.hasMore = result.value.hasMore
+            if (result.value.hasMore) {
+              this.historyError = { code: 'internal', message: 'History page made no progress. Retry loading earlier messages.', details: {} }
+              return
+            }
+            this.hasMore = false
             this.conversation.prepend([], this.hasMore)
             return
           }
           const tail = older.at(-1)
-          if (tail === undefined || tail.event.seq + 1 !== before) {
+          if (tail === undefined || tail.event.seq + 1 !== before || this.baseSeq !== before) {
             console.error(`[web-runtime] history jump page discontinuous: tail seq ${tail?.event.seq} vs baseSeq ${before}`)
-            this.hasMore = false
-            this.conversation.prepend([], false)
+            this.historyError = { code: 'internal', message: 'History page is discontinuous. Retry loading earlier messages.', details: {} }
             return
           }
           this.events = [...older.map(entry => entry.event), ...this.events]
@@ -475,12 +499,17 @@ export class Session implements SessionFace {
           if (this.baseSeq >= before) return
         }
       } catch (error) {
+        if (generation !== this.openGeneration) return
+        const failure = transportError(error)
+        if (!failure.ok) this.historyError = failure.error
         console.error('[web-runtime] loadThrough failed:', error)
       } finally {
-        this.jumpTargetSeq = null
-        this.jumpPromise = null
-        this.loadingOlder = false
-        this.notifier.markDirty()
+        if (generation === this.openGeneration) {
+          this.jumpTargetSeq = null
+          this.jumpPromise = null
+          this.loadingOlder = false
+          this.notifier.markDirty()
+        }
       }
     })()
     return this.jumpPromise
@@ -496,6 +525,9 @@ export class Session implements SessionFace {
     // that follows it, so ordering is guaranteed).
     if (this.openState === 'cold') return // never opened: no window to rebuild (doOpen flips to 'loading' synchronously, so cold implies no in-flight open)
     this.openGeneration++
+    this.loadingOlder = false
+    this.historyError = null
+    this.jumpPromise = null
     this.openPromise = null
     this.openState = 'cold'
     this.openError = null
@@ -860,6 +892,7 @@ export class Session implements SessionFace {
       openError: this.openError,
       hasMore: this.hasMore,
       loadingOlder: this.loadingOlder,
+      historyError: this.historyError,
       promptError: this.promptError,
       blank: this.blankBit,
       lastAgentError: this.lastAgentError,

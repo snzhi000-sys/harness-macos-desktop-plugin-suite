@@ -44,10 +44,14 @@
 # host-plane too.
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
+  config:
+    auditFullAccessWrites: true
   disabled: !!js process.platform === 'win32'
 
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
+  config:
+    auditFullAccessWrites: true
   disabled: !!js process.platform !== 'win32'
 
 # ── filesystem ──────────────────────────────────────────────────────────────

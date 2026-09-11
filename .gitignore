@@ -61,6 +61,18 @@ desktop/build/icon.iconset/
 *.zip
 
 # Personal runtime/profile data must never enter the source repository
+**/.credentials.yaml
+**/.credentials.yml
+**/.dsh-home/
+**/.harness-user-data/
+*.key
+*.keystore
+*.jks
+/settings.yaml
+/settings.yml
+/sessions/
+/storages/
+/mnemon/
 /profile/
 /profiles/
 /runtime/

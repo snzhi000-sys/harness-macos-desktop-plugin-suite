@@ -319,10 +319,8 @@ async function flingTranscript(page: Page, deltaY: number): Promise<void> {
 }
 
 async function wheelToHistoryStart(page: Page): Promise<void> {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    if ((await scrollGeometry(page)).scrollTop <= 1) break
-    await wheelTranscript(page, -2_400)
-  }
+  // Position the fixture without reader input; paging itself is triggered separately.
+  await page.locator('[data-conversation-scroll]').evaluate((el) => { el.scrollTop = 0 })
   await expect.poll(async () => (await scrollGeometry(page)).scrollTop, { timeout: 10_000 })
     .toBeLessThanOrEqual(1)
 }
@@ -424,12 +422,13 @@ async function expectMarkerAboveComposer(page: Page, marker: string): Promise<vo
 }
 
 async function loadEarlierWithAnchor(page: Page): Promise<void> {
+  await page.locator('[data-history-pager="idle"]').waitFor()
   await wheelToHistoryStart(page)
   const older = page.getByRole('button', { name: 'Load earlier', exact: true })
   await older.waitFor({ timeout: 10_000 })
   const anchor = await visibleFlowAnchor(page)
   const before = await loadedFlowRows(page)
-  await older.click()
+  await wheelTranscript(page, -100)
   await expect.poll(() => loadedFlowRows(page), { timeout: 30_000 }).toBeGreaterThan(before)
   await nextPaint(page)
   await expectSameFlowTop(page, anchor)
@@ -485,9 +484,10 @@ describe('web e2e: long Chat scroll contract', () => {
       await world.page.route('**/api/session.history', async (route) => {
         const request = route.request().postDataJSON() as {
           method?: string
-          payload?: { beforeSeq?: number }
+          payload?: { beforeSeq?: number; maxMessages?: number }
         }
         if (!held && request.method === 'session.history' && request.payload?.beforeSeq !== undefined) {
+          expect(request.payload.maxMessages).toBe(10)
           held = true
           await gate
         }
@@ -502,7 +502,7 @@ describe('web e2e: long Chat scroll contract', () => {
         await world.page.getByText(LIVE_TEXT_FIRST, { exact: false }).last().waitFor({ timeout: 15_000 })
         await wheelToHistoryStart(world.page)
         const beforeRows = await loadedFlowRows(world.page)
-        await world.page.getByRole('button', { name: 'Load earlier', exact: true }).click()
+        await wheelTranscript(world.page, -100)
         await expect.poll(() => held, { timeout: 10_000 }).toBe(true)
 
         await wheelTranscript(world.page, 420)
@@ -527,7 +527,9 @@ describe('web e2e: long Chat scroll contract', () => {
       await world.page.unroute('**/api/session.history')
 
       let additionalPages = 0
-      while (additionalPages < 8) {
+      // Allow the smaller page size to exhaust this fixture; each pull still proves progress and anchoring.
+      while (additionalPages < HISTORY_FIXTURE.turns) {
+        await world.page.locator('[data-history-pager="idle"]').waitFor()
         await wheelToHistoryStart(world.page)
         if (await world.page.getByRole('button', { name: 'Load earlier', exact: true }).count() === 0) break
         await loadEarlierWithAnchor(world.page)

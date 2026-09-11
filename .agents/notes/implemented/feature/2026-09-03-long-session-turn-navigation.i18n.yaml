@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-03-long-session-turn-navigation.md
-2026-09-03-long-session-turn-navigation.md: b715ed65cdef9e5f6b9ee13ef22cf996963e58c0
-2026-09-03-long-session-turn-navigation.zh.md: 6c79bead99e366bc66343c57a8818001f7f85369
+2026-09-03-long-session-turn-navigation.md: ff9870b9e8d78280748a2bf6ac3e209d5ee9e3ce
+2026-09-03-long-session-turn-navigation.zh.md: b014907bc9a3910a6c3c2ecc1e93616eb0584da2

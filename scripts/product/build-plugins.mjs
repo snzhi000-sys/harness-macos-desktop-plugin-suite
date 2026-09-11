@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { desktopPetEnabled } from '../../desktop/product-channel.cjs'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 
@@ -13,6 +14,8 @@ function run(label, command, args, cwd) {
 
 run('Better Sidebar', 'npm', ['run', 'build'], 'plugins/better-sidebar')
 run('File Edit', 'npm', ['run', 'build:client'], 'plugins/file-edit')
+run('Lark CLI', 'npm', ['run', 'build'], 'plugins/lark-cli')
+if (desktopPetEnabled()) run('Desktop Pet', 'npm', ['run', 'build'], 'plugins/desktop-pet')
 run('Workspace Lineage', 'npm', ['run', 'build'], 'plugins/workspace-lineage')
 run('Cowork', 'pnpm', ['build'], 'plugins/cowork')
 

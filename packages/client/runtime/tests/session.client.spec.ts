@@ -406,6 +406,108 @@ describe('live event path', () => {
 })
 
 describe('paging', () => {
+  it('keeps live messages and stable existing nodes when an older page settles', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(6, 1, 'latest', 'answer'), true)
+    await session.open()
+    const key = session.getSnapshot().chat.order[0]!
+    const held = session.getSnapshot().chat.nodes.get(key)
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const pull = session.loadOlder()
+    for (const event of plainTurn(12, 2, 'sent while paging', 'live answer')) {
+      session.handleMuxEnvelope('live' as never, { type: 'session/event', sessionId: SID, event })
+    }
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([7, 9, 13, 15])
+    gate.resolve(await histResponse(plainTurn(0, 0, 'older', 'answer'), false))
+    await pull
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([1, 3, 7, 9, 13, 15])
+    expect(session.getSnapshot().chat.nodes.get(key)).toBe(held)
+  })
+
+  it.each(['page', 'jump'] as const)('discards stale %s rejections after reconnect', async (kind) => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(6, 1, 'latest', 'answer'), true)
+    await session.open()
+    const stale = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => stale.promise
+    const pull = kind === 'page' ? session.loadOlder() : session.loadThrough(0)
+    api.onHistory = () => histResponse(plainTurn(0, 0, 'replacement', 'answer'), false)
+    await session.resync()
+    const snapshot = session.getSnapshot()
+    stale.reject(new Error('old connection failed'))
+    await pull
+    expect(session.getSnapshot()).toBe(snapshot)
+    expect(snapshot).toMatchObject({ loadingOlder: false, historyError: null, hasMore: false })
+  })
+
+  it.each([0, 7, 10, 23, 10_000])('pages %i messages in tens without losing order or reloading on reopen', async (count) => {
+    const all = Array.from({ length: count }, (_, seq) => ev.user(seq, `message-${seq}`))
+    const { api, session } = makeSession()
+    api.onHistory = (payload) => {
+      expect(payload.maxMessages).toBe(10)
+      const end = payload.beforeSeq ?? all.length
+      const start = Math.max(0, end - payload.maxMessages!)
+      return histResponse(all.slice(start, end), start > 0)
+    }
+    await session.open()
+    expect(chatSeqs(session.getSnapshot())).toEqual(all.slice(-10).map(event => event.seq))
+    // Bound the large-fixture probe; full-history costs belong to the performance benchmark.
+    for (let page = 0; page < 3 && session.getSnapshot().hasMore; page++) await session.loadOlder()
+    const seqs = chatSeqs(session.getSnapshot())
+    expect(seqs).toEqual(all.slice(-40).map(event => event.seq))
+    expect(new Set(seqs).size).toBe(seqs.length)
+    const snapshot = session.getSnapshot()
+    const calls = api.calls.length
+    await session.open()
+    expect(session.getSnapshot()).toBe(snapshot)
+    expect(api.calls.length).toBe(calls)
+    expect(snapshot.historyError).toBeNull()
+  })
+
+  it.each(['page', 'jump'] as const)('ignores a stale %s completion without releasing the replacement pager', async (kind) => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'latest', 'answer'), true)
+    await session.open()
+    const stale = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => stale.promise
+    const oldPull = kind === 'page' ? session.loadOlder() : session.loadThrough(0)
+    api.onHistory = () => histResponse(plainTurn(6, 1, 'new baseline', 'answer'), true)
+    await session.resync()
+    const current = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => current.promise
+    const newPull = session.loadOlder()
+    const before = chatSeqs(session.getSnapshot())
+    stale.resolve(await histResponse(plainTurn(6, 1, 'stale', 'answer'), true))
+    await oldPull
+    expect(chatSeqs(session.getSnapshot())).toEqual(before)
+    expect(session.getSnapshot()).toMatchObject({ loadingOlder: true, historyError: null })
+    const calls = api.calls.length
+    await session.loadOlder()
+    expect(api.calls.length).toBe(calls)
+    current.resolve(await histResponse(plainTurn(0, 0, 'oldest', 'answer'), false))
+    await newPull
+    expect(session.getSnapshot()).toMatchObject({ loadingOlder: false, hasMore: false, historyError: null })
+    expect(session.getSnapshot().nodes.map(node => node.seq)).toEqual([1, 3, 7, 9])
+  })
+
+  it.each(['page', 'jump'] as const)('reports %s errors separately from exhaustion and clears them on retry', async (kind) => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(6, 1, 'latest', 'answer'), true)
+    await session.open()
+    const pull = () => kind === 'page' ? session.loadOlder() : session.loadThrough(0)
+    api.onHistory = () => Promise.resolve(err({ code: 'internal', message: 'offline', details: {} }))
+    await pull()
+    expect(session.getSnapshot()).toMatchObject({ hasMore: true, loadingOlder: false, openError: null, historyError: { message: 'offline' } })
+    api.onHistory = () => histResponse([], true)
+    await pull()
+    expect(session.getSnapshot().hasMore).toBe(true)
+    expect(session.getSnapshot().historyError?.message).toContain('no progress')
+    api.onHistory = () => histResponse(plainTurn(0, 0, 'oldest', 'answer'), false)
+    await pull()
+    expect(session.getSnapshot()).toMatchObject({ hasMore: false, historyError: null })
+  })
+
   it('prepends an older page and keeps seq continuity', async () => {
     const older = plainTurn(0, 0, '旧问', '旧答')
     const newer = plainTurn(6, 1, '新问', '新答')
@@ -440,7 +542,7 @@ describe('paging', () => {
     }
   })
 
-  it('drops a discontinuous older page fail-soft (window unchanged, hasMore cleared)', async () => {
+  it('keeps a discontinuous page retryable without changing the window', async () => {
     const { api, session } = makeSession()
     api.onHistory = payload => payload.beforeSeq === undefined
       ? histResponse(plainTurn(10, 1, '新', '页'), true)
@@ -452,7 +554,8 @@ describe('paging', () => {
       await session.loadOlder()
       const snapshot = session.getSnapshot()
       expect(snapshot.nodes).toEqual(nodesBefore)
-      expect(snapshot.hasMore).toBe(false)
+      expect(snapshot.hasMore).toBe(true)
+      expect(snapshot.historyError?.message).toContain('discontinuous')
     } finally {
       errorSpy.mockRestore()
     }
@@ -526,7 +629,7 @@ describe('prompt and cancel errors', () => {
     expect(prompted).toEqual({ ok: true, value: { accepted: true } })
     expect(cancelled).toEqual({ ok: true, value: { accepted: true } })
     expect(api.callsOf('subagent.history')).toEqual([
-      { parentSessionId: PARENT, childSessionId: SID, mode: 'continuable', maxMessages: 50 },
+      { parentSessionId: PARENT, childSessionId: SID, mode: 'continuable', maxMessages: 10 },
     ])
     expect(api.callsOf('subagent.prompt')).toEqual([
       {
@@ -578,7 +681,7 @@ describe('prompt and cancel errors', () => {
     expect(prompted).toMatchObject({ ok: false, error: { code: 'subagent-not-resumable' } })
     expect(cancelled).toMatchObject({ ok: false, error: { code: 'subagent-delivery-unavailable' } })
     expect(api.callsOf('subagent.history')).toEqual([
-      { parentSessionId: PARENT, childSessionId: SID, mode: 'one-shot', maxMessages: 50 },
+      { parentSessionId: PARENT, childSessionId: SID, mode: 'one-shot', maxMessages: 10 },
     ])
     expect(api.callsOf('subagent.prompt')).toEqual([])
     expect(api.callsOf('subagent.interrupt')).toEqual([])

@@ -7,7 +7,6 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -16,6 +15,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { productProfile as selectProfile } from '../product-channel.cjs'
 
 const desktopDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const suiteRoot = resolve(desktopDir, '..')
@@ -79,40 +79,6 @@ function packProduct(name, directory) {
   return parsePackOutput(run(command, ['pack', '--json', '--pack-destination', packDir], directory, true), name)
 }
 
-function workspacePackages() {
-  const directories = []
-  for (const group of readdirSync(join(suiteRoot, 'packages'), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
-    for (const pkg of readdirSync(join(suiteRoot, 'packages', group.name), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
-      directories.push(join(suiteRoot, 'packages', group.name, pkg.name))
-    }
-  }
-  for (const parent of ['vendor', 'apps']) {
-    for (const pkg of readdirSync(join(suiteRoot, parent), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
-      directories.push(join(suiteRoot, parent, pkg.name))
-    }
-  }
-  return new Map(directories.filter(directory => existsSync(join(directory, 'package.json'))).map(directory => {
-    const manifest = readManifest(directory)
-    return [manifest.name, { directory, manifest }]
-  }))
-}
-
-function packagePath(root, name) {
-  return join(root, 'node_modules', ...name.split('/'), 'package.json')
-}
-
-function exactPeerVersion(name, range, pluginRoots) {
-  for (const root of [...pluginRoots, suiteRoot]) {
-    const candidate = packagePath(root, name)
-    if (!existsSync(candidate)) continue
-    const version = JSON.parse(readFileSync(realpathSync(candidate), 'utf8')).version
-    if (typeof version === 'string' && version.length > 0) return version
-  }
-  const lowerBound = range.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0]
-  if (lowerBound === undefined) throw new Error(`Cannot pin peer dependency ${name} from range ${range}`)
-  return lowerBound
-}
-
 function scrubLocalPaths(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const item = join(directory, entry.name)
@@ -153,7 +119,7 @@ function verifySnapshot(directory) {
 }
 
 try {
-  const productProfile = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
+  const productProfile = selectProfile(JSON.parse(readFileSync(profileManifestPath, 'utf8')))
   validateProfileManifest(productProfile)
 
   const pluginEntries = Object.entries(productProfile.productPlugins).map(([name, relativePath]) => {
@@ -165,36 +131,8 @@ try {
     if (manifest.name !== name) throw new Error(`Product plugin name mismatch: expected ${name}, found ${String(manifest.name)}`)
     return { name, directory, manifest }
   })
-  const pluginRoots = pluginEntries.map(entry => entry.directory)
   const packed = new Map(pluginEntries.map(entry => [entry.name, packProduct(entry.name, entry.directory)]))
-  const workspaceByName = workspacePackages()
-
   const dependencies = Object.fromEntries([...packed].map(([name, archive]) => [name, `file:${archive}`]))
-  const visitedWorkspacePackages = new Set()
-  const addWorkspaceClosure = name => {
-    const workspacePackage = workspaceByName.get(name)
-    if (workspacePackage === undefined) return false
-    if (visitedWorkspacePackages.has(name)) return true
-    visitedWorkspacePackages.add(name)
-    const archive = packed.get(name) ?? parsePackOutput(
-      run('pnpm', ['pack', '--json', '--pack-destination', packDir], workspacePackage.directory, true),
-      name,
-    )
-    packed.set(name, archive)
-    dependencies[name] = `file:${archive}`
-    for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const dependency of Object.keys(workspacePackage.manifest[section] ?? {})) addWorkspaceClosure(dependency)
-    }
-    return true
-  }
-  for (const entry of pluginEntries) {
-    for (const [name, range] of Object.entries(entry.manifest.peerDependencies ?? {})) {
-      if (dependencies[name] !== undefined) continue
-      if (!addWorkspaceClosure(name)) {
-        dependencies[name] = exactPeerVersion(name, String(range), pluginRoots)
-      }
-    }
-  }
 
   writeFileSync(join(staging, 'package.json'), `${JSON.stringify({
     name: 'dsh-profile-web-bootstrap',

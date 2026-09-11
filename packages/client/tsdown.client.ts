@@ -10,7 +10,7 @@
  */
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { basename, dirname, relative, resolve as resolvePath, sep } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { UserConfig } from 'tsdown'
 import { transform } from 'lightningcss'
@@ -228,11 +228,12 @@ function clientConfig(id: string, entry: string): UserConfig {
       resolveId(source: string, importer: string | undefined) {
         if (!source.endsWith('.module.css')) return null
         const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        return CSS_VIRTUAL_PREFIX + repositoryAssetPath(abs) + CSS_VIRTUAL_SUFFIX
       },
       async load(virtualId: string) {
         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const repositoryPath = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = resolvePath(REPOSITORY_ROOT, repositoryPath)
         // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
@@ -281,4 +282,13 @@ function sourceAssetPath(source: string, importer: string): string {
   const boundary = emitted.indexOf(marker)
   if (boundary < 0) return emitted
   return resolvePath(emitted.slice(0, boundary), 'src', emitted.slice(boundary + marker.length))
+}
+
+/** Encode a physical stylesheet without exposing the build machine checkout path. */
+function repositoryAssetPath(fileId: string): string {
+  const repositoryPath = relative(REPOSITORY_ROOT, fileId)
+  if (repositoryPath === '..' || repositoryPath.startsWith(`..${sep}`) || isAbsolute(repositoryPath)) {
+    throw new Error(`client CSS asset must be inside the repository: ${basename(fileId)}`)
+  }
+  return repositoryPath.split(sep).join('/')
 }

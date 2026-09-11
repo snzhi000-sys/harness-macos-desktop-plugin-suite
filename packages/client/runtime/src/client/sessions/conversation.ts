@@ -475,6 +475,8 @@ export interface ConversationSnapshot {
   openError: RpcError | null
   hasMore: boolean
   loadingOlder: boolean
+  /** Earlier-page failure; cleared by retry or resync, never means end of history. */
+  historyError: RpcError | null
   promptError: PromptError | null
   /**
    * Whether this session still has an empty log (no user message yet).

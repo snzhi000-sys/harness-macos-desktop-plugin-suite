@@ -193,6 +193,7 @@ describe('prompt rejection through the assembled composer', () => {
       id: SID,
       summary: { title: 'S', displayTitle: 'S', cwd: '/proj' },
       session: {
+        beginSubmission: vi.fn<ISession['beginSubmission']>(() => ({ abandon: vi.fn() })),
         prompt,
         loadOlder: vi.fn<ISession['loadOlder']>(),
         loadThrough: vi.fn<ISession['loadThrough']>(),

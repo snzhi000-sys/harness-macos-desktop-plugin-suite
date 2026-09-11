@@ -101,21 +101,27 @@ if (!reusePackedArtifacts) {
 }
 
 const tarballs = readdirSync(artifactsDir).filter(file => file.endsWith('.tgz'))
-const dependencies = {}
+const installationDependencies = {}
+const releaseDependencies = {}
 for (const file of tarballs) {
   const result = spawnSync('tar', ['-xOzf', join(artifactsDir, file), 'package/package.json'], { encoding: 'utf8' })
   if (result.status !== 0) throw new Error(`cannot read ${file}`)
   const manifest = JSON.parse(result.stdout)
-  dependencies[manifest.name] = `file:${join(artifactsDir, file)}`
+  installationDependencies[manifest.name] = `file:${join(artifactsDir, file)}`
+  releaseDependencies[manifest.name] = manifest.version
 }
-writeFileSync(join(runtimeDir, 'package.json'), `${JSON.stringify({
+const runtimeManifest = dependencies => `${JSON.stringify({
   name: 'deepseek-harness-desktop-runtime',
   version: '0.0.0',
   private: true,
   dependencies,
-}, null, 2)}\n`)
+}, null, 2)}\n`
+writeFileSync(join(runtimeDir, 'package.json'), runtimeManifest(installationDependencies))
 
 run('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=dev'], runtimeDir)
+// The installation manifest points npm at local tarballs, but those absolute
+// build paths are not runtime metadata and must not enter the release archive.
+writeFileSync(join(runtimeDir, 'package.json'), runtimeManifest(releaseDependencies))
 
 const nodeSource = realpathSync(process.execPath)
 const binDir = join(runtimeDir, 'bin')

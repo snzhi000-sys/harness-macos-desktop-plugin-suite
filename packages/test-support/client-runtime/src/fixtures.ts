@@ -66,6 +66,7 @@ export function conversationSnapshot(sessionId: SessionId): ConversationSnapshot
     openError: null,
     hasMore: false,
     loadingOlder: false,
+    historyError: null,
     promptError: null,
     blank: false,
     lastAgentError: null,
